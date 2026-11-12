@@ -36,10 +36,12 @@ import { blockerOf, check as kernelsCheck, FRESH_PATHS, generateKernel, ICU4X_PA
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
 import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
-// The M2 gate reader and the TS workload (GATES10), and the G7 peak RSS reader (BENCH10): CI's
-// step runs this file only, so it loads those tests too.
+// The M2 gate reader and the TS workload (GATES10), the G7 peak RSS reader (BENCH10), and the
+// start-up order file and budget row (STARTUP-LAYOUT; a TOOLS3 need): CI's step runs this file
+// only, so it loads those tests too.
 import "./m2gate.test.mjs";
 import "./mem.test.mjs";
+import "../startup/startup.test.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "../../..");
