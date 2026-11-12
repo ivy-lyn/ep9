@@ -7,7 +7,8 @@
 # infra/fuzz/triage.sh group ids and infra/fuzz/run.sh's record, with a stub FuzzilliCli that
 # writes crash files holding a secret program text (no fuzzer runs). Then, with a stub `cargo`,
 # a libFuzzer slow-unit file is not counted as a crash, and a run cut off before its summary
-# still gives its crash ids (run.sh crashes). Then it builds frontend_compile with the
+# still gives its crash ids (run.sh crashes), and a sealed crash file (FUZZ_SEAL_TO) is CMS
+# with no input bytes and changes no line, summary or record. Then it builds frontend_compile with the
 # `fixture-crash` feature (the target panics on an input that starts with "EP9-FIXTURE-CRASH"
 # and prints the input), replays one fixture input with -runs=0 (no mutation), and checks that
 #   - run.sh exits 1 and reports exactly 1 crash file with the fixture's SHA-256,
@@ -288,6 +289,66 @@ jq -e --arg want "$cut_want" '.schema == "ep9-fuzz/v1" and .dirty == false and .
 ids="$(bash "$here/run.sh" crashes "$work/never-started.json")" || fail "run.sh crashes (no run) exit $?"
 [ -z "$ids" ] || fail "run.sh crashes gave hashes for a summary path that no run started with"
 echo "fuzz self-test: a cut run's crash reaches the record; no run, no crash ids"
+
+# 3c. The seal (route FUZZ-CRASH-SEAL): with FUZZ_SEAL_TO, a crash file leaves the run only as
+# a CMS envelope (AES-256) for fuzz/crash-recipient.pem. A stub `cargo` writes a crash file that
+# holds the secret where libFuzzer would. The sealed run must print the same lines as the plain
+# run (and the seal count), delete the plain file, write one <kind>-<sha256>.p7m that is a CMS
+# enveloped-data object and holds no part of the input, and give the same summary and record
+# as the plain run.
+command -v openssl >/dev/null 2>&1 || fail "openssl is required (run.sh seals with openssl cms)"
+cat >"$work/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in -artifact_prefix=*) cat "$STUB_INPUT" >"${a#-artifact_prefix=}crash-0" ;; esac
+done
+echo "stat::number_of_executed_units: 1"
+STUB
+seal_run() { # <name> [<FUZZ_SEAL_TO>]: run.sh with the stub; output in $work/<name>.txt
+  (PATH="$work/bin:$PATH" STUB_INPUT="$work/in/fixture" FUZZ_LOG_DIR="$work/$1-logs" \
+    FUZZ_SUMMARY="$work/$1.json" FUZZ_SEALED_DIR="$work/$1-sealed" FUZZ_SEAL_TO="${2:-}" \
+    bash "$here/run.sh" frontend_compile replay "$work/$1-corpus") >"$work/$1.txt" 2>&1
+}
+seal_run plain
+rc=$?
+[ "$rc" -eq 1 ] || { cat "$work/plain.txt"; fail "the plain stub crash: run.sh exit $rc, expected 1"; }
+seal_run sealed "$here/../crash-recipient.pem"
+rc=$?
+cat "$work/sealed.txt"
+[ "$rc" -eq 1 ] || fail "the sealed stub crash: run.sh exit $rc, expected 1"
+no_leak "the sealed run's output" "$work/sealed.txt"
+grep -q "^  crash sha256:$want$" "$work/sealed.txt" || fail "the sealed run: the crash hash is not the input's"
+grep -q '^  sealed 1 of 1 crash file(s)' "$work/sealed.txt" || fail "the sealed run: no 'sealed 1 of 1' line"
+[ -z "$(find "$here/../artifacts/frontend_compile" -type f ! -name 'slow-unit-*')" ] ||
+  fail "the sealed run left a plain crash file"
+[ "$(cd "$work/sealed-sealed" && ls)" = "crash-$want.p7m" ] ||
+  fail "the sealed run: the sealed dir does not hold exactly crash-<sha256>.p7m"
+sealed_file="$work/sealed-sealed/crash-$want.p7m"
+no_leak "the sealed file" "$sealed_file"
+cmp -s "$sealed_file" "$work/in/fixture" && fail "the sealed file is the plain input"
+openssl asn1parse -inform DER -in "$sealed_file" >"$work/asn1.txt" 2>&1 ||
+  fail "the sealed file is not DER"
+grep -q 'pkcs7-envelopedData' "$work/asn1.txt" || fail "the sealed file is not CMS enveloped data"
+grep -q 'aes-256-cbc' "$work/asn1.txt" || fail "the sealed file is not AES-256"
+# The summary and the record do not change (the seconds are measured, so they may differ).
+same='del(.seconds)'
+[ "$(jq -cS "$same" "$work/plain.json")" = "$(jq -cS "$same" "$work/sealed.json")" ] ||
+  fail "the sealed run's summary differs from the plain run's"
+for r in plain sealed; do
+  bash "$here/record.sh" --tool cargo-fuzz --campaign gh0-1-frontend_compile --target frontend_compile \
+    --commit "$commit" --dirty false --counted false --runner self-test --run "$work/$r.json" \
+    --out "$work/$r-record.json" || fail "record.sh --run ($r) exit $?"
+  no_leak "the $r run's record" "$work/$r-record.json"
+done
+same='del(.cpu_hours, .seconds, .run.seconds)'
+[ "$(jq -cS "$same" "$work/plain-record.json")" = "$(jq -cS "$same" "$work/sealed-record.json")" ] ||
+  fail "the sealed run's record differs from the plain run's"
+seal_lines() { # the run.sh lines but the seal line, the FAILED line and the seconds
+  grep -v -e '^  sealed ' -e ': FAILED: ' "$1" | sed -E 's/\(replay, [0-9]+s\)/(replay)/'
+}
+[ "$(seal_lines "$work/plain.txt")" = "$(seal_lines "$work/sealed.txt")" ] ||
+  fail "the sealed run prints other lines than the plain run"
+echo "fuzz self-test: a sealed crash file is CMS (AES-256) with no input bytes; the plain file is gone; the same summary and record"
 
 # 4. The fixture crash, its output and its record.
 FUZZ_FEATURES=fixture-crash bash "$here/run.sh" build frontend_compile >"$work/build.log" 2>&1 ||
