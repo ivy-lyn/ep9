@@ -9,6 +9,19 @@
 //     [--md FILE] [--keep DIR] [--workloads LIST] [--limit-pct 0.5] [--hash-seed 1] [--jobs N] \
 //     [--top 15] [--functions LIST] [--timeout-s 3600] [--valgrind PATH] [--work DIR] [--build B]
 //   node .github/scripts/bench-set.mjs --list [--build B] [--workloads LIST]
+//   node .github/scripts/bench-set.mjs --rebuild-guard --base-tree bench/base \
+//     --head-tree bench/head --cargo-json bench/build-head.jsonl
+//
+//   --rebuild-guard   the head rebuild guard (route BENCH-STALE-HEAD; decisions log
+//                     M6-ORCH-560). --cargo-json is the stdout of the head build with
+//                     `--message-format=json-render-diagnostics`. Each package of that build
+//                     whose directory is in the head tree and differs from the same directory in
+//                     the base tree (any file; a directory that the base lacks differs) must have
+//                     been compiled for head: each of its compiler-artifact messages, but a build
+//                     script's, has "fresh": false. Else exit 1 with the stale package names (a
+//                     head binary with base code). The bench-set job builds each side in its own
+//                     target dir, so every package compiles; the guard proves it. Exit 2: a usage
+//                     error or a log with no compiler-artifact message
 //
 //   --base, --head    the commits of the two builds. Each binary's `ep9 --version` build line
 //                     (P0-BUILDID) must name its commit, built clean (else exit 2); with no
@@ -61,7 +74,8 @@
 // Tests: node --test .github/scripts/bench-set.test.mjs (a fake valgrind and fake engines).
 
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -108,6 +122,10 @@ export function parseArgs(argv) {
     top: 15,
     functions: [],
     list: false,
+    rebuildGuard: false,
+    baseTree: null,
+    headTree: null,
+    cargoJson: null,
     timeoutS: 3600,
     valgrind: "valgrind",
     keep: null,
@@ -141,6 +159,10 @@ export function parseArgs(argv) {
       case "--workloads": o.workloads = names(a, val()); break;
       case "--functions": o.functions = names(a, val()); break;
       case "--list": o.list = true; break;
+      case "--rebuild-guard": o.rebuildGuard = true; break;
+      case "--base-tree": o.baseTree = path.resolve(val()); break;
+      case "--head-tree": o.headTree = path.resolve(val()); break;
+      case "--cargo-json": o.cargoJson = path.resolve(val()); break;
       case "--build": {
         o.build = val();
         if (!Object.hasOwn(BUILDS, o.build)) throw new UsageError(`--build needs jit or jitless, got ${o.build}`);
@@ -166,6 +188,10 @@ export function parseArgs(argv) {
       case "--md": o.md = path.resolve(val()); break;
       default: throw new UsageError(`unknown option ${a}`);
     }
+  }
+  if (o.rebuildGuard) {
+    if (!o.baseTree || !o.headTree || !o.cargoJson) throw new UsageError("--rebuild-guard needs --base-tree, --head-tree and --cargo-json");
+    return o;
   }
   if (!o.list && (!o.baseEp9 || !o.headEp9 || !o.out)) throw new UsageError("--base-ep9, --head-ep9 and --out are required");
   for (const [k, v] of [["--base", o.base], ["--head", o.head]]) {
@@ -517,6 +543,70 @@ export function renderMarkdown(res) {
   return `${L.join("\n")}\n`;
 }
 
+// ---- the head rebuild guard (route BENCH-STALE-HEAD) -----------------------------------------
+
+/** The SHA-256 of the files below `dir` (relative paths and contents, sorted; no `target` or
+ * `.git` dir), or null when `dir` is not a directory. */
+export function treeHash(dir) {
+  if (!existsSync(dir)) return null;
+  const h = createHash("sha256");
+  const walk = (d, rel) => {
+    for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (e.name !== "target" && e.name !== ".git") walk(full, r);
+      } else if (e.isFile()) {
+        h.update(`${r}\0`);
+        h.update(readFileSync(full));
+        h.update("\0");
+      }
+    }
+  };
+  walk(dir, "");
+  return h.digest("hex");
+}
+
+/**
+ * The head rebuild guard: `cargoJson` is the text of a cargo build's JSON messages. Returns
+ * { packages, differ, stale }: the package dirs of the build in the head tree (relative), those
+ * that differ from the base tree, and those of them with a compiler-artifact message (not a build
+ * script's) that cargo did not compile ("fresh": true). UsageError: no compiler-artifact message.
+ */
+export function rebuildGuard(baseTree, headTree, cargoJson) {
+  const head = realpathSync(headTree);
+  const pkgs = new Map(); // relative dir -> { fresh: bool (some artifact fresh) }
+  let artifacts = 0;
+  for (const line of cargoJson.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    let m;
+    try {
+      m = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (m.reason !== "compiler-artifact" || typeof m.manifest_path !== "string") continue;
+    artifacts++;
+    const kinds = m.target?.kind ?? [];
+    let dir = path.dirname(m.manifest_path);
+    try {
+      dir = realpathSync(dir);
+    } catch {
+      // a path that no longer exists: not in the head tree
+    }
+    const rel = path.relative(head, dir);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+    const p = pkgs.get(rel) ?? { fresh: false };
+    if (!kinds.includes("custom-build") && m.fresh === true) p.fresh = true;
+    pkgs.set(rel, p);
+  }
+  if (!artifacts) throw new UsageError("--cargo-json has no compiler-artifact message (build with --message-format=json-render-diagnostics)");
+  const packages = [...pkgs.keys()].sort();
+  const differ = packages.filter((rel) => treeHash(path.join(head, rel)) !== treeHash(path.join(baseTree, rel)));
+  const stale = differ.filter((rel) => pkgs.get(rel).fresh);
+  return { packages, differ, stale };
+}
+
 async function main() {
   let o;
   let res;
@@ -524,6 +614,16 @@ async function main() {
     o = parseArgs(process.argv.slice(2));
     if (o.list) {
       process.stdout.write(`${o.workloads.join("\n")}\n`);
+      process.exit(0);
+    }
+    if (o.rebuildGuard) {
+      const g = rebuildGuard(o.baseTree, o.headTree, readFileSync(o.cargoJson, "utf8"));
+      const what = `${g.packages.length} head-tree packages, ${g.differ.length} differ from base`;
+      if (g.stale.length) {
+        console.error(`bench-set: head rebuild guard FAILED (${what}): not compiled for head: ${g.stale.join(", ")}`);
+        process.exit(1);
+      }
+      process.stdout.write(`bench-set: head rebuild guard PASS (${what}; each compiled for head)\n`);
       process.exit(0);
     }
     res = await run(o);
