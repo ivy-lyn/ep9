@@ -338,3 +338,55 @@ fn the_pad_check_proves_each_indirect_branch_target() {
         Err(FinalizeError::TextRelocations(vec![not_proven(12)]))
     );
 }
+
+/// JIT review M8-P3 F3, Codex M8-P3 r1 #1: a load through x27 or x28 proves a branch target
+/// only because the unit-data register x27 and the isolate register x28 hold their pinned
+/// values (the RW copy, the Cx). The old check did not check that premise, so
+/// `bti c; ldr x27, [x0]; ldr x16, [x27]; br x16` and the same with `mov x27, x0` passed:
+/// the target is any value that x0 names. Now a load through x27 (x28) proves nothing when a
+/// word of the text may write x27 (x28), wherever that word is.
+#[test]
+fn the_pad_check_needs_the_pinned_registers_unwritten() {
+    const BTI_C: u32 = A64_BTI_C;
+    const LDR_X27_X0: u32 = 0xf940_001b; // ldr x27, [x0]
+    const MOV_X27_X0: u32 = 0xaa00_03fb; // mov x27, x0
+    const MOV_X28_X0: u32 = 0xaa00_03fc; // mov x28, x0
+    const LDP_X27_X28_POST: u32 = 0xa8c1_73fb; // ldp x27, x28, [sp], #16
+    const LDR_X0_X27_POST: u32 = 0xf840_8760; // ldr x0, [x27], #8 (writes x27 back)
+    const LDR_X16_X28_8: u32 = 0xf940_0790; // ldr x16, [x28, #8]
+    const STR_X27_SP_32: u32 = 0xf900_13fb; // str x27, [sp, #32]
+    const LDR_D27_X0: u32 = 0xfd40_001b; // ldr d27, [x0]
+    const ADD_X0_X27_1: u32 = 0x9100_0760; // add x0, x27, #1
+    const RET: u32 = 0xd65f_03c0;
+    let text = |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
+    let not_proven = |at: u32| Finding::IndirectTargetNotProven { at };
+
+    // The ldr and the mov form of the probe: refused.
+    for w in [LDR_X27_X0, MOV_X27_X0] {
+        let t = text(&[BTI_C, w, a64::LDR_X16_X27, a64::BR_X16]);
+        assert_eq!(check_pads(Arch::A64, &t), [not_proven(12)], "{w:#x}");
+    }
+    // A write anywhere in the text counts: after the branch, or as a writeback base.
+    for w in [MOV_X27_X0, LDR_X0_X27_POST, LDP_X27_X28_POST] {
+        let t = text(&[BTI_C, a64::LDR_X16_X27, a64::BR_X16, w, RET]);
+        assert_eq!(check_pads(Arch::A64, &t), [not_proven(8)], "{w:#x}");
+    }
+    // x28 the same way.
+    for w in [MOV_X28_X0, LDP_X27_X28_POST] {
+        let t = text(&[BTI_C, w, LDR_X16_X28_8, a64::BLR_X16, RET]);
+        assert_eq!(check_pads(Arch::A64, &t), [not_proven(12)], "{w:#x}");
+    }
+    // A write of x27 does not touch a proof through x28.
+    let t = text(&[BTI_C, MOV_X27_X0, LDR_X16_X28_8, a64::BLR_X16, RET]);
+    assert_eq!(check_pads(Arch::A64, &t), []);
+    // Words that only read x27 or write d27 are not writes.
+    let t = text(&[
+        BTI_C,
+        STR_X27_SP_32,
+        LDR_D27_X0,
+        ADD_X0_X27_1,
+        a64::LDR_X16_X27,
+        a64::BR_X16,
+    ]);
+    assert_eq!(check_pads(Arch::A64, &t), []);
+}
