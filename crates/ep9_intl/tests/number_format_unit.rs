@@ -61,11 +61,12 @@ print(fmt("ar", {unit: "hour", unitDisplay: "long"}, 1, 2, 3, 11, 100), "|", par
 print(fmt("he", {unit: "degree", unitDisplay: "long"}, -1, 2), "|", fmt("ru", {unit: "hour", unitDisplay: "long"}, 1, 2, 5, 1.5), "|", fmt("pl", {unit: "liter", unitDisplay: "long"}, 1, 2, 5, 22));
 print(fmt("fr", {unit: "kilometer", unitDisplay: "long"}, 1.5, 2, 1000000), "|", fmt("en", {unit: "kilometer", unitDisplay: "long"}, NaN, -Infinity, 1));
 print(fmt("en", {unit: "liter-per-kilometer", unitDisplay: "narrow"}, 3), "|", fmt("en", {unit: "mile-per-gallon", unitDisplay: "long"}, 30), "|", fmt("en", {unit: "meter-per-second"}, 9.81));
+print(fmt("gsw", {unit: "hour", unitDisplay: "long"}, 1, 2));
 "#;
 
 /// The units "X-per-Y" that T2 does not list (X in the per-unit pattern of Y, or in the
 /// "per" pattern with the name of Y), the plural form of the rounded value (ar, he, ru, pl,
-/// fr), a pattern with no number (ar one and two hours, he one and two degrees), NaN and
+/// fr; gsw: a language with CLDR plural rules and no ICU4X rules), a pattern with no number (ar one and two hours, he one and two degrees), NaN and
 /// the infinities ("other").
 #[test]
 fn per_units_and_plural_forms_give_the_node_lines() {
@@ -77,6 +78,7 @@ fn per_units_and_plural_forms_give_the_node_lines() {
             "מעלה אחת | שתי מעלות | 1 час | 2 часа | 5 часов | 1,5 часа | 1 litr | 2 litry | 5 litrów | 22 litry",
             "1,5\u{a0}kilomètre | 2\u{a0}kilomètres | 1\u{202f}000\u{202f}000\u{a0}kilomètres | NaN kilometers | -∞ kilometers | 1 kilometer",
             "3L/km | 30 miles per gallon | 9.81 m/s",
+            "1 Schtund | 2 Schtunde",
         ])
     );
 }

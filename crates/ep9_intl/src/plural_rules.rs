@@ -403,6 +403,17 @@ enum Rules {
     Cldr(cldr_extra::Rules),
 }
 
+impl Rules {
+    /// PluralRuleSelect on the operands `o`.
+    fn category_for(&self, o: PluralOperands) -> PluralCategory {
+        match self {
+            Rules::WithRanges(r) => r.rules().category_for(o),
+            Rules::Plain(r) => r.category_for(o),
+            Rules::Cldr(r) => r.category_for(o),
+        }
+    }
+}
+
 /// The ICU4X objects of one (data locale, type, notation, compact display).
 struct Icu {
     rules: Rules,
@@ -413,11 +424,7 @@ struct Icu {
 impl Icu {
     /// PluralRuleSelect on the operands `o`.
     fn category_for(&self, o: PluralOperands) -> PluralCategory {
-        match &self.rules {
-            Rules::WithRanges(r) => r.rules().category_for(o),
-            Rules::Plain(r) => r.category_for(o),
-            Rules::Cldr(r) => r.category_for(o),
-        }
+        self.rules.category_for(o)
     }
 
     /// The categories the rules can give.
@@ -499,19 +506,44 @@ fn plural_source(data_locale: &str, ordinal: bool) -> Source {
     }
 }
 
-/// The ICU4X cardinal rules that `new Intl.PluralRules(locale)` selects with for the data
-/// locale `data_locale` ([`plural_source`]), for the plural patterns of other ICU4X data
-/// (Intl.RelativeTimeFormat's `[[PluralRules]]`, 18.1.1). `None` for a language whose rules
-/// come from [`cldr_extra`]: the ICU4X data has no locale of that language, so the patterns
-/// that its data fallback gives are the root ones, which have only the "other" form.
+/// The cardinal rules that `new Intl.PluralRules(locale)` selects with for a data locale
+/// ([`plural_source`]), for the plural forms of other data: the ICU4X rules, or the
+/// [`cldr_extra`] rules of a language that the ICU4X data does not have. The CLDR side tables
+/// (the T2 unit patterns of `number_format::unit`) have the CLDR forms of every CLDR locale,
+/// so they take both kinds; the ICU4X data takes only the ICU4X rules ([`cardinal_rules`]).
+pub(crate) struct CardinalRules(Rules);
+
+impl CardinalRules {
+    /// The cardinal rules of `data_locale`; `None` if the ICU4X data has no rules for it.
+    pub(crate) fn new(data_locale: &str) -> Option<CardinalRules> {
+        Some(CardinalRules(match plural_source(data_locale, false) {
+            Source::Icu(l) => Rules::Plain(
+                PluralRules::try_new(
+                    PluralRulesPreferences::from(&l),
+                    PluralRulesOptions::default().with_type(PluralRuleType::Cardinal),
+                )
+                .ok()?,
+            ),
+            Source::Cldr(rules) => Rules::Cldr(rules),
+        }))
+    }
+
+    /// PluralRuleSelect on the operands `o`.
+    pub(crate) fn category_for(&self, o: PluralOperands) -> PluralCategory {
+        self.0.category_for(o)
+    }
+}
+
+/// The ICU4X cardinal rules of [`CardinalRules::new`], for the plural patterns of other ICU4X
+/// data (Intl.RelativeTimeFormat's `[[PluralRules]]`, 18.1.1; the currency names; the plural
+/// ranges). `None` for a language whose rules come from [`cldr_extra`]: the ICU4X data has no
+/// locale of that language, so the patterns that its data fallback gives are the root ones,
+/// which have only the "other" form.
 pub(crate) fn cardinal_rules(data_locale: &str) -> Option<PluralRules> {
-    match plural_source(data_locale, false) {
-        Source::Icu(l) => PluralRules::try_new(
-            PluralRulesPreferences::from(&l),
-            PluralRulesOptions::default().with_type(PluralRuleType::Cardinal),
-        )
-        .ok(),
-        Source::Cldr(_) => None,
+    match CardinalRules::new(data_locale)?.0 {
+        Rules::Plain(r) => Some(r),
+        // `CardinalRules::new` makes no `WithRanges` rules.
+        Rules::WithRanges(_) | Rules::Cldr(_) => None,
     }
 }
 

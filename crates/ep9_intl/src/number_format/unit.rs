@@ -10,7 +10,8 @@
 //!   T2 has the unit (45 simple units, 5 CLDR "X-per-Y" units): its patterns
 //!   else "X-per-Y": the patterns of X in the per-unit pattern of Y ("{0}/h"), or in the
 //!     compound pattern "per" ("{0}/{1}") with the "one" name of Y (UTS #35 §6.4, as ICU)
-//!   the cardinal plural rules of the data locale (plural_rules::cardinal_rules)
+//!   the cardinal plural rules of the data locale (plural_rules::CardinalRules: the CLDR
+//!     rules of a language with no ICU4X rules too, as T2 has the forms of every CLDR locale)
 //! ```
 //!
 //! ECMA-402 does not convert a value to another unit, and this file does not: the value is
@@ -30,7 +31,7 @@
 
 use std::rc::Rc;
 
-use icu_plurals::{PluralCategory, PluralOperands, PluralRules};
+use icu_plurals::{PluralCategory, PluralOperands};
 
 use super::decimal::{self, Format, IntlMv, PartType, Parts};
 use super::{Resolved, UNIT_DISPLAYS};
@@ -53,9 +54,9 @@ const CATEGORIES: [PluralCategory; 6] = [
 struct UnitData {
     /// The pattern of each category of [`CATEGORIES`].
     patterns: [String; 6],
-    /// The cardinal rules of the data locale; `None`: the "other" pattern (see
-    /// `plural_rules::cardinal_rules`).
-    rules: Option<PluralRules>,
+    /// The cardinal rules of the data locale, the CLDR rules of a language with no ICU4X
+    /// rules included; `None`: the "other" pattern.
+    rules: Option<plural_rules::CardinalRules>,
 }
 
 impl UnitData {
@@ -75,7 +76,7 @@ impl UnitData {
         };
         Some(UnitData {
             patterns,
-            rules: plural_rules::cardinal_rules(data_locale),
+            rules: plural_rules::CardinalRules::new(data_locale),
         })
     }
 
