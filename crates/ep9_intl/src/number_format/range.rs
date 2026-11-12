@@ -254,8 +254,8 @@ fn range_rules(data_locale: &str) -> Option<Rc<RangeRules>> {
     })
 }
 
-/// The plural category of the outer layer of `x` (the category of its rounded value, as the
-/// unit and currency name patterns pick it).
+/// The plural category of the outer layer of `x` (the category of the plural operands of its
+/// rounded value in the notation of `r`, as the unit and currency name patterns pick it).
 fn outer_category(
     r: &Resolved,
     rules: &PluralRulesWithRanges<PluralRules>,
@@ -265,8 +265,8 @@ fn outer_category(
     let data_locale = tag::remove_unicode_extension(&r.locale);
     let f = r.format(&data_locale);
     Ok(
-        match decimal::pieces(&f, x, true, work)?.and_then(|p| p.rounded) {
-            Some(d) => rules.rules().category_for(PluralOperands::from(&d)),
+        match decimal::pieces(&f, x, true, work)?.and_then(|p| p.operands) {
+            Some(o) => rules.rules().category_for(o),
             None => PluralCategory::Other,
         },
     )

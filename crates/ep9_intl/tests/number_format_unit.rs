@@ -107,3 +107,26 @@ fn unit_options_give_the_node_lines() {
         ])
     );
 }
+
+const COMPACT_FORMS: &str = r#"const fmt = (l, o, ...xs) => xs.map(x => new Intl.NumberFormat(l, o).format(x)).join(" | ");
+const fr = (l, o, ...xs) => xs.map(([x, y]) => new Intl.NumberFormat(l, o).formatRange(x, y)).join(" | ");
+const m = {notation: "compact", style: "unit", unit: "meter", unitDisplay: "long"}, usd = {notation: "compact", style: "currency", currency: "USD", currencyDisplay: "name"};
+print(fmt("en", m, 1, 999, 1000, 1500, 1e6), "/", fmt("en", usd, 1, 1000, 1e6), "/", fmt("fr", m, 1, 1000, 1e6), "/", fmt("sl", m, 1000, 2000, 1e6));
+print(fr("en", m, [1, 1000], [1000, 1000], [1000, 2000]), "/", fr("en", usd, [1000, 1001], [1, 1000]), "/", fmt("en", {...m, notation: "scientific"}, 1, 1000));"#;
+
+/// Compact notation picks the unit and currency name form with the plural operands of the
+/// compact value (the significand and the exponent c, as Intl.PluralRules with notation
+/// "compact"): en 1000 is "1K meters" (not "1K meter": the significand 1 alone is one), fr
+/// 1000000 is many ("1 M mètres"), sl 1000 is other ("1 tis. metrov"); also in a range and
+/// in the approximately form. Scientific notation keeps the significand × 10^e ("1E3
+/// meters"). Old code: the form of the significand ("1K meter", "1M US dollar").
+#[test]
+fn compact_forms_take_the_compact_operands() {
+    assert_eq!(
+        run_both(COMPACT_FORMS),
+        lines(&[
+            "1 meter | 999 meters | 1K meters | 1.5K meters | 1M meters / 1 US dollar | 1K US dollars | 1M US dollars / 1\u{a0}mètre | 1\u{a0}k\u{a0}mètres | 1\u{a0}M\u{a0}mètres / 1\u{a0}tis. metrov | 2\u{a0}tis. metrov | 1\u{a0}mio. metrov",
+            "1–1K meters | ~1K meters | 1K – 2K meters / ~1K US dollars | 1–1K US dollars / 1E0 meter | 1E3 meters",
+        ])
+    );
+}

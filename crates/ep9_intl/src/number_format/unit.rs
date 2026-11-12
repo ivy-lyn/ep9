@@ -2,8 +2,9 @@
 //! the CLDR T2 table and the "unit" parts.
 //!
 //! ```text
-//! partition ─ decimal::pieces (the sign, the number, the rounded value)
-//!           ─ the unit pattern of the plural category of the rounded value ("{0} km/h")
+//! partition ─ decimal::pieces (the sign, the number, the plural operands)
+//!           ─ the unit pattern of the plural category of the rounded value, with the
+//!             compact exponent ("{0} km/h"; en compact 1000: "1K meters")
 //!           ─ parts: the text before and after {0} (unit, with its ends as literal parts),
 //!             the sign and the number at {0}
 //! UnitData (crate::cache, key "unit|<data locale>|<unit>", options: [[UnitDisplay]])
@@ -164,8 +165,8 @@ fn push_unit_text(out: &mut Parts, text: &str) {
 
 /// PartitionNumberPattern ( numberFormat, x ) (16.5.3) for the style "unit": the parts of
 /// `x` formatted with `f`, in the unit pattern of `[[Unit]]` and `[[UnitDisplay]]`
-/// (GetNumberFormatPattern, 16.5.4: the pattern of the plural category of the rounded value,
-/// as ICU). The sign and the number go in place of `{0}`.
+/// (GetNumberFormatPattern, 16.5.4: the pattern of the plural category of the rounded value
+/// in the notation of `f`, as ICU). The sign and the number go in place of `{0}`.
 pub fn partition(
     r: &Resolved,
     f: Format<'_>,
@@ -179,10 +180,7 @@ pub fn partition(
         return Ok(Parts::new());
     };
     let body = core::mem::take(&mut p.body);
-    let pattern = data.pattern(
-        f.plural
-            .or_else(|| p.rounded.as_ref().map(PluralOperands::from)),
-    );
+    let pattern = data.pattern(f.plural.or(p.operands));
     let Some((before, after)) = pattern.split_once("{0}") else {
         // No number in the pattern: the pattern takes its place.
         let mut out = Parts::with_capacity(3);

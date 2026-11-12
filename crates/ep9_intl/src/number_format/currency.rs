@@ -13,7 +13,7 @@
 //!     CurrencySymbolsV1 symbol, or the ISO code (code display, or no symbol in the data)
 //!   an empty symbol: CurrencyPatternsNoCurrencyV1 (no currency part)
 //!   name: CurrencyPatternsDataV1 and CurrencyExtendedDataV1 by the plural category of the
-//!     rounded value (the ISO code if the data has no name)
+//!     rounded value, with the compact exponent (the ISO code if the data has no name)
 //! PercentData (crate::cache, key "pct|<data locale>"): DecimalPercentV1
 //! ```
 //!
@@ -480,10 +480,7 @@ fn currency(
     let accounting = CURRENCY_SIGNS.get(r.currency_sign as usize) == Some(&"accounting");
     let (pattern, text, explicit): (Cow<'_, str>, Cow<'_, str>, bool) = match &data.names {
         Some(names) => {
-            let plural = f
-                .plural
-                .or_else(|| p.rounded.as_ref().map(PluralOperands::from));
-            let (pattern, text) = name_pattern(names, &data.code, plural);
+            let (pattern, text) = name_pattern(names, &data.code, f.plural.or(p.operands));
             (pattern.into(), text.into(), false)
         }
         None => {

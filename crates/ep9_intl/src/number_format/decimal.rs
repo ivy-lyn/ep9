@@ -33,7 +33,7 @@
 
 use std::rc::Rc;
 
-use fixed_decimal::{Decimal, Sign};
+use fixed_decimal::{CompactDecimal, Decimal, Sign};
 use icu_decimal::options::{
     CompactDecimalFormatterOptions, DecimalFormatterOptions, GroupingStrategy,
 };
@@ -736,9 +736,11 @@ const PLURAL_SHIFT: i64 = 16_000;
 
 /// The body parts of the finite value `d` formatted with `f` (compact affixes and the
 /// number, then the exponent parts; no sign), whether the rounded value is zero, and (if
-/// `plural`) the [`DecimalValue::plural_decimal`] of the rounded value (the significand in
-/// compact notation; the significand × 10^e in scientific and engineering notation, as ICU:
-/// en "1E3 meters", fr "1,5E0 mètre").
+/// `plural`) the plural operands of the rounded value in the notation of `f`: in compact
+/// notation the significand with the compact exponent as the operand `c` (a
+/// [`CompactDecimal`], as Intl.PluralRules with notation "compact": en "1K meters", fr "1 M
+/// mètres"); in scientific and engineering notation the significand × 10^e, as ICU (en "1E3
+/// meters", fr "1,5E0 mètre"). Each is made from [`DecimalValue::plural_decimal`].
 fn finite_parts<D: DecimalValue>(
     f: &Format<'_>,
     icu: &Icu,
@@ -746,18 +748,18 @@ fn finite_parts<D: DecimalValue>(
     plural: bool,
     body: &mut Parts,
     work: &mut Work,
-) -> Result<(bool, Option<Decimal>), Interrupted> {
+) -> Result<(bool, Option<PluralOperands>), Interrupted> {
     if let Some(notation) = f.exponent {
         // 16.5.3 steps 2.b-c: exponent = ComputeExponent(numberFormat, x); x = x × 10^-exponent.
         let (e, y) = compute_exponent(&f.digits, d, |m| notation.for_magnitude(m), work)?;
         number_parts(&y, f.numbering_system, icu, f.grouping, body, work)?;
         exponent_parts(e, f.numbering_system, icu, body, work)?;
-        let rounded = plural.then(|| {
+        let operands = plural.then(|| {
             let mut p = y.plural_decimal();
             DecimalValue::multiply_pow10(&mut p, e.clamp(-PLURAL_SHIFT, PLURAL_SHIFT));
-            p
+            PluralOperands::from(&p)
         });
-        return Ok((y.is_zero(), rounded));
+        return Ok((y.is_zero(), operands));
     }
     let (exponent, y) = match (f.compact, icu.compact.as_ref()) {
         (Some(_), Some(c)) => compact_round(c, &f.digits, d, work)?,
@@ -779,21 +781,30 @@ fn finite_parts<D: DecimalValue>(
     if let Some((_, suffix)) = &affixes {
         affix_parts(suffix, body);
     }
-    Ok((y.is_zero(), plural.then(|| y.plural_decimal())))
+    let operands = plural.then(|| {
+        let p = y.plural_decimal();
+        if exponent > 0 {
+            PluralOperands::from(&CompactDecimal::from_significand_and_exponent(p, exponent))
+        } else {
+            PluralOperands::from(&p)
+        }
+    });
+    Ok((y.is_zero(), operands))
 }
 
 /// The pieces of PartitionNumberPattern (§16.5.3) that a style pattern puts in place (the
 /// styles "percent" and "currency", `super::currency`): the sign that `[[SignDisplay]]`
-/// shows, the number with its compact affixes, and the rounded value.
+/// shows, the number with its compact affixes, and the plural operands of the rounded value.
 pub struct Pieces {
     /// The sign to show: `Some(true)` minus, `Some(false)` plus, `None` no sign
     /// (GetNumberFormatPattern, §16.5.10).
     pub sign: Option<bool>,
     /// The number parts (or the NaN or infinity part) with the compact affixes; no sign.
     pub body: Parts,
-    /// The [`DecimalValue::plural_decimal`] of the rounded value, if [`pieces`] was asked
-    /// for it and the value is finite.
-    pub rounded: Option<Decimal>,
+    /// The plural operands of the rounded value in the notation of the format (the compact
+    /// exponent is the operand `c`; `finite_parts`), if [`pieces`] was asked for them and
+    /// the value is finite. The unit and currency name patterns pick their form with them.
+    pub operands: Option<PluralOperands>,
     icu: Rc<Icu>,
 }
 
@@ -848,7 +859,7 @@ impl Pieces {
 }
 
 /// The [`Pieces`] of `x` formatted with `f` (`None` if the ICU4X data has no symbols). With
-/// `plural`, [`Pieces::rounded`] holds the rounded value of a finite `x`.
+/// `plural`, [`Pieces::operands`] holds the plural operands of a finite `x`.
 pub fn pieces(
     f: &Format<'_>,
     x: &IntlMv,
@@ -868,7 +879,7 @@ pub fn pieces(
         IntlMv::Wide(d) => (d.is_negative(), false),
     };
     let mut body = Parts::new();
-    let (rounded_zero, rounded) = match x {
+    let (rounded_zero, operands) = match x {
         IntlMv::NaN => {
             body.push((PartType::Nan, t1.map_or("NaN", |t| t.nan).to_string()));
             (false, None)
@@ -886,7 +897,7 @@ pub fn pieces(
     Ok(Some(Pieces {
         sign: sign_of(f.sign_display, negative, rounded_zero, nan),
         body,
-        rounded,
+        operands,
         icu,
     }))
 }
