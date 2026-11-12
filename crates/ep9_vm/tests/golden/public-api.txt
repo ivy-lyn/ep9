@@ -258,6 +258,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_byte_length(&mut self, impl cor
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_copy_and_detach(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>, u64, bool) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_max_byte_length(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<core::option::Option<u64>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_buffer_resize(&mut self, impl core::convert::Into<Local<'s>>, u64) -> ep9_value::JsResult<()>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn array_prototype_to_string(&mut self, Local<'s>, Args<'s>, Local<'s>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_compare_exchange(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_load(&mut self, impl core::convert::Into<Local<'s>>, u64, u8) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn atomic_read_modify_write(&mut self, impl core::convert::Into<Local<'s>>, u64, u8, u8, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s>>

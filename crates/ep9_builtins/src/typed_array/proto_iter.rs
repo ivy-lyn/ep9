@@ -24,7 +24,7 @@
 //! takes the `ep9_vm` shared-memory accessors. Each loop polls interrupts once per index.
 
 use ep9_vm::abi::JsObject;
-use ep9_vm::{Args, ArrayIterKind, Cx, IntrinsicId, JsResult, JsString, Local};
+use ep9_vm::{Args, ArrayIterKind, Cx, JsResult, JsString, Local};
 
 use super::VIEWS;
 use super::from_of::validate_typed_array;
@@ -608,29 +608,16 @@ pub(super) fn reduce_right<'s>(
 
 /// `%TypedArray%.prototype.toString ( )` (`sec-%typedarray%.prototype.tostring`). The spec
 /// makes it the same function object as `Array.prototype.toString`; here it is a function of
-/// its own with the same steps (`sec-array.prototype.tostring`; route TA-TOSTRING-IDENTITY).
+/// its own (route TA-TOSTRING-IDENTITY) that runs the same steps (`sec-array.prototype.tostring`)
+/// through `Cx::array_prototype_to_string`: a `join` that is not callable gives the intrinsic
+/// `%Object.prototype.toString%`, not the live property.
 pub(super) fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
-    _new_target: Local<'s>,
+    args: Args<'s>,
+    new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    // 1. Let array be ? ToObject(this value).
-    let array = cx.to_object(this)?;
-    // 2. Let func be ? Get(array, "join").
-    let mut func = cx.get(array, "join")?;
-    // 3. If IsCallable(func) is false, set func to %Object.prototype.toString%. (The
-    //    function that `%Object.prototype%` holds under "toString": `ep9_builtins` has no
-    //    handle on the intrinsic function itself, see the route.)
-    if !cx.is_callable(func) {
-        let object_prototype = cx.intrinsic(IntrinsicId::ObjectPrototype);
-        func = cx.get(object_prototype, "toString")?;
-        if !cx.is_callable(func) {
-            return Err(cx.throw_type_error("Object.prototype.toString is not a function"));
-        }
-    }
-    // 4. Return ? Call(func, array).
-    cx.call(func, array, &[])
+    cx.array_prototype_to_string(this, args, new_target)
 }
 
 /// `%TypedArray%.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] )`

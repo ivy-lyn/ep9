@@ -18,7 +18,7 @@
 
 use ep9_value::{JsResult, Throw};
 
-use super::{Cx, JsObject, Local};
+use super::{Args, Cx, JsObject, Local};
 use crate::conv::describe;
 use crate::runtime::{Atom, Root};
 use crate::symbol::{self, WellKnownSymbol};
@@ -227,6 +227,21 @@ impl<'s> Cx<'s> {
         //      (`object::new_iterator_of_kind`). `o` lives in a Rust local (the stack scan).
         let proto = rt.root(Root::ArrayIteratorPrototype);
         Self::local(object::new_iterator_of_kind(rt, proto, o, k))
+    }
+
+    /// `Array.prototype.toString ( )` (`sec-array.prototype.tostring`) with `this`: ? ToObject,
+    /// ? Get(array, "join"), then ? Call(join, array), or, when `join` is not callable, the
+    /// intrinsic `%Object.prototype.toString%` itself (never the live `Object.prototype`
+    /// property). For `%TypedArray%.prototype.toString`, whose initial value is
+    /// `%Array.prototype.toString%` (`sec-%typedarray%.prototype.tostring`). GC point; may run
+    /// user code.
+    pub fn array_prototype_to_string(
+        &mut self,
+        this: Local<'s>,
+        args: Args<'s>,
+        new_target: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        crate::natives::array_to_string(self, this, args, new_target)
     }
 
     /// GetMethod(iterator, "return") (§7.3.10, as `interp/slow/iter.rs` cites it) and, if there is one, its call: `None` if the

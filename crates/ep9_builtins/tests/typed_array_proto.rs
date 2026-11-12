@@ -1003,3 +1003,32 @@ for (const c of [null, 1, {}, "x"]) {
         ])
     );
 }
+
+/// `%TypedArray%.prototype.toString` with a `join` that is not callable calls the intrinsic
+/// `%Object.prototype.toString%` (`sec-array.prototype.tostring` step 3), as
+/// `Array.prototype.toString` does: a replaced `Object.prototype.toString` (a function, a
+/// getter, a value that is not callable) is never read (Codex TA-4 r1 #3).
+#[test]
+fn to_string_uses_the_intrinsic_object_to_string() {
+    let src = r#"
+const ta = new Uint8Array([1, 2]); ta.join = null;
+const orig = Object.prototype.toString;
+Object.prototype.toString = function () { return "wrong"; };
+print(Uint8Array.prototype.toString.call(ta), Array.prototype.toString.call(ta));
+Object.prototype.toString = orig;
+let calls = 0;
+Object.defineProperty(Object.prototype, "toString", { get() { calls++; return orig; }, configurable: true });
+print(Uint8Array.prototype.toString.call(ta), calls);
+Object.defineProperty(Object.prototype, "toString", { value: 1, configurable: true, writable: true });
+let r; try { r = Uint8Array.prototype.toString.call(ta); } catch (e) { r = e.constructor.name; }
+print(r);
+"#;
+    assert_eq!(
+        common::run_both(src),
+        lines(&[
+            "[object Uint8Array] [object Uint8Array]",
+            "[object Uint8Array] 0",
+            "[object Uint8Array]",
+        ])
+    );
+}
