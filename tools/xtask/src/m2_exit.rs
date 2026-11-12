@@ -1838,13 +1838,17 @@ fn render(
     md.push_str(&table);
     md.push_str("\n## Evidence\n");
     for (((l, t), h), f) in LABELS.iter().zip(TITLES).zip(&cells).zip(&forms) {
-        let _ = write!(
-            md,
-            "\n### {l}. {t}\n\n- {} {}: {}\n",
-            o.host,
-            name(h, f),
-            h.evidence
-        );
+        // A host-cell evidence starts with its form already.
+        let _ = match f {
+            Some(_) => write!(md, "\n### {l}. {t}\n\n- {} {}\n", o.host, h.evidence),
+            None => write!(
+                md,
+                "\n### {l}. {t}\n\n- {} {}: {}\n",
+                o.host,
+                h.status.name(),
+                h.evidence
+            ),
+        };
     }
     md.push_str("\n## Missing inputs\n\n");
     if missing.is_empty() {
@@ -3297,7 +3301,11 @@ mod tests {
                     "{}",
                     rep.table
                 );
-                assert!(rep.markdown.contains(&format!("- {LINUX_X64} {w}: ")));
+                assert!(
+                    rep.markdown
+                        .contains(&format!("- {LINUX_X64} {w}: Path B "))
+                );
+                assert!(!rep.markdown.contains(&format!("{w}: {w}")));
             }
             let all: String = rep.cells.iter().map(|c| c.evidence.clone()).collect();
             assert!(all.contains(text), "{f}: {text}");
