@@ -6,23 +6,24 @@
 //! Intl.NumberFormat {w, c}     %Intl.NumberFormat%  prototype {}, supportedLocalesOf
 //! Intl.NumberFormat.prototype  %Intl.NumberFormat.prototype%  constructor {w, c},
 //!                                resolvedOptions, formatToParts, get format,
+//!                                formatRange, formatRangeToParts,
 //!                                [@@toStringTag] "Intl.NumberFormat" {c}
 //! slots (ObjectClass::IntlNumberFormat): 0 [[Locale]], 1 the packed options, 2 the packed
 //!   digit options, 3 [[RoundingIncrement]], 4 [[NumberingSystem]], 5 [[Currency]],
 //!   6 [[Unit]], 7 [[BoundFormat]]
-//! format(x) ─ ToIntlMathematicalValue ─ FormatNumeric ─ decimal::partition (ICU4X data
-//!   through crate::cache at the first format; no ICU4X object in a slot, INTL-I1-D7)
+//! format(x) ─ ToIntlMathematicalValue ─ FormatNumeric ─ partition_numeric ─ scientific,
+//!   currency, unit or decimal ::partition (ICU4X data through crate::cache at the first
+//!   format; no ICU4X object in a slot, INTL-I1-D7)
 //! ```
 //!
 //! INTL W2 NF-CORE: the constructor with every option of §16.1 (the style options too, so
 //! `resolvedOptions` is complete), `supportedLocalesOf`, `format`, `formatToParts` and
-//! `resolvedOptions`; the decimal style in standard and compact notation. W3 fills the rest
-//! of FormatNumeric through [`partition_numeric`], one file each: the styles percent and
-//! currency ([`currency`], NF-CURRENCY, with [`currency_digits`]), unit
+//! `resolvedOptions`; the decimal style in standard and compact notation ([`decimal`]).
+//! INTL W3 added the rest of FormatNumeric through [`partition_numeric`], one file each: the
+//! styles percent and currency ([`currency`], NF-CURRENCY, with [`currency_digits`]), unit
 //! ([`unit`](mod@unit), NF-UNIT), the notations scientific and engineering ([`scientific`],
-//! NF-SCIRANGE); until then they format as the decimal style in standard notation.
-//! `formatRange` and `formatRangeToParts` (34.5, 34.6; NF-SCIRANGE) format through
-//! [`range`].
+//! NF-SCIRANGE). `formatRange` and `formatRangeToParts` (34.5, 34.6; NF-SCIRANGE) format
+//! through [`range`].
 //! `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` call
 //! [`to_locale_string`].
 //!
@@ -677,11 +678,10 @@ fn set_number_format_unit_options<'s>(
 
 /// PartitionNumberPattern ( numberFormat, x ) (16.5.3): the parts of `x` formatted with `r`.
 ///
-/// The decimal style in standard and compact notation is NF-CORE's ([`decimal`]). The W3
-/// builders fill the other branches, one file each: NF-SCIRANGE the notations "scientific"
-/// and "engineering" ([`scientific`]), NF-CURRENCY the styles "percent" and "currency"
-/// ([`currency`]), NF-UNIT the style "unit" ([`unit`](mod@unit)). Until then those format as the
-/// decimal style in standard notation (a stub path, not a spec result).
+/// One file per branch: the notations "scientific" and "engineering" in every style
+/// ([`scientific`], NF-SCIRANGE), the styles "percent" and "currency" ([`currency`],
+/// NF-CURRENCY), the style "unit" ([`unit`](mod@unit), NF-UNIT), else the decimal style in
+/// standard and compact notation ([`decimal`], NF-CORE).
 ///
 /// The passes over the digits count in `work` ([`decimal`] polls).
 pub fn partition_numeric(r: &Resolved, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
