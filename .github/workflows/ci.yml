@@ -984,6 +984,10 @@ jobs:
         run: bash scripts/sync-icu4x.sh
       - run: cargo "+$MIRI_TOOLCHAIN" miri setup
       - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap -p ep9_math
+      # The shared-memory accessors and the waiter list of ep9_platform (TypedArray TA-4,
+      # V13-D8): their cfg(miri) path is the Rust atomics; the asm path and the mixed-width test
+      # run in the other jobs. The filter keeps the OS tests of the crate out (mmap, signals).
+      - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_platform --lib -- shared_mem waiters
       # The S2a loom test (plan v12 rule 8; M7-P1 GCPAR1): 2 markers on the shared work
       # structure. Miri does not cover the parallel mark (helpers() is 0 under Miri).
       - run: RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom cargo "+$MIRI_TOOLCHAIN" test --locked --release -p ep9_heap --lib parallel::loom_tests

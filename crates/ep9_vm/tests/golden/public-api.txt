@@ -794,6 +794,8 @@ ep9_vm::IntrinsicValue :: variant Object { proto: core::option::Option<Intrinsic
 ep9_vm::Isolate :: impl !core::marker::Send for Isolate (auto)
 ep9_vm::Isolate :: impl !core::marker::Sync for Isolate (auto)
 ep9_vm::Isolate :: impl Isolate
+ep9_vm::Isolate :: impl Isolate :: fn async_waiter_count(&self) -> usize
+ep9_vm::Isolate :: impl Isolate :: fn block_for_async_waiters(&self, core::time::Duration)
 ep9_vm::Isolate :: impl Isolate :: fn builtin_table(&self) -> core::option::Option<&'static BuiltinTable>
 ep9_vm::Isolate :: impl Isolate :: fn collect_garbage(&mut self)
 ep9_vm::Isolate :: impl Isolate :: fn compiler(&self) -> core::option::Option<&'static CompilerHooks>
@@ -805,6 +807,7 @@ ep9_vm::Isolate :: impl Isolate :: fn new(IsolateConfig) -> core::result::Result
 ep9_vm::Isolate :: impl Isolate :: fn new_with(IsolateConfig, ExecOptions) -> core::result::Result<Isolate, IsolateError>
 ep9_vm::Isolate :: impl Isolate :: fn perform_microtask_checkpoint(&mut self) -> core::result::Result<(), Exception>
 ep9_vm::Isolate :: impl Isolate :: fn register_host_function(&mut self, &str, u32, HostFn)
+ep9_vm::Isolate :: impl Isolate :: fn set_can_block(&mut self, bool)
 ep9_vm::Isolate :: impl Isolate :: fn set_compile_strings_hook(&mut self, core::option::Option<for<'s> fn(&mut Cx<'s>, &[alloc::string::String], &str, bool) -> ep9_value::JsResult<()>>)
 ep9_vm::Isolate :: impl Isolate :: fn string_view(&mut self, ep9_value::value::Value) -> core::option::Option<JsStr<'_>>
 ep9_vm::Isolate :: impl Isolate :: fn take_unhandled_rejections(&mut self) -> alloc::vec::Vec<Exception>

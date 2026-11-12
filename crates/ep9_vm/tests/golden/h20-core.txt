@@ -797,3 +797,6 @@ abi: #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ArrayIterKind { Keys,
 abi: impl<'s> Cx<'s> :: pub fn create_array_iterator(&mut self, impl Into<Local<'s, JsObject>>, ArrayIterKind) -> Local<'s, JsObject>
 path: ep9_vm::ArrayIterKind = abi::ArrayIterKind
 path: ep9_vm::abi::ArrayIterKind
+embed (not core): impl Isolate :: pub fn set_can_block(&mut self, bool)
+embed (not core): impl Isolate :: pub fn async_waiter_count(&self) -> usize
+embed (not core): impl Isolate :: pub fn block_for_async_waiters(&self, std::time::Duration)

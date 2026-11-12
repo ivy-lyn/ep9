@@ -15,7 +15,10 @@
 //!   path);
 //! - a SharedArrayBuffer crosses isolates: the agent's store is seen by the main agent, a grow
 //!   in the main agent is seen by the agent (its own fixture file, plain and GC stress 1);
-//! - `CanBlockIsFalse` fails (the main agent can block), `CanBlockIsTrue` runs.
+//! - `CanBlockIsFalse` runs in a main agent that cannot block (`Atomics.wait` throws a
+//!   TypeError), `CanBlockIsTrue` in one that can (TypedArray TA-4);
+//! - an async test whose `Atomics.waitAsync` promise ends after its script (a timeout, a notify
+//!   from an agent) passes: the runner's host loop sleeps and runs checkpoints until `$DONE`.
 //!
 //! Every test runs the runner binary with a soft timeout, and the runner kills a worker at its
 //! hard timeout, so no test here can hang.
@@ -173,7 +176,45 @@ fn passing() -> Vec<(&'static str, String)> {
                  assert.sameValue(nextReport(), 'from a realm');",
             ),
         ),
-        ("can-block-true.js", test("flags: [CanBlockIsTrue]\n", "")),
+        (
+            "can-block-true.js",
+            test(
+                "flags: [CanBlockIsTrue]\n",
+                "var i32 = new Int32Array(new SharedArrayBuffer(4));\n\
+                 assert.sameValue(Atomics.wait(i32, 0, 0, 0), 'timed-out');",
+            ),
+        ),
+        (
+            "can-block-false.js",
+            test(
+                "flags: [CanBlockIsFalse]\n",
+                "var i32 = new Int32Array(new SharedArrayBuffer(4)), threw = false;\n\
+                 try { Atomics.wait(i32, 0, 0, 0); } catch (e) { threw = e instanceof TypeError; }\n\
+                 assert(threw, 'Atomics.wait throws a TypeError');",
+            ),
+        ),
+        (
+            "wait-async-timeout.js",
+            test(
+                "flags: [async]\n",
+                "var i32 = new Int32Array(new SharedArrayBuffer(4));\n\
+                 Atomics.waitAsync(i32, 0, 0, 10).value\n\
+                 .then(function (v) { assert.sameValue(v, 'timed-out'); }).then($DONE, $DONE);",
+            ),
+        ),
+        (
+            "wait-async-notify.js",
+            test(
+                "flags: [async]\n",
+                "var sab = new SharedArrayBuffer(4), i32 = new Int32Array(sab);\n\
+                 $262.agent.start('$262.agent.receiveBroadcast(function (sab) { \
+                 var i = new Int32Array(sab); while (Atomics.notify(i, 0) === 0) {} \
+                 $262.agent.leaving(); });');\n\
+                 var p = Atomics.waitAsync(i32, 0, 0).value;\n\
+                 $262.agent.broadcast(sab);\n\
+                 p.then(function (v) { assert.sameValue(v, 'ok'); }).then($DONE, $DONE);",
+            ),
+        ),
         (
             "async.js",
             test(
@@ -213,11 +254,6 @@ fn failing() -> Vec<(&'static str, String, &'static str)> {
             "agent-syntax.js",
             test("", "$262.agent.start('var = ;');\nnextReport();"),
             "Error: $262.agent.getReport: an agent threw: agent 0: the script does not compile: ",
-        ),
-        (
-            "can-block-false.js",
-            test("flags: [CanBlockIsFalse]\n", ""),
-            "CanBlockIsFalse: the main agent can block",
         ),
     ]
 }

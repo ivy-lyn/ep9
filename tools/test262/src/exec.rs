@@ -705,6 +705,7 @@ impl RunCtx<'_> {
             Err(e) => return infra("panic", e),
         };
         self.watchdog.arm(iso.terminate_handle(), self.opts.timeout);
+        iso.set_can_block(agent::main_can_block());
         OUT.with(|o| o.borrow_mut().clear());
         if mode != Mode::Raw {
             if let Some(r) = self.harness_script(&mut iso, "$262 prelude", agent::prelude()) {
@@ -731,11 +732,12 @@ impl RunCtx<'_> {
         let mut resolve =
             |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
         let mut load = |name: &str| load_module(root, name);
+        let settle = meta.has_flag("async").then_some(self.opts.timeout);
         let result = iso.with_module_host(&mut resolve, &mut load, |iso| {
             if mode == Mode::Module {
                 run_module(iso, root, unit, rel)
             } else {
-                run_script(iso, root, unit, rel)
+                run_script(iso, root, unit, rel, settle)
             }
         });
         if fault_for("late", rel) {
@@ -824,11 +826,15 @@ fn run_module(
 /// script Err -> terminated: that error, no checkpoint
 ///            -> else a checkpoint (same host) -> its termination, else the script's error
 /// ```
+///
+/// `settle` (an async test: the soft timeout): after an `Ok`, the host loop of
+/// [`settle_async_waiters`] runs until `$DONE` prints or no `Atomics.waitAsync` waiter is left.
 fn run_script(
     iso: &mut Isolate,
     root: &Path,
     unit: ep9_bytecode::VerifiedUnit,
     rel: &str,
+    settle: Option<Duration>,
 ) -> Result<(), Exception> {
     let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
     let mut load = |name: &str| load_module(root, name);
@@ -842,7 +848,16 @@ fn run_script(
         })
     });
     match r {
-        Ok(()) => Ok(()),
+        Ok(()) => match settle {
+            Some(timeout) => settle_async_waiters(iso, timeout, |iso| {
+                iso.with_cx(|cx| {
+                    cx.with_module_text_host(&mut resolve, &mut load, &mut text, |cx| {
+                        cx.perform_microtask_checkpoint()
+                    })
+                })
+            }),
+            None => Ok(()),
+        },
         Err(e) if script_ok || e.terminated => Err(e),
         // The script threw (its exception is taken): the jobs still run; a job's error after
         // it is dropped.
@@ -2011,6 +2026,38 @@ fn heap_mode(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Result<(bool, 
     Ok((generational, major_every))
 }
 
+/// How long the host loop of an async test sleeps at most before it looks at the test again.
+const SETTLE_TICK: Duration = Duration::from_millis(2);
+
+/// The host loop of an async test (TypedArray TA-4, O8): while the main isolate has
+/// `Atomics.waitAsync` waiters and the test has not printed its async result, sleep until one
+/// can end (a notify from an agent, its timeout, or [`SETTLE_TICK`]:
+/// `Isolate::block_for_async_waiters`), then run `checkpoint` (a microtask checkpoint, which
+/// resolves their promises and runs the jobs). A shell's event loop does the same. It ends at
+/// `timeout` after its start with a termination: the watchdog terminates the isolate by then,
+/// but an idle isolate runs no JS that would poll it.
+fn settle_async_waiters(
+    iso: &mut Isolate,
+    timeout: Duration,
+    mut checkpoint: impl FnMut(&mut Isolate) -> Result<(), Exception>,
+) -> Result<(), Exception> {
+    let deadline = Instant::now() + timeout;
+    while iso.async_waiter_count() > 0 && !OUT.with(|o| o.borrow().contains("Test262:AsyncTest")) {
+        if Instant::now() >= deadline {
+            return Err(Exception {
+                message: "the async waiters did not end before the timeout".to_string(),
+                constructor: None,
+                stack: None,
+                location: None,
+                terminated: true,
+            });
+        }
+        iso.block_for_async_waiters(SETTLE_TICK);
+        checkpoint(iso)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2041,7 +2088,7 @@ mod tests {
             |referrer: &str, specifier: &str| resolve_module(&root, referrer, specifier);
         let mut load = |name: &str| load_module(&root, name);
         let r = iso.with_module_host(&mut resolve, &mut load, |iso| {
-            run_script(iso, &root, unit, "test/main.js")
+            run_script(iso, &root, unit, "test/main.js", None)
         });
         let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
         let _ = std::fs::remove_dir_all(&root);

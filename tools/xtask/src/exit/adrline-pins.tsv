@@ -436,7 +436,9 @@ history	H17-object-layout.md	crates/ep9_vm/src/tests/layout6.rs:211	| 4 Data (sp
 # module host hooks and the fixer r2 run_script form; 947 at the fixer r1 head) moved from an older
 # number of another exec.rs cite of the same H23 lines, so the diff map (from bfea3c7e) reads the
 # old token as the install_panic_hook line; the pin names the line it means.
-pin	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:974	tools/test262/src/exec.rs	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$	0
+# TypedArray TA-4 R2: the TA-4 test262 runner code (CanBlock and the async-waiter host loop) moved
+# the line to 989; the pin token follows it (H23:44).
+pin	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:989	tools/test262/src/exec.rs	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$	0
 history	H20-builtin-abi.md	.github/scripts/dep-guards.sh:159	T1 Temporal namespace, ep9_temporal edge (Frozen-part route)	17a0c841	^deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal$
 history	H20-builtin-abi.md	.github/scripts/dep-guards.sh:159	T9 clock row provider (part 2)	17a0c841	^deps_within 8 ep9_builtins ep9_vm ep9_math ep9_temporal$
 history	H36-fp-semantics.md	tools/xtask/src/fpcheck.rs:1669	3 Verifier (spec-int amendment: the 2026-11-06 rewrite row, T0 allow-crate form (Frozen, G8))	17a0c841	^    fn allow_crate_via_is_only_ep9_temporal\(\) \{$
@@ -477,3 +479,6 @@ pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:1037	crates/ep9_vm/src/obj
 # TypedArray TA-4 R1: the H31 TA-3 fill row (2026-11-12) records link_prototypes at builtins.rs:2030
 # of 3e3182c8; TA-4 R1 moved the line to 2036 (the body line 71 cites 2036).
 history	H31-fuse-registry.md	crates/ep9_vm/src/builtins.rs:2030	| 2026-11-12 | fill (proposed; H31 is Frozen (API): README §3.2 "Frozen part" fill, the orchestrator, the review record and gate output (the TA-3 R1 acceptance logs)	3e3182c8	if !is_object\(c\) \|\| !is_object\(p\) \|\| !crate::property::set_prototype_of\(rt, c, p\) \{
+# TypedArray TA-4 R2: the H23 M7-P4 fixer r1 ADRLINE row (2026-11-09, line 222) says the line 44 cite
+# was tools/test262/src/exec.rs:974 after the fixer r2 row; that number is history (989 at TA-4 R2).
+history	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:974	M7-P4 ADRLINE (plan v12 §7.5	0773ffb2	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$

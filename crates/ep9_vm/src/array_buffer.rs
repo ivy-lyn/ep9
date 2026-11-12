@@ -47,8 +47,11 @@
 //! - **Resize.** A resizable store keeps its base, so the views keep their data word; the bytes
 //!   from the byte length to the committed end are always 0 (a shrink zeroes them), so a later
 //!   grow reads zeros.
-//! - **Shared bytes (TA-D11).** Every access to SAB bytes is atomic: Relaxed of the element width
-//!   for a TypedArray, Relaxed bytes for a DataView (TA-ORCH-13, [`IsTypedArray`]), SeqCst Atomics.
+//! - **Shared bytes (TA-D11; TA-4 TA-SHARED-MIXED-WIDTH, V13-D8).** Every access to SAB bytes goes
+//!   through `ep9_platform::shared_mem` (inline asm outside the Rust model; Rust atomics under
+//!   Miri): a racy access of the element width for a TypedArray, racy bytes for a DataView
+//!   (TA-ORCH-13, [`IsTypedArray`]), a racy copy, SeqCst Atomics. So two widths on the same
+//!   bytes are no mixed-size access in the Rust model.
 //! - **Caps (design §2.3, est.).** A `maxByteLength` above [`MAX_RESERVATION`] is a RangeError;
 //!   a fixed buffer above `max_heap_bytes` or that the heap cannot allocate is a RangeError
 //!   (CreateByteDataBlock).
@@ -56,13 +59,13 @@
 
 use core::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{
-    AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering, Ordering::Relaxed,
-};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
+use ep9_platform::shared_mem;
 use ep9_platform::va::{Reservation, allocation_granularity, page_size};
+use ep9_platform::waiters;
 
 use crate::abi::ObjectClass;
 use crate::external_ref::ExternalRef;
@@ -651,7 +654,7 @@ pub(crate) fn allocate_shared(
         len: AtomicUsize::new(len as usize),
         max: max.map(|m| m as usize),
         committed: Mutex::new(committed),
-        serial: NEXT_SERIAL.fetch_add(1, Relaxed),
+        serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
     });
     // Needs N1 (as `allocate`); TA-ORCH-4: this isolate counts the block once.
     add_external(rt, committed)?;
@@ -965,10 +968,10 @@ pub(crate) fn is_bigint_elem(t: u8) -> bool {
 
 #[cfg(test)]
 thread_local! {
-    /// Tests (TA-ORCH-12, TA-ORCH-13): the count of Relaxed atomic accesses to shared bytes on
-    /// the plain (Unordered) paths of this thread ([`read_raw`], [`write_raw`]), by width: index
-    /// 0, 1, 2 and 3 for 1, 2, 4 and 8 bytes. [`IsTypedArray::Yes`] counts one access of the
-    /// element width; [`IsTypedArray::No`] counts one 1-byte access per byte.
+    /// Tests (TA-ORCH-12, TA-ORCH-13): the count of racy (`shared_mem`) accesses to shared
+    /// bytes on the plain (Unordered) paths of this thread ([`read_raw`], [`write_raw`]), by
+    /// width: index 0, 1, 2 and 3 for 1, 2, 4 and 8 bytes. [`IsTypedArray::Yes`] counts one
+    /// access of the element width; [`IsTypedArray::No`] counts one 1-byte access per byte.
     pub(crate) static PLAIN_SHARED_WIDTHS: Cell<[u32; 4]> = const { Cell::new([0; 4]) };
 }
 
@@ -1193,21 +1196,17 @@ pub(crate) fn copy_bytes(
         return Ok(());
     }
     if is_shared(to) || is_shared(from) {
-        // Relaxed bytes (TA-D11), in the direction that keeps an overlap right.
-        let forward = dst.addr() <= src.addr() || dst.addr() >= src.addr() + n;
-        let step = |i: usize| {
-            // SAFETY: both ranges were checked; each byte is read and written atomically when
-            // its store is shared.
-            unsafe {
-                let x = read_raw(src.add(i), 1, true, IsTypedArray::No);
-                write_raw(dst.add(i), 1, x, true, IsTypedArray::No);
-            }
-        };
-        if forward {
-            (0..n).for_each(step);
-        } else {
-            (0..n).rev().for_each(step);
+        // The width probe counts a copy in its tear unit, one byte read and one byte write per
+        // byte (`copy_racy` may move 8-byte words: each byte of one is still one Unordered
+        // access).
+        #[cfg(test)]
+        for _ in 0..2 * n {
+            note_plain_shared(1);
         }
+        // SAFETY: both ranges were checked against live stores; `copy_racy` reads and writes
+        // the bytes outside the Rust model (racy bytes and words, TA-D11) in the direction that
+        // keeps an overlap right.
+        unsafe { shared_mem::copy_racy(dst, src, n) };
     } else {
         // SAFETY: both ranges were checked against live, non-shared stores.
         unsafe { core::ptr::copy(src, dst, n) };
@@ -1229,68 +1228,12 @@ fn atomic_range(rt: &Runtime, b: u64, index: u64, t: u8) -> BufResult<*mut u8> {
     Err(Fail::Type("Atomics needs an integer element type"))
 }
 
-/// A seq-cst operation of the Atomics on one element ([`atomic_op`]).
-#[derive(Clone, Copy, Debug)]
-enum AtomicOp {
-    /// Store the value.
-    Store,
-    /// A read-modify-write op of `Cx::atomic_read_modify_write` (0 add, 1 and, 2 exchange,
-    /// 3 or, 4 sub, 5 xor).
-    Rmw(u8),
-    /// Compare with these bits; store the value only when equal.
-    Cas(u64),
-}
-
-/// The seq-cst `op` with the value bits `x` on the aligned element at `p` of `size` bytes; the
-/// result is the old bits (0 for a store).
-///
-/// # Safety
-/// `p` is aligned to `size` and inside a live store.
-unsafe fn atomic_op(p: *mut u8, size: usize, op: AtomicOp, x: u64) -> u64 {
-    let s = Ordering::SeqCst;
-    macro_rules! go {
-        ($a:ty, $t:ty) => {{
-            // SAFETY: aligned and inside a live store (caller).
-            let a = unsafe { <$a>::from_ptr(p.cast()) };
-            let x = x as $t;
-            u64::from(match op {
-                AtomicOp::Store => {
-                    a.store(x, s);
-                    0
-                }
-                AtomicOp::Rmw(0) => a.fetch_add(x, s),
-                AtomicOp::Rmw(1) => a.fetch_and(x, s),
-                AtomicOp::Rmw(2) => a.swap(x, s),
-                AtomicOp::Rmw(3) => a.fetch_or(x, s),
-                AtomicOp::Rmw(4) => a.fetch_sub(x, s),
-                AtomicOp::Rmw(_) => a.fetch_xor(x, s),
-                AtomicOp::Cas(e) => match a.compare_exchange(e as $t, x, s, s) {
-                    Ok(v) | Err(v) => v,
-                },
-            })
-        }};
-    }
-    match size {
-        1 => go!(AtomicU8, u8),
-        2 => go!(AtomicU16, u16),
-        4 => go!(AtomicU32, u32),
-        _ => go!(AtomicU64, u64),
-    }
-}
-
 /// GetValueFromBuffer with order seq-cst (`Atomics.load`). GC point (a BigInt).
 pub(crate) fn atomic_load(rt: &Runtime, b: u64, index: u64, t: u8) -> BufResult<u64> {
     let p = atomic_range(rt, b, index, t)?;
-    let s = Ordering::SeqCst;
-    // SAFETY: aligned to the element size and inside the live store (`atomic_range`).
-    let x = unsafe {
-        match elem_size(t) {
-            1 => u64::from(AtomicU8::from_ptr(p).load(s)),
-            2 => u64::from(AtomicU16::from_ptr(p.cast()).load(s)),
-            4 => u64::from(AtomicU32::from_ptr(p.cast()).load(s)),
-            _ => AtomicU64::from_ptr(p.cast()).load(s),
-        }
-    };
+    // SAFETY: aligned to the element size and inside the live store (`atomic_range`);
+    // `shared_mem` accesses it outside the Rust model, shared or not (V13-D8).
+    let x = unsafe { shared_mem::load_seqcst(p, elem_size(t)) };
     Ok(raw_to_value(rt, t, x))
 }
 
@@ -1301,8 +1244,8 @@ const WRONG_TYPE: Fail = Fail::Type("The value has the wrong type for the elemen
 pub(crate) fn atomic_store(rt: &Runtime, b: u64, index: u64, t: u8, v: u64) -> BufResult<()> {
     let x = value_to_raw(t, v).ok_or(WRONG_TYPE)?;
     let p = atomic_range(rt, b, index, t)?;
-    // SAFETY: aligned and checked.
-    unsafe { atomic_op(p, elem_size(t), AtomicOp::Store, x) };
+    // SAFETY: aligned and checked (`atomic_range`).
+    unsafe { shared_mem::store_seqcst(p, elem_size(t), x) };
     Ok(())
 }
 
@@ -1317,12 +1260,18 @@ pub(crate) fn atomic_rmw(
     v: u64,
 ) -> BufResult<u64> {
     let x = value_to_raw(t, v).ok_or(WRONG_TYPE)?;
-    if op > 5 {
-        return Err(Fail::Type("Unknown Atomics operation"));
-    }
+    let op = match op {
+        0 => shared_mem::Rmw::Add,
+        1 => shared_mem::Rmw::And,
+        2 => shared_mem::Rmw::Exchange,
+        3 => shared_mem::Rmw::Or,
+        4 => shared_mem::Rmw::Sub,
+        5 => shared_mem::Rmw::Xor,
+        _ => return Err(Fail::Type("Unknown Atomics operation")),
+    };
     let p = atomic_range(rt, b, index, t)?;
-    // SAFETY: aligned and checked.
-    let old = unsafe { atomic_op(p, elem_size(t), AtomicOp::Rmw(op), x) };
+    // SAFETY: aligned and checked (`atomic_range`).
+    let old = unsafe { shared_mem::rmw(p, elem_size(t), op, x) };
     Ok(raw_to_value(rt, t, old))
 }
 
@@ -1339,9 +1288,106 @@ pub(crate) fn atomic_compare_exchange(
     let e = value_to_raw(t, expected).ok_or(WRONG_TYPE)?;
     let r = value_to_raw(t, replacement).ok_or(WRONG_TYPE)?;
     let p = atomic_range(rt, b, index, t)?;
-    // SAFETY: aligned and checked (`atomic_op` casts both to the element width).
-    let old = unsafe { atomic_op(p, elem_size(t), AtomicOp::Cas(e), r) };
+    // SAFETY: aligned and checked (`shared_mem` compares the element width only).
+    let old = unsafe { shared_mem::compare_exchange(p, elem_size(t), e, r) };
     Ok(raw_to_value(rt, t, old))
+}
+
+// ---- the waiter list (TypedArray TA-4: `Atomics.wait`, `waitAsync`, `notify`; design §5.6) ----
+
+/// The waiter-list site of the Int32 or BigInt64 element (row 5 or 7) at byte `index` of the
+/// SharedArrayBuffer `b`: an `Arc` of its block (it keeps the bytes mapped during a wait), the
+/// key (the block serial and the byte index, never an address: H12) and the element address.
+/// A TypeError if `b` is not a SharedArrayBuffer or `t` is not a waitable type; a RangeError
+/// for an index that is not aligned or is past the byte length. Not a GC point.
+fn waiter_site(
+    rt: &Runtime,
+    b: u64,
+    index: u64,
+    t: u8,
+) -> BufResult<(Arc<SharedBlock>, waiters::Key, *mut u8)> {
+    if buffer_class(rt, b) != Some(ObjectClass::SharedArrayBuffer) {
+        return Err(Fail::Type("Atomics.wait needs a SharedArrayBuffer"));
+    }
+    if t != 5 && t != 7 {
+        return Err(Fail::Type(
+            "Atomics.wait needs an Int32Array or a BigInt64Array",
+        ));
+    }
+    let p = atomic_range(rt, b, index, t)?;
+    let block = shared_block(rt, b);
+    let key = waiters::Key {
+        block: block.serial(),
+        byte_index: index,
+    };
+    Ok((block, key, p))
+}
+
+/// The wait of `Atomics.wait` (DoWait mode sync, `sec-dowait`) on the element of row `t` at
+/// byte `index` of the SharedArrayBuffer `b`, after the caller's checks (AgentCanSuspend):
+/// under the waiter-list lock, a SeqCst load of the element (through `shared_mem`) not equal to
+/// the converted `v` is "not-equal"; else the thread waits for a notify, `timeout` (`None`: no
+/// timeout) or `stop()` (the caller's terminate word). Errors as [`waiter_site`], or a
+/// TypeError if `v` has the wrong type. Not a GC point.
+pub(crate) fn wait_sync(
+    rt: &Runtime,
+    b: u64,
+    index: u64,
+    t: u8,
+    v: u64,
+    timeout: Option<std::time::Duration>,
+    stop: impl Fn() -> bool,
+) -> BufResult<waiters::SyncWait> {
+    let x = value_to_raw(t, v).ok_or(WRONG_TYPE)?;
+    let (block, key, p) = waiter_site(rt, b, index, t)?;
+    let size = elem_size(t);
+    // SAFETY: aligned and checked; `block` keeps the bytes mapped (a SharedArrayBuffer never
+    // shrinks or detaches).
+    let equal = || unsafe { shared_mem::load_seqcst(p, size) } == x;
+    let r = waiters::wait(key, equal, timeout, stop);
+    drop(block);
+    Ok(r)
+}
+
+/// The enqueue of `Atomics.waitAsync` (DoWait mode async) for the agent `agent`, with the
+/// checks and compare of [`wait_sync`]: "not-equal", "timed-out" (a zero `timeout`) or the
+/// id of the new async waiter. Not a GC point.
+pub(crate) fn wait_async(
+    rt: &Runtime,
+    agent: &waiters::Agent,
+    b: u64,
+    index: u64,
+    t: u8,
+    v: u64,
+    timeout: Option<std::time::Duration>,
+) -> BufResult<waiters::AsyncWait> {
+    let x = value_to_raw(t, v).ok_or(WRONG_TYPE)?;
+    let (block, key, p) = waiter_site(rt, b, index, t)?;
+    let size = elem_size(t);
+    // SAFETY: as `wait_sync`.
+    let equal = || unsafe { shared_mem::load_seqcst(p, size) } == x;
+    let r = agent.wait_async(key, equal, timeout);
+    drop(block);
+    Ok(r)
+}
+
+/// `Atomics.notify` on byte `index` of the buffer `b` after the caller's checks: wakes at most
+/// `count` waiters, first come first woken; 0 for a buffer that is not shared (step 7). A
+/// TypeError if `b` is not a buffer. No byte is accessed. Not a GC point.
+pub(crate) fn notify(rt: &Runtime, b: u64, index: u64, count: u64) -> BufResult<u64> {
+    match buffer_class(rt, b) {
+        None => Err(Fail::Type(
+            "Receiver is not an ArrayBuffer or a SharedArrayBuffer",
+        )),
+        Some(ObjectClass::SharedArrayBuffer) => {
+            let key = waiters::Key {
+                block: shared_block(rt, b).serial(),
+                byte_index: index,
+            };
+            Ok(waiters::notify(key, count))
+        }
+        Some(_) => Ok(0),
+    }
 }
 
 // ---- DataView ---------------------------------------------------------------------------------
@@ -1519,14 +1565,14 @@ pub(crate) fn data_view_set(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IsTypedArray {
     /// true: a TypedArray element (TypedArrayGetElement, TypedArraySetElement, and
-    /// GetValueFromBuffer and SetValueInBuffer of a TypedArray). One Relaxed atomic of the
-    /// element width, so the element does not tear: IsNoTearConfiguration (§25.1.3.12) is true
+    /// GetValueFromBuffer and SetValueInBuffer of a TypedArray). One racy access of the
+    /// element width (`shared_mem`), so the element does not tear: IsNoTearConfiguration (§25.1.3.12) is true
     /// for the unclamped integer types, and the other types allow it. A TypedArray element is
     /// aligned to its size (a byte offset that is a multiple of the size, on a page-aligned
     /// shared block); a debug build checks it.
     Yes,
     /// false: a DataView access (GetViewValue, SetViewValue: any byte index) or a byte copy
-    /// (CopyDataBlockBytes). One Relaxed `AtomicU8` access per byte: the access may tear.
+    /// (CopyDataBlockBytes). One racy 1-byte access per byte: the access may tear.
     No,
 }
 
@@ -1545,14 +1591,15 @@ impl IsTypedArray {
     }
 }
 
-/// [`read_raw`] of shared bytes. `Yes`: one Relaxed load of the element width. `No`: one
-/// Relaxed `AtomicU8` load per byte.
+/// [`read_raw`] of shared bytes. `Yes`: one racy load of the element width. `No`: one racy
+/// 1-byte load per byte.
 ///
-/// Platform exception (design §5.6, route TA-SHARED-MIXED-WIDTH): two threads can still access
-/// the same shared bytes with two widths (two TypedArrays of two element types, a DataView and
-/// a TypedArray, or `Atomics` and a plain access). The aligned loads and stores are single-copy
-/// atomic per access on aarch64 and x86-64, the only ep9 targets; the Rust abstract model calls
-/// a mixed-size atomic access undefined. V8 and SpiderMonkey take the same platform rule.
+/// The final form of route TA-SHARED-MIXED-WIDTH (TypedArray TA-4, V13-D8; design §5.6): two
+/// threads may access the same shared bytes with two widths (two TypedArrays of two element
+/// types, a DataView and a TypedArray, or `Atomics` and a plain access). Each access is one
+/// `ep9_platform::shared_mem` op: inline asm outside the Rust model (a plain machine load or
+/// store of the width, single-copy atomic when aligned on aarch64 and x86-64), so a mixed-size
+/// access is no undefined behavior in Rust. Under Miri the ops are Rust atomics.
 ///
 /// # Safety
 /// As [`read_raw`].
@@ -1565,24 +1612,16 @@ unsafe fn read_shared(p: *mut u8, size: usize, ita: IsTypedArray) -> u64 {
         );
         #[cfg(test)]
         note_plain_shared(size);
-        // SAFETY: aligned to `size` (caller), inside a live store; every access to shared bytes
-        // is atomic (TA-D11).
-        return unsafe {
-            match size {
-                1 => u64::from(AtomicU8::from_ptr(p).load(Relaxed)),
-                2 => u64::from(u16::from_le(AtomicU16::from_ptr(p.cast()).load(Relaxed))),
-                4 => u64::from(u32::from_le(AtomicU32::from_ptr(p.cast()).load(Relaxed))),
-                _ => u64::from_le(AtomicU64::from_ptr(p.cast()).load(Relaxed)),
-            }
-        };
+        // SAFETY: aligned to `size` (caller), inside a live store; `shared_mem` (TA-D11).
+        return unsafe { shared_mem::load_racy(p, size) };
     }
     let mut x = 0u64;
     for i in 0..size {
         #[cfg(test)]
         note_plain_shared(1);
         // SAFETY: inside a live store (caller), one byte at a time (TA-D11).
-        let byte = unsafe { AtomicU8::from_ptr(p.add(i)).load(Relaxed) };
-        x |= u64::from(byte) << (8 * i);
+        let byte = unsafe { shared_mem::load_racy(p.add(i), 1) };
+        x |= byte << (8 * i);
     }
     x
 }
@@ -1601,21 +1640,14 @@ unsafe fn write_shared(p: *mut u8, size: usize, x: u64, ita: IsTypedArray) {
         #[cfg(test)]
         note_plain_shared(size);
         // SAFETY: as `read_shared`.
-        unsafe {
-            match size {
-                1 => AtomicU8::from_ptr(p).store(x as u8, Relaxed),
-                2 => AtomicU16::from_ptr(p.cast()).store((x as u16).to_le(), Relaxed),
-                4 => AtomicU32::from_ptr(p.cast()).store((x as u32).to_le(), Relaxed),
-                _ => AtomicU64::from_ptr(p.cast()).store(x.to_le(), Relaxed),
-            }
-        }
+        unsafe { shared_mem::store_racy(p, size, x) };
         return;
     }
     for i in 0..size {
         #[cfg(test)]
         note_plain_shared(1);
         // SAFETY: as `read_shared`, one byte at a time.
-        unsafe { AtomicU8::from_ptr(p.add(i)).store((x >> (8 * i)) as u8, Relaxed) };
+        unsafe { shared_mem::store_racy(p.add(i), 1, x >> (8 * i)) };
     }
 }
 

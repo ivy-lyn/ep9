@@ -3,7 +3,7 @@
 //! `docs/plan/notes/typedarray-design.md` §5.6 and §8.2).
 //!
 //! ```text
-//! worker run thread: the main agent ([[CanBlock]] true)        agent thread i ([[CanBlock]] true)
+//! worker run thread: the main agent ([[CanBlock]] by its flag) agent thread i ([[CanBlock]] true)
 //!   run: a Session (deadline = now + the soft timeout)
 //!   $262.agent.start(src) ──────── spawn ────────────────────►  a new Isolate (same config)
 //!     returns when the agent runs (or ended) ◄──── running ───    agent prelude, then src
@@ -24,7 +24,7 @@
 //! | Deadline and kill path | Every wait of a hook (start, broadcast, receiveBroadcast, sleep) ends at the run's deadline or at the close of the session, and then throws (a host error, not a test result: [`run`] makes the run an infrastructure error "timeout"). The end of a run terminates every agent isolate (`TerminateHandle`) and waits [`STOP_GRACE`] for it. So no hang can pass a test |
 //! | GC (plan rule 8) | Rust memory holds no JS value: the session holds strings, numbers, SharedArrayBuffer blocks (`ep9_vm::SharedBlockRef`: bytes, no JS value), thread handles and terminate handles. A hook keeps a value only in its arguments or in locals during one call |
 //! | Engine checks | The hooks test no class: the brand-checked engine method gives the TypeError. `$262.detachArrayBuffer` of a value that is not an engine ArrayBuffer (`Cx::detach_array_buffer`); `$262.agent.broadcast` of a value that is not an engine SharedArrayBuffer (`Cx::shared_array_buffer_block`, [`share_block`]). An agent makes its SharedArrayBuffer on the block with the prototype of its realm's intrinsic `%SharedArrayBuffer.prototype%` ([`adopt_block`]; H22-Q8) |
-//! | `[[CanBlock]]` | The main agent can block ([`MAIN_CAN_BLOCK`], as a shell main thread in d8, the SpiderMonkey shell and node: test262 `atomicsHelper.js` `$262.agent.safeBroadcast` calls `Atomics.wait` on it); agents can too. A `CanBlockIsFalse` test fails with the cause [`CAN_BLOCK_CAUSE`]; a `CanBlockIsTrue` test runs. The engine has no `[[CanBlock]]` input yet: `Atomics.wait` (TypedArray TA-4) reads it, and the runner sets it to true for the main isolate and for each agent isolate |
+//! | `[[CanBlock]]` | The main agent can block by default ([`MAIN_CAN_BLOCK`], as a shell main thread in d8, the SpiderMonkey shell and node: test262 `atomicsHelper.js` `$262.agent.safeBroadcast` calls `Atomics.wait` on it); agents can too. A `CanBlockIsFalse` test runs in a main agent that cannot block, a `CanBlockIsTrue` test in one that can: the runner sets it with `Isolate::set_can_block` ([`main_can_block`]; TypedArray TA-4), and `Atomics.wait` reads it |
 //!
 //! Test hooks (`EP9_TEST262_FAULT`, see `exec::fault_for`):
 //! - `agent-stuck:<substr>` makes each agent of a matching test sleep in Rust for
@@ -56,10 +56,6 @@ use crate::parse::Mode;
 /// on it). `Atomics.wait` wakes on the isolate interrupt (design §5.6), so the watchdog stops
 /// it.
 pub(crate) const MAIN_CAN_BLOCK: bool = true;
-
-/// The failure cause of a test whose `[[CanBlock]]` flag the main agent does not have (a
-/// `CanBlockIsFalse` test).
-pub(crate) const CAN_BLOCK_CAUSE: &str = "CanBlockIsFalse: the main agent can block";
 
 /// The time an agent gets to end after the run ends and terminates it.
 pub(crate) const STOP_GRACE: Duration = Duration::from_secs(5);
@@ -285,6 +281,9 @@ impl Shared {
 struct MainState {
     shared: Arc<Shared>,
     config: AgentConfig,
+    /// The `[[CanBlock]]` of the main agent in this run (its `CanBlockIsTrue` or
+    /// `CanBlockIsFalse` flag, else [`MAIN_CAN_BLOCK`]).
+    can_block: bool,
     threads: Vec<JoinHandle<()>>,
     /// The agent test hooks set for this test.
     hooks: Hooks,
@@ -322,6 +321,15 @@ thread_local! {
     static ROLE: RefCell<Role> = const { RefCell::new(Role::None) };
 }
 
+/// The `[[CanBlock]]` of the main agent of the run on this thread ([`MainState::can_block`]);
+/// [`MAIN_CAN_BLOCK`] with no run (the unit tests of `exec`).
+pub(crate) fn main_can_block() -> bool {
+    ROLE.with(|r| match &*r.borrow() {
+        Role::Main(m) => m.can_block,
+        _ => MAIN_CAN_BLOCK,
+    })
+}
+
 fn is_agent_thread() -> bool {
     ROLE.with(|r| matches!(*r.borrow(), Role::Agent { .. }))
 }
@@ -343,7 +351,7 @@ struct Session {
 }
 
 impl Session {
-    fn begin(config: AgentConfig, timeout: Duration, hooks: Hooks) -> Session {
+    fn begin(config: AgentConfig, timeout: Duration, hooks: Hooks, can_block: bool) -> Session {
         let shared = Arc::new(Shared {
             state: Mutex::default(),
             changed: Condvar::new(),
@@ -353,6 +361,7 @@ impl Session {
             *r.borrow_mut() = Role::Main(MainState {
                 shared,
                 config,
+                can_block,
                 threads: Vec::new(),
                 hooks,
             });
@@ -414,26 +423,19 @@ fn shut_down() -> End {
     end
 }
 
-/// Runs one mode of a test (`RunCtx::run`) with the `[[CanBlock]]` rule and the agents of
-/// the run: an agent that does not stop, a hook that waits past the deadline or an agent
-/// panic is an infrastructure error; an uncaught exception of an agent fails a passing run.
+/// Runs one mode of a test (`RunCtx::run`) with the `[[CanBlock]]` of its flags and the
+/// agents of the run: an agent that does not stop, a hook that waits past the deadline or an
+/// agent panic is an infrastructure error; an uncaught exception of an agent fails a passing
+/// run.
 pub(crate) fn run(cx: &mut RunCtx<'_>, rel: &str, src: &str, meta: &Meta, mode: Mode) -> Run {
-    if let Some(want) = meta.can_block()
-        && want != MAIN_CAN_BLOCK
-    {
-        return exec::fail(
-            CAN_BLOCK_CAUSE,
-            "the test needs [[CanBlock]] false; the runner runs it in the main agent, whose \
-             [[CanBlock]] is true (a shell main thread can block)",
-        );
-    }
+    let can_block = meta.can_block().unwrap_or(MAIN_CAN_BLOCK);
     let opts = cx.opts;
     let config = AgentConfig {
         gc_stress: opts.gc_stress,
         feedback_threshold: opts.feedback_threshold,
         exec: opts.exec,
     };
-    let session = Session::begin(config, opts.timeout, Hooks::for_test(rel));
+    let session = Session::begin(config, opts.timeout, Hooks::for_test(rel), can_block);
     let run = cx.run(rel, src, meta, mode);
     merge(run, &session.end())
 }
@@ -1101,7 +1103,7 @@ var out = [first, stored, second, d.getInt32(0, true), errs.join()].join(' | ');
                 exec: ExecOptions::default(),
             };
             // The session deadline ends every wait (no hang); it is not a time bound.
-            let session = Session::begin(config, Duration::from_secs(120), Hooks::default());
+            let session = Session::begin(config, Duration::from_secs(120), Hooks::default(), true);
             let r = iso.with_cx(|cx| {
                 cx.evaluate_script(prelude(), "harness/$262 prelude")?;
                 let src = cx.new_string(AGENT)?;
@@ -1161,7 +1163,7 @@ try {
             feedback_threshold: 0,
             exec: ExecOptions::default(),
         };
-        let session = Session::begin(config, Duration::from_millis(300), Hooks::default());
+        let session = Session::begin(config, Duration::from_millis(300), Hooks::default(), true);
         let r = iso.with_cx(|cx| {
             cx.evaluate_script(prelude(), "harness/$262 prelude")?;
             let src = cx.new_string(agent)?;
