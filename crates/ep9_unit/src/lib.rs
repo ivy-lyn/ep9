@@ -27,7 +27,7 @@ mod host;
 mod layout;
 pub mod size;
 
-pub use check::{Outcome, Verdict, check, verdict};
+pub use check::{Outcome, Verdict, check, check_linked, unit_section, verdict};
 pub use codes::{Contract, SectionKind, TEXT_ALIGN_LOG2, Versions, cpu, target_abi, target_arch};
 pub use header::{
     BadUnit, CONTAINER_VERSION, EXTENSION_ALIGN_LOG2, EXTENSION_KIND_MIN, ExtensionEntry,
@@ -41,7 +41,8 @@ pub use layout::{
     CODE_TABLES_V4, ENTRY_FIELDS, Field, HEADER_FIELDS, OnChange, code_table_lines, layout_text,
 };
 
-/// The unit writer (A2). Empty until then: tests build units with their own encoder
+/// The unit writer (A2, feature `aot`): so far the `.o` form of a unit container
+/// ([`obj::write_object`], H35-Q3). Tests build the containers with their own encoder
 /// (`tests/common/mod.rs`).
 #[cfg(feature = "aot")]
-mod aot {}
+pub mod obj;
