@@ -172,7 +172,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             return Ok(r);
         }
         if !runs_bytecode(fi) {
-            return construct_native_cold(cx, fp, s, callee, new_target, argc, &args); // D25
+            return construct_native_cold(cx, fp, s, callee, new_target, &args); // D25
         }
         // GC point, before `this` exists: the callee and the arguments are in caller
         // registers (a bound callee's target and bound arguments are reachable from it),
@@ -1165,19 +1165,19 @@ fn call_native_cold(
 ///      next instruction; nested) -> call::construct_result (§10.2.2 steps 10-12)
 /// ```
 ///
-/// So a unit constructor counts and records what its bytecode does at this site. The frame
-/// returns to this function, not to a construct stub frame, so the result check runs here,
-/// through the helper of the Rust construct path. (At the end of the file, so the H23 pin
-/// at line 600 and the other cited lines do not move.)
+/// So a unit constructor counts as its bytecode does and records the site on every construct (a
+/// bytecode hit writes nothing; MC-w37-3). The frame returns to this function, not to a construct
+/// stub frame, so the result check runs here, through the helper of the Rust construct path. (At
+/// the end of the file, so the H23 pin at line 600 and the other cited lines do not move.)
 fn construct_native_cold(
     cx: &mut Cx,
     fp: *mut u64,
     s: &CallSite,
     callee: u64,
     new_target: u64,
-    argc: u32,
     args: &[u64],
 ) -> Res<u64> {
+    let argc = args.len() as u32;
     let Some(nfi) = crate::native::native_callee(callee) else {
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     };
