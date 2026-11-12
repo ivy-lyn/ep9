@@ -477,38 +477,10 @@ impl PartType {
 /// The parts of a formatted number, in order.
 pub type Parts = Vec<(PartType, String)>;
 
-/// The CLDR locale ids to try for `data_locale`, in order: the ICU4X locale fallback chain
-/// (it knows the CLDR parent locales: "zh-TW" -> "zh-Hant-TW" -> "zh-Hant"), then the
-/// subtag cuts of `data_locale`, then "und".
-fn locale_chain(data_locale: &str) -> Vec<String> {
-    use icu_locale::LocaleFallbacker;
-    use icu_locale::fallback::LocaleFallbackConfig;
-    let mut v: Vec<String> = Vec::new();
-    let mut it = LocaleFallbacker::new()
-        .for_config(LocaleFallbackConfig::default())
-        .fallback_for(DataLocale::from(&icu_locale(data_locale)));
-    while !it.get().is_unknown() && v.len() < 16 {
-        v.push(it.get().to_string());
-        it.step();
-    }
-    let mut l = data_locale;
-    loop {
-        if !v.iter().any(|x| x == l) {
-            v.push(l.to_string());
-        }
-        match l.rfind('-') {
-            Some(i) => l = &l[..i],
-            None => break,
-        }
-    }
-    v.push("und".to_string());
-    v
-}
-
 /// The T1 values (NaN, infinity) of `data_locale` and `nu`: the first row on the locale
-/// chain ([`locale_chain`]), else the `latn` row of the same chain.
+/// chain ([`cldr::locale_chain`]), else the `latn` row of the same chain.
 fn t1_symbols(data_locale: &str, nu: &str) -> Option<&'static cldr::NumberSymbols> {
-    let chain = locale_chain(data_locale);
+    let chain = cldr::locale_chain(data_locale);
     chain
         .iter()
         .find_map(|l| cldr::number_symbols(l, nu))
