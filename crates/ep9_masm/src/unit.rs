@@ -35,6 +35,7 @@ use crate::stream::{
     Arch, CodeDesc, Form, FormClass, is_adr, is_adrp, is_b_cond, is_b_or_bl, is_bl, is_cb_cc,
     is_cbz, is_ldr_literal, is_tbz, sext, word, x64_load,
 };
+use crate::x64;
 
 /// What `finalize_unit` reads from the unit layout and the isolate ABI. No method gives an
 /// address.
@@ -51,6 +52,11 @@ pub trait UnitEnv {
     fn root_slot(&self, index: u32) -> Option<i64>;
     /// The offset of the shared deopt entry from the isolate register.
     fn deopt_slot(&self) -> i64;
+    /// True when the unit has landing pads (the container compat flag `has_pads`,
+    /// MC-w23-15): `finalize_unit` then also runs [`check_pads`]. The default is false.
+    fn pads(&self) -> bool {
+        false
+    }
 }
 
 /// One RW word that the unit text loads through the unit-data register.
@@ -72,7 +78,8 @@ pub struct Field {
     /// The field offset.
     pub at: u32,
     /// The start of the field's instruction ([`crate::Reloc::insn`]): the x86-64 checks
-    /// decode the operand forward from here, and trust it. On AArch64 `insn = at` (else
+    /// decode the operand forward from here, and [`check_text`] checks that it is an
+    /// instruction start of the whole-text decode. On AArch64 `insn = at` (else
     /// [`Finding::MisalignedField`]).
     pub insn: u32,
     /// The form.
@@ -89,6 +96,7 @@ pub struct UnitCode {
     fields: Vec<Field>,
     rw: Vec<RwUse>,
     exits: Vec<Exit>,
+    pads: bool,
 }
 
 impl UnitCode {
@@ -111,6 +119,10 @@ impl UnitCode {
     /// The deopt exits, in record order.
     pub fn exits(&self) -> &[Exit] {
         &self.exits
+    }
+    /// True when `finalize_unit` checked the landing pads ([`UnitEnv::pads`], [`check_pads`]).
+    pub fn has_pads(&self) -> bool {
+        self.pads
     }
 }
 
@@ -187,6 +199,10 @@ pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, Fin
         .collect();
     let mut findings = check_text(desc.arch, &text, &fields);
     findings.extend(check_register_loads(desc.arch, &text, &fields));
+    let pads = env.pads();
+    if pads {
+        findings.extend(check_pads(desc.arch, &text));
+    }
     if !findings.is_empty() {
         return Err(FinalizeError::TextRelocations(findings));
     }
@@ -196,6 +212,7 @@ pub fn finalize_unit(desc: &CodeDesc, env: &dyn UnitEnv) -> Result<UnitCode, Fin
         fields,
         rw,
         exits,
+        pads,
     })
 }
 
@@ -262,6 +279,51 @@ pub enum Finding {
         /// The field offset.
         at: u32,
     },
+    /// x86-64 bytes that the length decoder does not know, or an instruction that runs past
+    /// the end of the text (see [`check_text`]). The decode of the text stops here.
+    Undecodable {
+        /// The offset of the instruction.
+        at: u32,
+    },
+    /// An x86-64 field whose record names an instruction start ([`Field::insn`]) that is not
+    /// an instruction start of the decode of the whole text.
+    NotInstructionStart {
+        /// The field offset.
+        at: u32,
+    },
+    /// An x86-64 [`Form::X64Rel32`] field that is not the rel32 of the `call`, `jmp` or `jcc`
+    /// that starts at its record's instruction start, nor the disp32 of a RIP-relative
+    /// operand at the end of that instruction.
+    FieldNotOperand {
+        /// The field offset.
+        at: u32,
+    },
+    /// An x86-64 instruction with an absolute memory operand: `moffs` (A0-A3), or a SIB byte
+    /// with no base and mod = 00 (`[disp32]`, `[index * scale + disp32]`).
+    AbsoluteAddress {
+        /// The offset of the instruction.
+        at: u32,
+    },
+    /// An x86-64 pc-relative branch whose target is inside the text but not an instruction
+    /// start of the decode: the CPU would run bytes that the check did not decode.
+    BranchIntoInstruction {
+        /// The offset of the branch's rel field.
+        at: u32,
+        /// The target offset.
+        target: i64,
+    },
+    /// A unit with landing pads whose AArch64 function entry (offset 0), or the target of an
+    /// `adr` (into any register), is not `bti c` or `bti jc` (see [`check_pads`]).
+    NoLandingPad {
+        /// The entry or target offset.
+        at: u32,
+    },
+    /// A unit with landing pads with an AArch64 indirect jump (`br`, `braa`, `brab`,
+    /// `braaz`, `brabz`) through a register other than x16 or x17 (see [`check_pads`]).
+    IndirectJumpRegister {
+        /// The instruction offset.
+        at: u32,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -293,6 +355,27 @@ impl fmt::Display for Finding {
                     "+{at:#x}: AArch64 field not at an aligned instruction word"
                 )
             }
+            Finding::Undecodable { at } => write!(f, "+{at:#x}: x86-64 bytes not decoded"),
+            Finding::NotInstructionStart { at } => {
+                write!(f, "+{at:#x}: field record's instruction start is not one")
+            }
+            Finding::FieldNotOperand { at } => {
+                write!(
+                    f,
+                    "+{at:#x}: rel32 field not the operand of its instruction"
+                )
+            }
+            Finding::AbsoluteAddress { at } => write!(f, "+{at:#x}: absolute memory operand"),
+            Finding::BranchIntoInstruction { at, target } => {
+                write!(
+                    f,
+                    "+{at:#x}: branch target {target:#x} inside an instruction"
+                )
+            }
+            Finding::NoLandingPad { at } => write!(f, "+{at:#x}: entry without bti c"),
+            Finding::IndirectJumpRegister { at } => {
+                write!(f, "+{at:#x}: indirect jump not through x16 or x17")
+            }
         }
     }
 }
@@ -305,16 +388,23 @@ impl fmt::Display for Finding {
 /// | each field is one instruction word: a 4-byte aligned offset with `insn = at` (else [`Finding::MisalignedField`], and no other rule reads it) | yes | - |
 /// | no field is absolute ([`Form::Abs64`]) | yes | yes |
 /// | each pc-relative field reaches a byte of this function's text | yes | yes |
-/// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field. The check trusts `insn`: [`crate::Assembler::x64`] records a chunk start only at a known instruction boundary (else `insn = at`, which fails this rule), but a record made by hand with a false `insn` is not found, and a boundary that a later field write changed is not found (the boundary is set from the bytes as emitted) | - | yes |
+/// | each [`Form::X64Disp32`] field is the disp32 of `mov r, [reg + disp32]`, decoded forward from the field's instruction start ([`Field::insn`]): an optional REX byte, opcode `8B`, ModRM with mod = 10, a SIB byte if rm = 100, then the disp32 exactly at the field. [`crate::Assembler::x64`] records a chunk start only at a known instruction boundary (else `insn = at`, which fails this rule); the decode of the whole text (below) checks that `insn` is an instruction start | - | yes |
+/// | the whole text decodes from offset 0 with the length decoder (route UNIT-X64-DECODE; else [`Finding::Undecodable`] where it stops) | - | yes |
+/// | each field's `insn` is an instruction start of that decode (else [`Finding::NotInstructionStart`]); each [`Form::X64Rel32`] field is the rel32 of the `call`, `jmp` or `jcc` at `insn`, or the disp32 of a RIP-relative operand at the end of that instruction (else [`Finding::FieldNotOperand`]) | - | yes |
+/// | each pc-relative branch (rel8, rel32) and RIP-relative operand of the decode reaches a byte of the text, with or without a field (else [`Finding::OutsideFunction`]); each branch target is an instruction start (else [`Finding::BranchIntoInstruction`]) | - | yes |
+/// | no absolute memory operand (`moffs`; SIB with no base and mod = 00; else [`Finding::AbsoluteAddress`]) | - | yes |
 /// | no `adrp`, no `bl` | yes | - |
 /// | each `b`, `b.cond`, `bc.cond` (FEAT_HBC), `cbz`/`cbnz`, `cb<cc>`/`cbb<cc>`/`cbh<cc>` (FEAT_CMPBR, register and immediate forms), `tbz`/`tbnz`, `adr` and `ldr` (literal) word reaches a byte of this function's text, with or without a field | yes | - |
 ///
 /// The AArch64 rules scan every word, so hand-written code with no relocation record is
-/// checked too (the spike-b `unit/scan.rs` rules). x86-64 has no linear decoder of the whole
-/// text here, as in the spike: its text gets the field rules (one instruction decoded per
-/// disp32 field, from the record's start), and [`UnitEnv`] gives no address to write. A
-/// decode of the whole final text (after all field writes) that needs no record is route
-/// UNIT-X64-DECODE.
+/// checked too (the spike-b `unit/scan.rs` rules). Since M8-P2 the x86-64 rules decode the
+/// whole final text (after all field writes) from offset 0 with a hand-written length
+/// decoder (route UNIT-X64-DECODE; `src/x64.rs`, lengths checked against llvm-mc): text
+/// with no record is checked too, and a record's start is not trusted. The decoder refuses
+/// what it does not know (VEX, EVEX and XOP forms; opcodes invalid in 64-bit mode; a REX
+/// byte not right before the opcode), so such text is a finding. The decode does not know
+/// what an 8-byte immediate (`movabs`) holds: an absolute value there is found only as an
+/// [`Form::Abs64`] field. [`UnitEnv`] gives no address to write.
 pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let len = text.len() as i64;
     let inside = |t: i64| (0..len).contains(&t);
@@ -392,6 +482,95 @@ pub fn check_text(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
             }
         }
     }
+    if arch == Arch::X64 {
+        for finding in x64_scan(text, fields) {
+            if !out.contains(&finding) {
+                out.push(finding);
+            }
+        }
+    }
+    out
+}
+
+/// The decode of the whole x86-64 text from offset 0 (route UNIT-X64-DECODE), for
+/// [`check_text`]: the field findings first ([`Finding::NotInstructionStart`],
+/// [`Finding::FieldNotOperand`]), then the text findings in offset order. A field whose
+/// instruction start is past an [`Finding::Undecodable`] point is not read, and a branch
+/// target past it is not checked for a start.
+fn x64_scan(text: &[u8], fields: &[Field]) -> Vec<Finding> {
+    let len = text.len();
+    let mut starts = vec![false; len];
+    // (field offset, target, is a branch)
+    let mut refs = Vec::new();
+    let mut found = Vec::new();
+    let mut at = 0;
+    let mut end = len;
+    while at < len {
+        let Some(i) = x64::decode(text, at) else {
+            found.push(Finding::Undecodable { at: at as u32 });
+            end = at;
+            break;
+        };
+        starts[at] = true;
+        let next = at + usize::from(i.len);
+        if let Some((off, size)) = i.rel {
+            let f = at + usize::from(off);
+            let v = if size == 1 {
+                i64::from(text[f] as i8)
+            } else {
+                i64::from(word(text, f) as i32)
+            };
+            refs.push((f, next as i64 + v, true));
+        }
+        if let Some(off) = i.rip {
+            let f = at + usize::from(off);
+            refs.push((f, next as i64 + i64::from(word(text, f) as i32), false));
+        }
+        if i.abs {
+            found.push(Finding::AbsoluteAddress { at: at as u32 });
+        }
+        at = next;
+    }
+    for (f, target, branch) in refs {
+        let at = f as u32;
+        if !(0..len as i64).contains(&target) {
+            found.push(Finding::OutsideFunction { at, target });
+        } else if branch && (target as usize) < end && !starts[target as usize] {
+            found.push(Finding::BranchIntoInstruction { at, target });
+        }
+    }
+    found.sort_by_key(|f| match *f {
+        Finding::Undecodable { at }
+        | Finding::AbsoluteAddress { at }
+        | Finding::OutsideFunction { at, .. }
+        | Finding::BranchIntoInstruction { at, .. } => at,
+        _ => u32::MAX,
+    });
+    let mut out = Vec::new();
+    for f in fields {
+        if !matches!(f.form, Form::X64Rel32 | Form::X64Disp32) {
+            continue;
+        }
+        let (insn, at) = (f.insn as usize, f.at as usize);
+        // A field outside the text is FieldOutsideText; one past the decoded part is not read.
+        if at.checked_add(4).is_none_or(|e| e > len) || insn >= end {
+            continue;
+        }
+        if !starts[insn] {
+            out.push(Finding::NotInstructionStart { at: f.at });
+            continue;
+        }
+        if f.form == Form::X64Rel32 {
+            let i = x64::decode(text, insn).expect("decoded by the scan");
+            let off = at.checked_sub(insn).and_then(|o| u8::try_from(o).ok());
+            let ok =
+                off.is_some_and(|o| i.rel == Some((o, 4)) || (i.rip == Some(o) && o + 4 == i.len));
+            if !ok {
+                out.push(Finding::FieldNotOperand { at: f.at });
+            }
+        }
+    }
+    out.extend(found);
     out
 }
 
@@ -416,8 +595,9 @@ const ISOLATE_X64: u8 = 15;
 /// | Runtime, RootIndex, DeoptExit (the isolate rows) | the same word rule with Rn = 28: `ldr Xt, [x28, #imm]` (since M7-P4, route A64-ISOLATE-LOAD); else [`Finding::NotIsolateLoad`] | the same decode, with base r15: `mov r64, [r15 + disp32]`; else [`Finding::NotIsolateLoad`] |
 /// | Local, HeapConst | - | - |
 ///
-/// One instruction is decoded per field, from the start that the record gives: a wrong start
-/// can still mislead it (the full linear decode is routed, UNIT-X64-DECODE).
+/// One instruction is decoded per field, from the start that the record gives; [`check_text`]
+/// checks that this start is an instruction start of the decode of the whole text
+/// ([`Finding::NotInstructionStart`]), and `finalize_unit` runs both checks.
 pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Finding> {
     let mut out = Vec::new();
     for f in fields {
@@ -459,13 +639,73 @@ pub fn check_register_loads(arch: Arch, text: &[u8], fields: &[Field]) -> Vec<Fi
     out
 }
 
-/// [`check_text`] and [`check_register_loads`] of a finished unit: empty for every
+/// [`check_text`], [`check_register_loads`] and, for a unit with landing pads,
+/// [`check_pads`] of a finished unit: empty for every
 /// [`UnitCode`] (`finalize_unit` checks its output), so a test can state the rules on each
-/// unit it emits. It reads the fields that `finalize_unit` took, with the same `insn`: it
-/// has the same trust in the record as [`check_text`]: a false `insn`, or a boundary that a
-/// later field write changed, is not found.
+/// unit it emits. It reads the fields that `finalize_unit` took, with the same `insn`, and
+/// decodes the whole x86-64 text as [`check_text`] does.
 pub fn zero_text_relocations(code: &UnitCode) -> Result<(), Vec<Finding>> {
     let mut v = check_text(code.arch, &code.text, &code.fields);
     v.extend(check_register_loads(code.arch, &code.text, &code.fields));
+    if code.pads {
+        v.extend(check_pads(code.arch, &code.text));
+    }
     if v.is_empty() { Ok(()) } else { Err(v) }
+}
+
+/// AArch64 `bti c`: the landing pad that [`crate::Assembler::pad`] writes at an indirect
+/// entry (MC-w23-15).
+pub const A64_BTI_C: u32 = 0xd503_245f;
+
+/// AArch64 `bti jc`: a landing pad for calls and jumps.
+const A64_BTI_JC: u32 = 0xd503_24df;
+
+/// The landing-pad check of the text of one function of a unit with landing pads (the
+/// container compat flag `has_pads`, MC-w23-15). A loader maps such text with BTI
+/// (`PROT_BTI`): an indirect branch to a word that is not a landing pad of its kind faults.
+///
+/// | Rule | AArch64 | x86-64 |
+/// |---|---|---|
+/// | the function entry (offset 0) is `bti c` or `bti jc`: the target of `blr` (a call) and of `br x16`/`br x17` (a tail call) from other code (else [`Finding::NoLandingPad`]) | yes | - |
+/// | each indirect jump (`br`, `braa`, `brab`, `braaz`, `brabz`) goes through x16 or x17, so its target needs only `bti c` (a jump through another register needs `bti j`; else [`Finding::IndirectJumpRegister`]) | yes | - |
+/// | each `adr` with a target in the text, into any register, makes an indirect entry (a `br x16`/`br x17` or a `blr` through the register or a copy of it): the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
+///
+/// `blr` and `ret` may use any register (the spike-b unit probe calls through x1), so the
+/// check reads the target where it is made, at the `adr`, for every register. `adrp` and a
+/// direct call are [`check_text`] findings, so in unit text only an `adr` gives a text
+/// address. x86-64 has no pad form here yet (CET IBT `endbr64` is not built): the check
+/// gives no finding.
+pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    if arch != Arch::A64 {
+        return out;
+    }
+    if text.len() < 4 || !matches!(word(text, 0), A64_BTI_C | A64_BTI_JC) {
+        out.push(Finding::NoLandingPad { at: 0 });
+    }
+    for at in (0..text.len() / 4 * 4).step_by(4) {
+        let w = word(text, at);
+        // Unconditional branch (register), opc 0000 (BR, BRAAZ, BRABZ) or 1000 (BRAA, BRAB),
+        // op2 = 11111.
+        let br = w & 0xfe1f_0000 == 0xd61f_0000 && matches!((w >> 21) & 0xf, 0 | 8);
+        if br && !matches!((w >> 5) & 31, 16 | 17) {
+            out.push(Finding::IndirectJumpRegister { at: at as u32 });
+        }
+        // `adr Xn, L` then `br x16` or `blr Xn` (or a copy of Xn): L is entered by an indirect
+        // branch (JIT review M8-P2 B2; Codex M8-P2 r2: `adr x0, L; blr x0`).
+        if is_adr(w) {
+            let target = at as i64 + sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21);
+            if (0..text.len() as i64).contains(&target) {
+                let t = target as usize;
+                let pad = t.is_multiple_of(4)
+                    && t + 4 <= text.len()
+                    && matches!(word(text, t), A64_BTI_C | A64_BTI_JC);
+                let finding = Finding::NoLandingPad { at: t as u32 };
+                if !pad && !out.contains(&finding) {
+                    out.push(finding);
+                }
+            }
+        }
+    }
+    out
 }

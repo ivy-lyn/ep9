@@ -30,8 +30,10 @@ crash = a panic or an abort anywhere (also on the front-end worker thread), an I
 - `scripts/record.sh`: writes one `ep9-fuzz/v1` record (below) from a run.sh summary or from a
   Fuzzilli box session.
 - `scripts/self-test.sh`: proves run.sh's output rule on a fixture crash, that (with a stub
-  `cargo`) a libFuzzer `slow-unit-*` file is not counted as a crash, and the record rules for
-  both tools (with a stub FuzzilliCli for `infra/fuzz/run.sh`).
+  `cargo`) a libFuzzer `slow-unit-*` file is not counted as a crash, that a sealed crash file
+  holds no input bytes, and the record rules for both tools (with a stub FuzzilliCli for
+  `infra/fuzz/run.sh`).
+- `crash-recipient.pem`: the public recipient certificate of the sealed crash files (below).
 
 ## Rules
 
@@ -39,13 +41,14 @@ crash = a panic or an abort anywhere (also on the front-end worker thread), an I
   cargo-fuzz print a crash input as text, hex, Base64 and Debug bytes. `scripts/run.sh` sends all
   fuzzer output to `logs/<target>.log` and prints only the crash count, the SHA-256 of each
   crash file (and of each `slow-unit-*` file, which is listed but does not fail the run) and
-  `stat::` numbers. CI uploads no log, no corpus and no crash file;
-  `fuzz.yml` uploads one `ep9-fuzz/v1` record per target (names, numbers and hashes). Crash
-  files (`artifacts/`), corpora (`corpus/`) and logs (`logs/`) are git-ignored.
+  `stat::` numbers. CI uploads no log, no corpus and no plain crash file;
+  `fuzz.yml` uploads one `ep9-fuzz/v1` record per target (names, numbers and hashes) and, when
+  a crash fails the job, the sealed crash files (below). Crash files (`artifacts/`), corpora
+  (`corpus/`) and logs (`logs/`) are git-ignored.
 
 | Place | May go out | Never goes out |
 |---|---|---|
-| GitHub job log, step summary, artifact | counts, SHA-256, `stat::` numbers, the `ep9-fuzz/v1` record | crash files, corpus, fuzzer log |
+| GitHub job log, step summary, artifact | counts, SHA-256, `stat::` numbers, the `ep9-fuzz/v1` record, sealed crash files (`.p7m`, 7 days) | plain crash files, corpus, fuzzer log |
 | Cloudflare fuzz box | everything stays on the box | - |
 | Repo | counted records (hashes only, at M1 exit); a regression test only in the fix commit, once the fix is public | raw crash inputs before the fix; Fuzzilli logs |
 | PR text, commit message, decisions log, review focus text | hashes and triage group ids | program text of a crash |
@@ -70,11 +73,33 @@ bash fuzz/scripts/run.sh frontend_compile 60 fuzz/corpus/frontend_compile fuzz/s
 FUZZ_FORK=4 FUZZ_SUMMARY=s.json bash fuzz/scripts/run.sh eval_context 7200 fuzz/corpus/eval_context fuzz/seeds/eval_context
 ```
 
-A crash found in CI is reproduced off GitHub (on a fuzz box, never the Mac; the input is never
-uploaded, not even encrypted; plan v10 V10-D26): the same commit, the same seed corpus and the
-libFuzzer seed that run.sh prints (`INFO: Seed: <n>`) replay a single-process run; the SHA-256
-tells when the same input is found. The fix gets a regression test in the crate; the input goes
-into the repo only once the fix is public.
+A crash found in CI is reproduced off GitHub (on a fuzz box, never the Mac; plan v10
+V10-D26): the same commit, the same seed corpus and the libFuzzer seed that run.sh prints
+(`INFO: Seed: <n>`) replay a single-process run; the SHA-256 tells when the same input is
+found. Since M8-P2 the input also leaves the job sealed (below), so a one-input replay needs no
+re-run. The fix gets a regression test in the crate; the input goes into the repo only once the
+fix is public.
+
+### Sealed crash files (route FUZZ-CRASH-SEAL; decisions log M6-ORCH-544)
+
+`fuzz.yml` runs the campaign with `FUZZ_SEAL_TO=fuzz/crash-recipient.pem`. After the summary,
+`scripts/run.sh` seals each crash file with `openssl cms -encrypt -binary -aes256 -outform DER`
+to that certificate (RSA-4096, CN=ep9-fuzz-crash-recipient; no name or e-mail) as
+`artifacts/<target>.sealed/<kind>-<sha256>.p7m` (the SHA-256 of the plain file, the record's
+crash id); the envelope gets that name by a rename after openssl ends with 0, and only then is the plain file deleted (a file that does not seal stays plain in `artifacts/<target>/`, run.sh prints `seal failed` with its hash, and the run fails). A failed job uploads only those `.p7m` files (artifact
+`fuzz-sealed-<target>`, kept 7 days). The output, the log rule, the summary and the record do
+not change: hashes only. The private key is not in the repo and not in CI; only the
+orchestrator holds it and opens a file off GitHub:
+
+```sh
+openssl cms -decrypt -inform DER -in crash-<sha256>.p7m -recip fuzz/crash-recipient.pem \
+  -inkey <private key> -out crash-<sha256>
+shasum -a 256 crash-<sha256>    # must be the record's crash id
+```
+
+The self-test seals a stub crash and checks that the `.p7m` file is CMS enveloped data with
+AES-256 and holds no input bytes, that the plain file is gone, that a seal that fails (a recipient file that is not a cert) keeps the plain file out of the sealed dir and fails the run, and that the lines, the summary
+and the record equal those of the same run without the seal.
 
 The triage box runs the `infra/fuzz` image (built from a `git archive` of the crash's commit,
 so `/src` is that tree): it holds the fuzz nightly of `rust-toolchain.toml` here and

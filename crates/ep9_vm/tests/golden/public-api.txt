@@ -700,8 +700,20 @@ ep9_vm::IntrinsicId :: variant Int8ArrayPrototype
 ep9_vm::IntrinsicId :: variant Intl
 ep9_vm::IntrinsicId :: variant IntlCollator
 ep9_vm::IntrinsicId :: variant IntlCollatorPrototype
+ep9_vm::IntrinsicId :: variant IntlDisplayNames
+ep9_vm::IntrinsicId :: variant IntlDisplayNamesPrototype
+ep9_vm::IntrinsicId :: variant IntlListFormat
+ep9_vm::IntrinsicId :: variant IntlListFormatPrototype
 ep9_vm::IntrinsicId :: variant IntlLocale
 ep9_vm::IntrinsicId :: variant IntlLocalePrototype
+ep9_vm::IntrinsicId :: variant IntlNumberFormat
+ep9_vm::IntrinsicId :: variant IntlNumberFormatPrototype
+ep9_vm::IntrinsicId :: variant IntlPluralRules
+ep9_vm::IntrinsicId :: variant IntlPluralRulesPrototype
+ep9_vm::IntrinsicId :: variant IntlSegmentIteratorPrototype
+ep9_vm::IntrinsicId :: variant IntlSegmenter
+ep9_vm::IntrinsicId :: variant IntlSegmenterPrototype
+ep9_vm::IntrinsicId :: variant IntlSegmentsPrototype
 ep9_vm::IntrinsicId :: variant Iterator
 ep9_vm::IntrinsicId :: variant IteratorHelperPrototype
 ep9_vm::IntrinsicId :: variant IteratorPrototype
@@ -987,7 +999,14 @@ ep9_vm::ObjectClass :: variant Date
 ep9_vm::ObjectClass :: variant DisposableStack
 ep9_vm::ObjectClass :: variant FinalizationRegistry
 ep9_vm::ObjectClass :: variant IntlCollator
+ep9_vm::ObjectClass :: variant IntlDisplayNames
+ep9_vm::ObjectClass :: variant IntlListFormat
 ep9_vm::ObjectClass :: variant IntlLocale
+ep9_vm::ObjectClass :: variant IntlNumberFormat
+ep9_vm::ObjectClass :: variant IntlPluralRules
+ep9_vm::ObjectClass :: variant IntlSegmentIterator
+ep9_vm::ObjectClass :: variant IntlSegmenter
+ep9_vm::ObjectClass :: variant IntlSegments
 ep9_vm::ObjectClass :: variant IteratorHelper
 ep9_vm::ObjectClass :: variant Map
 ep9_vm::ObjectClass :: variant MapIterator
@@ -1410,7 +1429,9 @@ ep9_vm::layout::PROPS_INDEXED_ENTRIES :: const PROPS_INDEXED_ENTRIES: u32
 ep9_vm::layout::PROPS_INDEXED_ENTRY_SIZE :: const PROPS_INDEXED_ENTRY_SIZE: u32
 ep9_vm::layout::PROPS_INDEXED_INDEX :: const PROPS_INDEXED_INDEX: u32
 ep9_vm::layout::RT_ADD :: const RT_ADD: usize
+ep9_vm::layout::RT_ALLOC_SITE :: const RT_ALLOC_SITE: usize
 ep9_vm::layout::RT_CALL_ANY :: const RT_CALL_ANY: usize
+ep9_vm::layout::RT_CLONE_WIDEN :: const RT_CLONE_WIDEN: usize
 ep9_vm::layout::RT_COMPARE :: const RT_COMPARE: usize
 ep9_vm::layout::RT_DEOPT :: const RT_DEOPT: usize
 ep9_vm::layout::RT_GET_KEYED :: const RT_GET_KEYED: usize
@@ -1428,7 +1449,9 @@ ep9_vm::layout::RtFn2 :: type RtFn2 = unsafe extern "SysV64" fn(*mut NativeCx, *
 ep9_vm::layout::RtFn3 :: type RtFn3 = unsafe extern "SysV64" fn(*mut NativeCx, *mut u64, u32, u64, u64, u64) -> u64
 ep9_vm::layout::RuntimeTable :: #[repr(c)] struct RuntimeTable {}
 ep9_vm::layout::RuntimeTable :: field add: RtFn2
+ep9_vm::layout::RuntimeTable :: field alloc_site: RtFn2
 ep9_vm::layout::RuntimeTable :: field call_any: RtFn1
+ep9_vm::layout::RuntimeTable :: field clone_widen: RtFn3
 ep9_vm::layout::RuntimeTable :: field compare: RtCompareFn
 ep9_vm::layout::RuntimeTable :: field deopt: RtFn2
 ep9_vm::layout::RuntimeTable :: field get_keyed: RtFn2

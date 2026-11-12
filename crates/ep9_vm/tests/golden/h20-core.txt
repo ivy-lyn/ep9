@@ -739,6 +739,10 @@ abi: impl<'s> Cx<'s> :: pub fn run_module_with_text(&mut self, VerifiedUnit, &st
 abi: impl<'s> Cx<'s> :: pub fn with_module_text_host<R>(&mut self, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, &mut dyn FnMut(&str, &str) -> Result<String, String>, impl FnOnce(&mut Self) -> R) -> R
 abi: impl<'s> Cx<'s> :: pub unsafe fn run_script_installing_unit_code(&mut self, VerifiedUnit, &str, &[u8], &[u8], &[u8], u8, u64, &[(u32, [u8; 16], &[(u8, u8, u32, u32, u64, &[u32])])]) -> (Vec<(&'static str, u32)>, JsResult<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn default_locale(&mut self) -> Option<String>
+embed (not core): RuntimeTable field 12: pub alloc_site: RtFn2
+embed (not core): RuntimeTable field 13: pub clone_widen: RtFn3
+embed (not core): pub const RT_ALLOC_SITE: usize
+embed (not core): pub const RT_CLONE_WIDEN: usize
 embed (not core): pub const BYTES_DATA: u32
 embed (not core): pub const BYTES_LENGTH: u32
 embed (not core): pub const ELEMENTS_KIND_TYPED_FIXED: u8

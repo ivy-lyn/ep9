@@ -18,6 +18,17 @@
 #   FUZZ_FORK       n > 0: -fork=n, crashes counted, the run goes on (campaigns)
 #   FUZZ_LOG_DIR    default fuzz/logs              FUZZ_SUMMARY   write a JSON summary here
 #   FUZZ_TIMEOUT    seconds per input (default 30) FUZZ_MAX_LEN   -max_len (default 4096)
+#   FUZZ_SEAL_TO    a recipient cert: seal each crash file (below)
+#   FUZZ_SEALED_DIR the sealed files' dir (default fuzz/artifacts/<target>.sealed)
+#
+# The seal (route FUZZ-CRASH-SEAL; decisions log M6-ORCH-544): with FUZZ_SEAL_TO, after the
+# summary, each crash file becomes <sealed dir>/<kind>-<sha256>.p7m (`openssl cms -encrypt
+# -binary -aes256 -outform DER` to that cert; only the holder of its private key can open it).
+# The envelope is written to a temp name in the sealed dir (not *.p7m) and renamed when openssl
+# ends with 0; only then is the plain file deleted. A file that does not seal stays plain in
+# its artifact dir (never in the sealed dir), run.sh prints "seal failed" with its hash, and
+# the run fails (exit 1). fuzz.yml seals to fuzz/crash-recipient.pem and uploads only the .p7m
+# files. The output, the log rule and the summary do not change: hashes only.
 #
 # The summary (numbers, names and hashes only) is the input of fuzz/scripts/record.sh --run:
 # "seconds" is the measured wall time of the run, "workers" the -fork workers (1 without fork),
@@ -102,6 +113,16 @@ log="$log_dir/$target.log"
 art="artifacts/$target"
 rm -rf "$art"
 mkdir -p "$art"
+sealed=""
+seal_to="${FUZZ_SEAL_TO:-}"
+if [ -n "$seal_to" ]; then
+  case "$seal_to" in /*) ;; *) seal_to="$caller_dir/$seal_to" ;; esac
+  [ -f "$seal_to" ] || { echo "run.sh: FUZZ_SEAL_TO is not a file" >&2; exit 2; }
+  sealed="${FUZZ_SEALED_DIR:-$fuzz_dir/$art.sealed}"
+  case "$sealed" in /*) ;; *) sealed="$caller_dir/$sealed" ;; esac
+  rm -rf "$sealed"
+  mkdir -p "$sealed"
+fi
 summary=""
 if [ -n "${FUZZ_SUMMARY:-}" ]; then
   summary="$(summary_path "$FUZZ_SUMMARY")"
@@ -192,8 +213,43 @@ if [ -n "$summary" ]; then
   } >"$summary"
 fi
 
+# The seal (header). The plain file is deleted only after its envelope has its .p7m name; a
+# file that does not seal stays plain in $art/ (not uploaded) and fails the run.
+seal_failed=0
+if [ -n "$sealed" ]; then
+  ok=0
+  i=0
+  for f in ${files[@]+"${files[@]}"}; do
+    base="${f##*/}"
+    kind="${base%%-*}"
+    case "$kind" in '' | *[!a-z]*) kind=crash ;; esac
+    h="${hashes[$i]}"
+    out_file="$sealed/$kind-$h.p7m"
+    tmp_file="$sealed/.$kind-$h.part"
+    i=$((i + 1))
+    if openssl cms -encrypt -binary -aes256 -outform DER -in "$f" -out "$tmp_file" \
+      "$seal_to" >/dev/null 2>&1 && mv -f "$tmp_file" "$out_file"; then
+      ok=$((ok + 1))
+      rm -f "$f"
+    else
+      rm -f "$tmp_file"
+      seal_failed=$((seal_failed + 1))
+      echo "  seal failed: $kind sha256:$h (the plain file stays in fuzz/$art/, not in the sealed dir)"
+    fi
+  done
+  echo "  sealed $ok of $n crash file(s) (CMS, AES-256, to the recipient cert); the plain file of each sealed one deleted"
+fi
+
+if [ "$seal_failed" -gt 0 ]; then
+  echo "fuzz $target: FAILED: seal failed for $seal_failed of $n crash file(s). They stay plain inside this job and are not uploaded."
+  exit 1
+fi
 if [ "$n" -gt 0 ]; then
-  echo "fuzz $target: FAILED: $n crash file(s). The inputs and the log stay inside this job."
+  if [ -n "$sealed" ]; then
+    echo "fuzz $target: FAILED: $n crash file(s). The log stays inside this job; the inputs leave it only sealed."
+  else
+    echo "fuzz $target: FAILED: $n crash file(s). The inputs and the log stay inside this job."
+  fi
   exit 1
 fi
 if [ "$rc" -ne 0 ]; then

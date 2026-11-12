@@ -20,7 +20,7 @@
 //! | An exception is the result 0 (the pending exception is in the runtime) | native frames have no handlers in the spike; T0 unwinds from the caller's call instruction |
 //! | Every table function records the state first (`Runtime::enter`): publishes `fp` and saves the bytecode offset in the frame's offset slot | GC root scan, stack traces, nested calls start above the native frame |
 //! | Table functions take a bytecode offset, not a pc | the same code works for JIT code and for unit text (no relocation of bytecode addresses) |
-//! | Native code records no feedback and never counts its own calls; its caller counts (M8-PLAN-D26): `slow::call` before its native arms (`call_native_cold`, `construct_native_cold`), and a Rust entry through `call::call_function_object` at the pushed frame (`enter_from_rust_with`, as `slow::count_entry`). A `call_any` call (not a construct: that one takes `call::construct_with`, the counted Rust entry) of a native callee (unit to unit; decided with the A3 writer) and the spike-native entries count nothing | the spike JIT records no feedback (plan-v3 §5 P2-SPIKE-B); a unit function gets its vector at the T0 moments of its bytecode (H32-Q5 (2); M-R9, doc 13) |
+//! | Native code records no feedback, except the allocation site and the clone widening through the recording entries `alloc_site` and `clone_widen`, which take the site in (M8-P2 A2-CUT, MC-w20-4 (3)), and never counts its own calls; its caller counts (M8-PLAN-D26): `slow::call` before its native arms (`call_native_cold`, `construct_native_cold`), and a Rust entry through `call::call_function_object` at the pushed frame (`enter_from_rust_with`, as `slow::count_entry`). A `call_any` call (not a construct: that one takes `call::construct_with`, the counted Rust entry) of a native callee (unit to unit; decided with the A3 writer) and the spike-native entries count nothing | the spike JIT records no feedback (plan-v3 §5 P2-SPIKE-B); a unit function gets its vector at the T0 moments of its bytecode (H32-Q5 (2); M-R9, doc 13) |
 //! | The T0 entry checks no native stack limit | the native prologue compares `Cx::native_limit` (H23-Q5); `call_any` checks it before every nested native or T0 entry, so T0↔native recursion ends in a catchable RangeError |
 //!
 //! Rust -> native: `call_from_rust` (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
@@ -103,13 +103,15 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     set_keyed: rt_set_keyed,
     deopt: rt_deopt,
     load_global: rt_load_global,
+    alloc_site: rt_alloc_site,
+    clone_widen: rt_clone_widen,
 };
 #[cfg(feature = "spike-native")]
 impl RuntimeTable {
     /// The entries in declaration order: name, byte offset, function type. The list is an
     /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
     /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
-    pub const ENTRIES: [(&'static str, usize, &'static str); 12] = [
+    pub const ENTRIES: [(&'static str, usize, &'static str); 14] = [
         ("poll", layout::RT_POLL, "RtFn0"),
         ("call_any", layout::RT_CALL_ANY, "RtFn1"),
         ("add", layout::RT_ADD, "RtFn2"),
@@ -122,6 +124,8 @@ impl RuntimeTable {
         ("set_keyed", layout::RT_SET_KEYED, "RtFn3"),
         ("deopt", layout::RT_DEOPT, "RtFn2"),
         ("load_global", layout::RT_LOAD_GLOBAL, "RtFn0"),
+        ("alloc_site", layout::RT_ALLOC_SITE, "RtFn2"),
+        ("clone_widen", layout::RT_CLONE_WIDEN, "RtFn3"),
     ];
 
     /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
@@ -1860,4 +1864,65 @@ pub(crate) fn enter_from_rust_with(
         stack.set_scratch_top(saved_scratch);
     }
     r
+}
+
+// ---- the recording entries (M8-P2 A2-CUT, MC-w20-4 (3); doc 13:349) -----------------------
+
+/// The internal error for a site whose slot is not the one the instruction at `off` names, or
+/// whose instruction is not of the entry's kind. Returns 0.
+fn bad_site(cx: &mut Cx, off: u32, slot: u64) -> u64 {
+    throw_error(
+        cx,
+        ErrorKind::Error,
+        &format!(
+            "ep9 internal error: native code passed site slot {slot} at bytecode offset {off}"
+        ),
+    );
+    0
+}
+
+native_fns! {
+    /// [`RuntimeTable::alloc_site`]: `literal_site::native_alloc_site`. GC point (the
+    /// handler, a kind transition): `result` lives in this frame's argument.
+    ///
+    /// # Safety
+    /// As [`rt_poll`]; `result` is a live value.
+    unsafe fn rt_alloc_site(cx: *mut NativeCx, fp: *mut u64, off: u32, slot: u64, result: u64) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, pc) = unsafe { enter(cx, fp, off) };
+        let Some(pc) = pc else {
+            return bad_offset(cx, off);
+        };
+        let fi = FrameRef(fp).info();
+        if crate::literal_site::native_alloc_site(cx.rt(), fi, pc, slot, result) {
+            result
+        } else {
+            bad_site(cx, off, slot)
+        }
+    }
+
+    /// [`RuntimeTable::clone_widen`]: `literal_site::native_clone_widen`. Not a GC point.
+    ///
+    /// # Safety
+    /// As [`rt_poll`]; `source` and `result` are live values.
+    unsafe fn rt_clone_widen(
+        cx: *mut NativeCx,
+        fp: *mut u64,
+        off: u32,
+        slot: u64,
+        source: u64,
+        result: u64,
+    ) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, pc) = unsafe { enter(cx, fp, off) };
+        let Some(pc) = pc else {
+            return bad_offset(cx, off);
+        };
+        let fi = FrameRef(fp).info();
+        if crate::literal_site::native_clone_widen(cx.rt(), fi, pc, slot, source, result) {
+            result
+        } else {
+            bad_site(cx, off, slot)
+        }
+    }
 }

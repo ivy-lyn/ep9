@@ -4,13 +4,13 @@
 // valgrind, no ep9 build and no bench checkout needed. ci.yml runs it in the bench-set job.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { BENCH_SET, BUILDS, checkBuildLine, compare, groupOf, JITLESS_SET, LIMIT_PCT, parseArgs, parseCgLog, parseCgOut, renderMarkdown, SCHEMA, T0, topFunctions } from "./bench-set.mjs";
+import { BENCH_SET, BUILDS, checkBuildLine, compare, groupOf, JITLESS_SET, LIMIT_PCT, parseArgs, parseCgLog, parseCgOut, rebuildGuard, renderMarkdown, SCHEMA, T0, topFunctions, treeHash } from "./bench-set.mjs";
 import { materialize, OCTANE_7, TS_WORKLOAD, V8V7_7 } from "../../tools/bench/cross/workloads.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -578,14 +578,19 @@ test("CLI --build: the JSON and the table name the build; a binary of the other 
   assert.equal(r.res.build, null);
 });
 
-test("ci.yml bench-set: each side also builds the jitless ep9 in its own target dir; the artifact keeps both legs", () => {
+test("ci.yml bench-set: each side builds jit and jitless in its own target dirs; the head rebuild guard; the artifact keeps both legs", () => {
   const job = CI.slice(CI.indexOf("\n  bench-set:\n"));
   const build = stepScript("build ep9 at base and head");
-  assert.match(build, /\n *cargo build --release --locked -p ep9_cli\n/);
-  assert.match(build, /\n *cargo build --release --locked -p ep9_cli --no-default-features --target-dir "\$JITLESS_TARGET_DIR"\n/);
-  assert.match(build, /cp "\$JITLESS_TARGET_DIR\/release\/ep9" "bench\/ep9-jitless-\$side"/);
+  // BENCH-STALE-HEAD: no target dir is shared by base and head (a CARGO_TARGET_DIR env would be).
+  assert.match(build, /\n *target="\$BENCH_DIR\/target-\$side" jitless="\$BENCH_DIR\/target-jitless-\$side"\n/);
+  assert.match(build, /\n *cargo build --release --locked -p ep9_cli --target-dir "\$target" --message-format=json-render-diagnostics > "\$BENCH_DIR\/build-\$side\.jsonl"\n/);
+  assert.match(build, /\n *cargo build --release --locked -p ep9_cli --no-default-features --target-dir "\$jitless" --message-format=json-render-diagnostics > "\$BENCH_DIR\/build-jitless-\$side\.jsonl"\n/);
+  assert.match(build, /cp "\$target\/release\/ep9" "bench\/ep9-\$side"/);
+  assert.match(build, /cp "\$jitless\/release\/ep9" "bench\/ep9-jitless-\$side"/);
   assert.match(build, /"bench\/ep9-jitless-\$side" --version/);
-  assert.match(job, /\n {10}CARGO_TARGET_DIR: \$\{\{ github\.workspace \}\}\/bench\/target\n {10}JITLESS_TARGET_DIR: \$\{\{ github\.workspace \}\}\/bench\/target-jitless\n/);
+  assert.match(build, /\n *for b in build build-jitless; do\n *node \.github\/scripts\/bench-set\.mjs --rebuild-guard --base-tree bench\/base --head-tree bench\/head --cargo-json "bench\/\$b-head\.jsonl"\n *done$/);
+  assert.doesNotMatch(job.slice(0, job.indexOf("\n      - name: count")), /CARGO_TARGET_DIR/);
+  assert.match(job, /\n {10}BENCH_DIR: \$\{\{ github\.workspace \}\}\/bench\n/);
   assert.match(job, /\n {12}bench-set-\$\{\{ matrix\.name \}\}-jitless\.json\n/);
   assert.match(job, /\n {12}bench\/cg-jitless\/\n/);
 });
@@ -650,4 +655,81 @@ test("ci.yml valgrind step: no recommends, and 3 tries of update + install with 
     for (const c of apt) assert.match(c, /^apt-get -o Acquire::Retries=5 (update -q|install -y -q --no-install-recommends valgrind)$/);
     assert.equal(calls.includes("valgrind --version"), want.ok, what);
   }
+});
+
+// ---- the head rebuild guard (route BENCH-STALE-HEAD) -----------------------------------------
+
+/** A base and a head tree: crates/same (equal), crates/changed (one file differs), crates/new (head
+ * only), and a target dir in crates/same that differs (not part of the hash). */
+function guardTrees(t) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-bench-guard-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const put = (rel, text) => {
+    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    writeFileSync(path.join(dir, rel), text);
+  };
+  for (const side of ["base", "head"]) {
+    put(`${side}/crates/same/Cargo.toml`, "[package]\nname = \"same\"\n");
+    put(`${side}/crates/same/src/lib.rs`, "pub fn f() {}\n");
+    put(`${side}/crates/same/target/x`, side);
+    put(`${side}/crates/changed/Cargo.toml`, "[package]\nname = \"changed\"\n");
+    put(`${side}/crates/changed/src/lib.rs`, side === "base" ? "pub fn g() {}\n" : "pub fn g() { h() }\n");
+  }
+  put("head/crates/new/Cargo.toml", "[package]\nname = \"new\"\n");
+  put("head/crates/new/src/lib.rs", "pub fn n() {}\n");
+  return { base: path.join(dir, "base"), head: path.join(dir, "head"), dir };
+}
+
+/** One cargo compiler-artifact JSON line. */
+function artifact(manifest, fresh, kind = "lib") {
+  return JSON.stringify({ reason: "compiler-artifact", package_id: `path+file://${path.dirname(manifest)}#0.0.0`, manifest_path: manifest, target: { kind: [kind], name: "x" }, fresh });
+}
+
+test("the head rebuild guard: a package that differs from base must be compiled for head (BENCH-STALE-HEAD)", (t) => {
+  const { base, head } = guardTrees(t);
+  const m = (c) => path.join(head, "crates", c, "Cargo.toml");
+  const log = (fresh) =>
+    [
+      "Compiling ...", // not JSON
+      artifact(m("same"), fresh.same),
+      artifact(m("changed"), fresh.changed, "custom-build"),
+      artifact(m("changed"), fresh.changed),
+      artifact(m("new"), fresh.new),
+      artifact("/registry/serde-1.0.0/Cargo.toml", true), // outside the head tree
+      JSON.stringify({ reason: "build-finished", success: true }),
+    ].join("\n");
+  assert.equal(treeHash(path.join(base, "crates/same")), treeHash(path.join(head, "crates/same")), "a target dir is not hashed");
+  assert.notEqual(treeHash(path.join(base, "crates/changed")), treeHash(path.join(head, "crates/changed")));
+  assert.equal(treeHash(path.join(base, "crates/new")), null);
+  // One target dir per side: every package compiles (fresh false).
+  let g = rebuildGuard(base, head, log({ same: false, changed: false, new: false }));
+  assert.deepEqual(g, { packages: ["crates/changed", "crates/new", "crates/same"], differ: ["crates/changed", "crates/new"], stale: [] });
+  // The shared target dir of M8-P0..P2: the head build found base artifacts fresh.
+  g = rebuildGuard(base, head, log({ same: true, changed: true, new: false }));
+  assert.deepEqual(g.stale, ["crates/changed"]);
+  // A package equal to base may be fresh; a fresh build script alone is not stale.
+  g = rebuildGuard(base, head, [artifact(m("same"), true), artifact(m("changed"), true, "custom-build"), artifact(m("changed"), false)].join("\n"));
+  assert.deepEqual(g.stale, []);
+  assert.throws(() => rebuildGuard(base, head, "Compiling ep9_vm\n"), /no compiler-artifact message/);
+});
+
+test("the head rebuild guard CLI: exit 1 names the stale package, 0 on a full head build, 2 on a usage error", (t) => {
+  const { base, head, dir } = guardTrees(t);
+  const m = (c) => path.join(head, "crates", c, "Cargo.toml");
+  const run = (lines) => {
+    const f = path.join(dir, "build.jsonl");
+    writeFileSync(f, `${lines.join("\n")}\n`);
+    return spawnSync(process.execPath, [SCRIPT, "--rebuild-guard", "--base-tree", base, "--head-tree", head, "--cargo-json", f], { encoding: "utf8" });
+  };
+  let r = run([artifact(m("same"), true), artifact(m("changed"), true), artifact(m("new"), false)]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /head rebuild guard FAILED \(3 head-tree packages, 2 differ from base\): not compiled for head: crates\/changed$/m);
+  r = run([artifact(m("same"), false), artifact(m("changed"), false), artifact(m("new"), false)]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /head rebuild guard PASS \(3 head-tree packages, 2 differ from base; each compiled for head\)/);
+  r = run(["no json"]);
+  assert.equal(r.status, 2);
+  r = spawnSync(process.execPath, [SCRIPT, "--rebuild-guard", "--base-tree", base], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--rebuild-guard needs --base-tree, --head-tree and --cargo-json/);
 });

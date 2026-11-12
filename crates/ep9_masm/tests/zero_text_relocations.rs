@@ -201,20 +201,40 @@ fn an_x64_disp32_field_needs_a_reg_plus_disp32_operand() {
     assert_eq!(one(&[0x49, 0x8b, 0x86]), []);
     assert_eq!(one(&[0x48, 0x8b, 0x84, 0x24]), []);
     // mov rax, [rip + disp32]; mov rax, [disp32] (SIB, no base); mov rax, [rsi + disp8].
+    // Since M8-P2 the decode of the whole text (UNIT-X64-DECODE) also finds the RIP target
+    // 7 + 0x50 = 87 past the 8-byte text, the absolute operand, and, after the disp8 load
+    // (48 8b 46 50) and `add [rax], al` (00 00), the bytes 00 90 that need a disp32 past the
+    // end.
     assert_eq!(
         one(&[0x48, 0x8b, 0x05]),
-        [Finding::NotRegisterRelative { at: 3 }]
+        [
+            Finding::NotRegisterRelative { at: 3 },
+            Finding::OutsideFunction { at: 3, target: 87 }
+        ]
     );
     assert_eq!(
         one(&[0x48, 0x8b, 0x04, 0x25]),
-        [Finding::NotRegisterRelative { at: 4 }]
+        [
+            Finding::NotRegisterRelative { at: 4 },
+            Finding::AbsoluteAddress { at: 0 }
+        ]
     );
     assert_eq!(
         one(&[0x48, 0x8b, 0x46]),
-        [Finding::NotRegisterRelative { at: 3 }]
+        [
+            Finding::NotRegisterRelative { at: 3 },
+            Finding::Undecodable { at: 6 }
+        ]
     );
-    // A field at offset 0 has no ModRM byte.
-    assert_eq!(one(&[]), [Finding::NotRegisterRelative { at: 0 }]);
+    // A field at offset 0 has no ModRM byte. The text is `push rax` (50), `add [rax], al`
+    // (00 00), then 00 90 with no room for its disp32.
+    assert_eq!(
+        one(&[]),
+        [
+            Finding::NotRegisterRelative { at: 0 },
+            Finding::Undecodable { at: 3 }
+        ]
+    );
 
     // The Codex probe: 48 8b 05 <disp32> as X64Disp32 / LinkSlot(0) gave unit text
     // `mov rax, [rip + 0x50]`. It is not a load through r14 either (J1).
@@ -231,6 +251,7 @@ fn an_x64_disp32_field_needs_a_reg_plus_disp32_operand() {
         finalize_unit(&a.finish().unwrap(), &common::TestUnit),
         Err(FinalizeError::TextRelocations(vec![
             Finding::NotRegisterRelative { at: 3 },
+            Finding::OutsideFunction { at: 3, target: 87 },
             Finding::NotUnitDataLoad { at: 3 }
         ]))
     );
@@ -345,6 +366,12 @@ fn an_x64_field_is_decoded_from_its_instruction_start() {
     let nrr = |at| Finding::NotRegisterRelative { at };
     let nud = |at| Finding::NotUnitDataLoad { at };
     let nil = |at| Finding::NotIsolateLoad { at };
+    // Since M8-P2 the decode of the whole text (UNIT-X64-DECODE) adds the text findings: an
+    // absolute operand, and a pc-relative target past the end (the field holds the LinkSlot
+    // word 8 * 10 = 0x50 or the Runtime slot 0x800).
+    let abs = |at| Finding::AbsoluteAddress { at };
+    let out = |at, target| Finding::OutsideFunction { at, target };
+    let und = |at| Finding::Undecodable { at };
     let no = |v: Vec<Finding>| Err(FinalizeError::TextRelocations(v));
     let lk = Target::LinkSlot(0);
     let rt = Target::Runtime(0);
@@ -356,26 +383,56 @@ fn an_x64_field_is_decoded_from_its_instruction_start() {
             "sib-a5",
             &[0x48, 0x8b, 0x04, 0xa5],
             lk,
-            no(vec![nrr(4), nud(4)]),
+            no(vec![nrr(4), abs(0), nud(4)]),
         ),
         (
             "sib-a5",
             &[0x48, 0x8b, 0x04, 0xa5],
             rt,
-            no(vec![nrr(4), nil(4)]),
+            no(vec![nrr(4), abs(0), nil(4)]),
         ),
-        // jne rel32: the opcode byte 85 is not a ModRM byte.
-        ("jne", &[0x0f, 0x85], lk, no(vec![nrr(2), nud(2)])),
-        ("jne", &[0x0f, 0x85], rt, no(vec![nrr(2), nil(2)])),
+        // jne rel32: the opcode byte 85 is not a ModRM byte. The target is 6 + the field.
+        (
+            "jne",
+            &[0x0f, 0x85],
+            lk,
+            no(vec![nrr(2), out(2, 86), nud(2)]),
+        ),
+        (
+            "jne",
+            &[0x0f, 0x85],
+            rt,
+            no(vec![nrr(2), out(2, 2054), nil(2)]),
+        ),
         // test byte ptr [rip + d32], al.
-        ("test-rip", &[0x84, 0x05], lk, no(vec![nrr(2), nud(2)])),
-        ("test-rip", &[0x84, 0x05], rt, no(vec![nrr(2), nil(2)])),
+        (
+            "test-rip",
+            &[0x84, 0x05],
+            lk,
+            no(vec![nrr(2), out(2, 86), nud(2)]),
+        ),
+        (
+            "test-rip",
+            &[0x84, 0x05],
+            rt,
+            no(vec![nrr(2), out(2, 2054), nil(2)]),
+        ),
         // mov eax, imm32.
         ("mov-imm32", &[0xb8], lk, no(vec![nrr(1), nud(1)])),
         ("mov-imm32", &[0xb8], rt, no(vec![nrr(1), nil(1)])),
         // jbe rel32 with a REX.B byte (41 0f 86 looks like REX, opcode, ModRM rm = r14).
-        ("jbe-rex", &[0x41, 0x0f, 0x86], lk, no(vec![nrr(3), nud(3)])),
-        ("jbe-rex", &[0x41, 0x0f, 0x86], rt, no(vec![nrr(3), nil(3)])),
+        (
+            "jbe-rex",
+            &[0x41, 0x0f, 0x86],
+            lk,
+            no(vec![nrr(3), out(3, 87), nud(3)]),
+        ),
+        (
+            "jbe-rex",
+            &[0x41, 0x0f, 0x86],
+            rt,
+            no(vec![nrr(3), out(3, 2055), nil(3)]),
+        ),
         // movabs rax, imm64: the field is the top half of the immediate, after 49 8b 86.
         (
             "movabs",
@@ -383,12 +440,13 @@ fn an_x64_field_is_decoded_from_its_instruction_start() {
             lk,
             no(vec![nrr(6), nud(6)]),
         ),
-        // mov rax, qword ptr fs:[r14 + d32]: a segment prefix before the REX byte.
+        // mov rax, qword ptr fs:[r14 + d32]: a segment prefix before the REX byte. Since
+        // Codex M8-P2 r2 the decode also stops at the FS prefix.
         (
             "fs",
             &[0x64, 0x49, 0x8b, 0x86],
             lk,
-            no(vec![nrr(4), nud(4)]),
+            no(vec![nrr(4), und(0), nud(4)]),
         ),
         // A load of the right form through the wrong register for the kind.
         // mov rax, qword ptr [r14 + d32] as a Runtime, RootIndex and DeoptExit.
@@ -480,18 +538,24 @@ fn a_record_whose_instruction_starts_after_its_field_is_refused() {
         finalize_unit(&d, &common::TestUnit),
         Err(FinalizeError::InsnAfterField { at: 3, insn: 4 })
     );
+    // Since M8-P2 the decode of the whole text also says that offsets 3 and 4 (inside the
+    // 7-byte load) are not instruction starts.
     d.relocs[0] = Reloc::new(3, Form::X64Disp32, Target::LinkSlot(0));
     assert_eq!(
         finalize_unit(&d, &common::TestUnit),
         Err(FinalizeError::TextRelocations(vec![
             Finding::NotRegisterRelative { at: 3 },
+            Finding::NotInstructionStart { at: 3 },
             Finding::NotUnitDataLoad { at: 3 }
         ]))
     );
     let after = [field(3, 4, Form::X64Disp32, RelocKind::LinkSlot)];
     assert_eq!(
         check_text(Arch::X64, &d.text, &after),
-        [Finding::NotRegisterRelative { at: 3 }]
+        [
+            Finding::NotRegisterRelative { at: 3 },
+            Finding::NotInstructionStart { at: 3 }
+        ]
     );
     assert_eq!(
         check_register_loads(Arch::X64, &d.text, &after),
@@ -532,43 +596,62 @@ fn an_x64_unit_load_needs_a_known_instruction_boundary() {
     // 66, f3, 48: the prefix is ignored; f0: lock (#UD); 0f: cmovns ecx, ... (no load);
     // 48 b8 00 / 48 b8: movabs rax, imm64 (the field is in the immediate); b8: mov eax, imm32;
     // 80: or byte ptr [rcx - 117], -122.
-    let pres: [&[u8]; 12] = [
-        &[0x64],
-        &[0x65],
-        &[0x67],
-        &[0x66],
-        &[0xf0],
-        &[0xf3],
-        &[0x48],
-        &[0x0f],
-        &[0x48, 0xb8, 0x00],
-        &[0x48, 0xb8],
-        &[0xb8],
-        &[0x80],
+    // Since M8-P2 the decode of the whole final text (UNIT-X64-DECODE) adds its findings
+    // between the field rules and the register rule: the field's start `at` is not an
+    // instruction start (nis), or the decode stops (und) at a REX REX pair (48 49, offset 0)
+    // or at 00 90 (offset 7), which needs a disp32 past the end, or at the FS or GS prefix
+    // (offset 0; refused since Codex M8-P2 r2). After 80 the record's start
+    // is an instruction start (80 49 8b 86 is `or byte ptr [rcx - 117], -122`, then
+    // `push rax`), so only the field rules and the decode stop find it; as a Runtime the
+    // field bytes 00 08 00 00 decode as two `add`s and the decode does not stop.
+    let nis = |at| Finding::NotInstructionStart { at };
+    let und = |at| Finding::Undecodable { at };
+    let pres: [(&[u8], &[Finding], &[Finding]); 12] = [
+        (&[0x64], &[und(0)], &[und(0)]),
+        (&[0x65], &[und(0)], &[und(0)]),
+        (&[0x67], &[nis(4)], &[nis(4)]),
+        (&[0x66], &[nis(4)], &[nis(4)]),
+        (&[0xf0], &[nis(4)], &[nis(4)]),
+        (&[0xf3], &[nis(4)], &[nis(4)]),
+        (&[0x48], &[und(0)], &[und(0)]),
+        (&[0x0f], &[nis(4), und(7)], &[nis(4), und(7)]),
+        (&[0x48, 0xb8, 0x00], &[nis(6)], &[nis(6)]),
+        (&[0x48, 0xb8], &[nis(5)], &[nis(5)]),
+        (&[0xb8], &[nis(4), und(7)], &[nis(4), und(7)]),
+        (&[0x80], &[und(7)], &[]),
     ];
-    for pre in pres {
+    for (pre, ls, rt) in pres {
         let at = pre.len() as u32 + 3;
+        let want = |scan: &[Finding], reg: Finding| {
+            let mut v = vec![nrr(at)];
+            v.extend_from_slice(scan);
+            v.push(reg);
+            (at, no(v))
+        };
         assert_eq!(
             after(pre, &m14, f14, Target::LinkSlot(0)),
-            (at, no(vec![nrr(at), nud(at)])),
+            want(ls, nud(at)),
             "{pre:02x?} LinkSlot"
         );
         // Through r15 as a Runtime: the old code passed it too (mov rax, fs:[r15 + 2048]).
         assert_eq!(
             after(pre, &m15, f15, Target::Runtime(0)),
-            (at, no(vec![nrr(at), nil(at)])),
+            want(rt, nil(at)),
             "{pre:02x?} Runtime"
         );
     }
-    // A `put` of two NOPs is not in the list: the boundary is not known, and the load is
-    // refused (the emitter writes each instruction with no field in its own `put`).
+    // A `put` of two NOPs: before M8-P2 the list knew only one-instruction chunks, so the
+    // boundary was not known and the load was refused ((5, [nrr(5), nud(5)])). The length
+    // decoder reads the chunk as two whole instructions (MC-w32-2), so the load keeps its
+    // start and the unit passes.
     assert_eq!(
         after(&[0x90, 0x90], &m14, f14, Target::LinkSlot(0)),
-        (5, no(vec![nrr(5), nud(5)]))
+        (2, Ok(()))
     );
 
     // An `x64` chunk with a byte after its field (64), then a load: the second load is
-    // mov rax, qword ptr fs:[r14 + 80]. The first record keeps its start (0).
+    // mov rax, qword ptr fs:[r14 + 80]. The first record keeps its start (0). The decode
+    // (since Codex M8-P2 r2) stops at the FS prefix at 7, so the field at 11 is not read.
     let mut a = Assembler::new(Arch::X64);
     let mut fs_tail = m14.to_vec();
     fs_tail.push(0x64);
@@ -581,11 +664,14 @@ fn an_x64_unit_load_needs_a_known_instruction_boundary() {
     assert_eq!((d.relocs[0].insn, d.relocs[1].insn), (0, 11));
     assert_eq!(
         finalize_unit(&d, &common::TestUnit).map(|_| ()),
-        no(vec![nrr(11), nud(11)])
+        no(vec![nrr(11), und(7), nud(11)])
     );
 
     // An `x64` rel32 chunk that is not a call, jmp or jcc (b8 e8 rel32), then a load:
     // mov eax, imm32 takes the bytes of the load (mov eax, 4294965992; dec dword ptr ...).
+    // Since M8-P2 the decode also finds that the rel32 field at 2 is inside the immediate of
+    // the `mov eax` at 0 (FieldNotOperand), and that 9 is not an instruction start (the
+    // starts are 0, 5, 8, 11 and 13).
     let mut a = Assembler::new(Arch::X64);
     let top = a.new_label();
     a.bind(top).unwrap();
@@ -603,11 +689,16 @@ fn an_x64_unit_load_needs_a_known_instruction_boundary() {
     assert_eq!(d.relocs[1].insn, 9);
     assert_eq!(
         finalize_unit(&d, &common::TestUnit).map(|_| ()),
-        no(vec![nrr(9), nud(9)])
+        no(vec![
+            nrr(9),
+            Finding::FieldNotOperand { at: 2 },
+            nis(9),
+            nud(9)
+        ])
     );
 
-    // The forms that stay units: the load after each `put` of the list (nop, ret,
-    // call reg, jmp reg, with and without REX.B) keeps its start.
+    // The forms that stay units: the load after each `put` of one whole instruction (nop,
+    // ret, call reg, jmp reg, with and without REX.B) keeps its start.
     let plain: [&[u8]; 10] = [
         &[0x90],
         &[0xc3],
@@ -911,3 +1002,145 @@ const STR_X0_X28: u32 = 0xf900_0380;
 
 /// `ldr x0, [x27, #0]`.
 const LDR_X0_X27: u32 = 0xf940_0360;
+
+/// Route UNIT-X64-DECODE (M8-P2 A2-CUT): `check_text` decodes the whole final x86-64 text from
+/// offset 0 with a length decoder, so it no longer trusts the record's instruction start and
+/// it checks bytes that have no record. On the old code (one instruction decoded per disp32
+/// field, from the record's start) every input here gave no finding and a unit. The
+/// disassembly of each text (llvm-mc) is in the comment.
+#[test]
+fn the_x64_decode_of_the_whole_text_finds_what_no_record_names() {
+    let text = |b: &[u8]| check_text(Arch::X64, b, &[]);
+    // jmp rel32 to 0x105 and jmp rel8 to -1: out of the function.
+    assert_eq!(
+        text(&[0xe9, 0x00, 0x01, 0x00, 0x00]),
+        [Finding::OutsideFunction {
+            at: 1,
+            target: 0x105
+        }]
+    );
+    assert_eq!(
+        text(&[0xeb, 0xfd]),
+        [Finding::OutsideFunction { at: 1, target: -1 }]
+    );
+    // lea rax, [rip + 0x100]; nop: a RIP-relative address past the end.
+    assert_eq!(
+        text(&[0x48, 0x8d, 0x05, 0x00, 0x01, 0x00, 0x00, 0x90]),
+        [Finding::OutsideFunction {
+            at: 3,
+            target: 0x107
+        }]
+    );
+    // jmp +1 into the middle of `mov eax, 0x90909090`: the CPU would run bytes the check
+    // did not decode (90 90 90 90 ...).
+    assert_eq!(
+        text(&[0xeb, 0x01, 0xb8, 0x90, 0x90, 0x90, 0x90]),
+        [Finding::BranchIntoInstruction { at: 1, target: 3 }]
+    );
+    // movabs rax, [0x1122334455667788] (moffs) and mov rax, [0x1000] (SIB, no base).
+    assert_eq!(
+        text(&[0x48, 0xa1, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]),
+        [Finding::AbsoluteAddress { at: 0 }]
+    );
+    assert_eq!(
+        text(&[0x90, 0x48, 0x8b, 0x04, 0x25, 0x00, 0x10, 0x00, 0x00]),
+        [Finding::AbsoluteAddress { at: 1 }]
+    );
+    // vzeroupper (VEX), and a load cut short: the decode stops.
+    assert_eq!(
+        text(&[0x90, 0xc5, 0xf8, 0x77]),
+        [Finding::Undecodable { at: 1 }]
+    );
+    assert_eq!(
+        text(&[0x90, 0x49, 0x8b, 0x86, 0x00]),
+        [Finding::Undecodable { at: 1 }]
+    );
+
+    // A record made by hand with a false start: movabs rax, imm64 whose immediate holds
+    // 49 8b 86 and the field. The old check decoded `mov rax, [r14 + d32]` from offset 2.
+    let t = [0x48, 0xb8, 0x49, 0x8b, 0x86, 0x50, 0, 0, 0, 0x00, 0x90];
+    let f = [field(5, 2, Form::X64Disp32, RelocKind::LinkSlot)];
+    assert_eq!(
+        check_text(Arch::X64, &t, &f),
+        [Finding::NotInstructionStart { at: 5 }]
+    );
+    // The same load after two NOPs, with its true start: no finding.
+    let t = [0x90, 0x90, 0x49, 0x8b, 0x86, 0x50, 0, 0, 0, 0x90];
+    assert_eq!(check_text(Arch::X64, &t, &f), []);
+
+    // A field write after the boundary was set: 5 NOPs, one `put` each (a known boundary on
+    // the old code too), the load at 5
+    // with its start, then a rel32 field over bytes 1-4 to a label at 189. The value
+    // 189 - 5 = 0xb8 makes bytes 1-5 `mov eax, 0x49000000` (b8 00 00 00 49): it takes the
+    // REX byte of the load, and 8b 86 .. is `mov eax, [rsi + d32]`.
+    let mut a = Assembler::new(Arch::X64);
+    let far = a.new_label();
+    for _ in 0..5 {
+        a.put(&x64::NOP);
+    }
+    a.x64(
+        &x64::MOV_RAX_R14.0,
+        x64::MOV_RAX_R14.1,
+        Form::X64Disp32,
+        Target::LinkSlot(0),
+    )
+    .unwrap();
+    a.reloc(1, Form::X64Rel32, Target::Local(far)).unwrap();
+    while a.offset() < 189 {
+        a.put(&x64::NOP);
+    }
+    a.bind(far).unwrap();
+    a.put(&x64::NOP);
+    let d = a.finish().unwrap();
+    assert_eq!(d.relocs[0].insn, 5);
+    assert_eq!(
+        finalize_unit(&d, &common::TestUnit),
+        Err(FinalizeError::TextRelocations(vec![
+            Finding::NotInstructionStart { at: 8 },
+            Finding::FieldNotOperand { at: 1 },
+        ]))
+    );
+}
+
+/// Codex M8-P2 r1 H3: `mov eax, [eip + 0]; ret` (`67 8b 05 00 00 00 00 c3`). With the 67
+/// prefix the CPU cuts the RIP-relative address to 32 bits, so the load does not read the
+/// text byte at offset 7 that the old check reported as its target. The old decoder took it
+/// as RIP-relative and the check gave no finding; now the decode stops there. Codex r1 H1
+/// (`66 48 68 00 00 eb 7f; ret`) is a `push imm32` (REX.W wins over 66, see the decoder
+/// test), so the `eb 7f` is immediate bytes on the CPU too and the text passes.
+#[test]
+fn the_x64_check_refuses_an_eip_relative_load() {
+    let text = |b: &[u8]| check_text(Arch::X64, b, &[]);
+    assert_eq!(
+        text(&[0x67, 0x8b, 0x05, 0, 0, 0, 0, 0xc3]),
+        [Finding::Undecodable { at: 0 }]
+    );
+    assert_eq!(
+        text(&[0x90, 0x67, 0x48, 0x8d, 0x05, 0xf8, 0xff, 0xff, 0xff, 0xc3]),
+        [Finding::Undecodable { at: 1 }]
+    );
+    assert_eq!(text(&[0x8b, 0x05, 0, 0, 0, 0, 0xc3]), []);
+    assert_eq!(text(&[0x66, 0x48, 0x68, 0x00, 0x00, 0xeb, 0x7f, 0xc3]), []);
+}
+
+/// Codex M8-P2 r2 R2-1: `mov eax, fs:[rip + 0]; ret` (`64 8b 05 00 00 00 00 c3`). The CPU adds
+/// the FS base to the address, so the load does not read the text byte at offset 7 that the old
+/// check reported as its target. GS (65) is the same. No ep9 emitter writes 64 or 65, so the
+/// decode stops at every instruction with one, also with a register base (`gs:[r14 + 80]`
+/// reads FS/GS base + r14 + 80, not the unit-data word). The old decoder dropped the prefix,
+/// and the check gave no finding for each text here.
+#[test]
+fn the_x64_check_refuses_an_fs_or_gs_override() {
+    let text = |b: &[u8]| check_text(Arch::X64, b, &[]);
+    let und = |at| [Finding::Undecodable { at }];
+    assert_eq!(text(&[0x64, 0x8b, 0x05, 0, 0, 0, 0, 0xc3]), und(0));
+    assert_eq!(
+        text(&[0x90, 0x65, 0x48, 0x8b, 0x05, 0xf8, 0xff, 0xff, 0xff, 0xc3]),
+        und(1)
+    );
+    assert_eq!(text(&[0x65, 0x49, 0x8b, 0x46, 0x50, 0xc3]), und(0));
+    assert_eq!(
+        text(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0xc3]),
+        und(0)
+    );
+}

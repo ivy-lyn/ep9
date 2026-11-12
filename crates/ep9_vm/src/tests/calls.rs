@@ -1614,3 +1614,281 @@ fn the_cold_call_arms_that_do_not_forward_give_the_cold_path_result() {
         }
     }
 }
+
+// ---- the decode-free host construct (M8-P2 TS-HOSTCALL) -------------------------------------
+
+/// `hk(...)`, a host constructor: "<new|call>:<self|other>:<this>:<args joined by ,>" (whether
+/// it was constructed, whether new.target is the callee, and the kind of `this`).
+fn hk<'s>(cx: &mut Cx<'s>, this: Local<'s>, args: Args<'s>, nt: Local<'s>) -> JsResult<Local<'s>> {
+    let mut parts = Vec::new();
+    for v in args.iter() {
+        parts.push(cx.to_rust_string(v)?);
+    }
+    let how = if args.is_construct_call() {
+        "new"
+    } else {
+        "call"
+    };
+    let who = if nt.is_same_bits(&args.callee()) {
+        "self"
+    } else if nt.is_undefined() {
+        "none"
+    } else {
+        "other"
+    };
+    let t = if this.is_undefined() { "u" } else { "x" };
+    let s = format!("{how}:{who}:{t}:{}", parts.join(","));
+    Ok(cx.new_string(&s)?.value())
+}
+
+/// `hthrow(...)`, a host constructor that throws a RangeError with its argument count.
+fn hthrow<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let msg = format!("hthrow {}", args.len());
+    Err(cx.throw_range_error(&msg))
+}
+
+/// `hk`, `hk2` (the same function, another constructor) and `hthrow` as constructors of a
+/// builtin table, installed as globals.
+static HOST_CTORS: crate::BuiltinTable = crate::BuiltinTable::new(
+    "host-ctors",
+    &[crate::BuiltinModule {
+        name: "host-ctors",
+        block: 104,
+        defs: &[
+            crate::BuiltinDef::constructor("hk", 0, hk),
+            crate::BuiltinDef::constructor("hk2", 0, hk),
+            crate::BuiltinDef::constructor("hthrow", 0, hthrow),
+        ],
+        intrinsics: &[],
+        props: &[crate::ObjectProps {
+            target: crate::IntrinsicId::GlobalObject,
+            props: &[
+                crate::PropDef::method(crate::PropKey::Str("hk"), 0),
+                crate::PropDef::method(crate::PropKey::Str("hk2"), 1),
+                crate::PropDef::method(crate::PropKey::Str("hthrow"), 2),
+            ],
+        }],
+    }],
+);
+
+/// An unprefixed `Construct` of a host constructor takes the decode-free host entry
+/// (`interp/slow/call.rs` `host_construct`, M8-P2 TS-HOSTCALL), with 0, 1, 3 and 9 arguments
+/// (no `ArgBuf` for any count), new.target from the accumulator when it is a constructor and
+/// the callee when it is not, a host constructor that throws, and a host function that is not
+/// a constructor (the TypeError of `do_call`). The human fast paths on and off give the same
+/// output; on, the entry counts each construct of a host constructor and each `print`; off,
+/// none. Before M8-P2 a `Construct` never took the entry (the count was the prints only).
+#[test]
+fn a_host_construct_takes_the_decode_free_entry() {
+    /// The constructs that take the entry (the throwing one included) and the prints.
+    const CONSTRUCTS: u64 = 7;
+    const PRINTS: u64 = 8;
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (ctx, t) = (s.b.new_register(), s.b.new_register());
+        let l = s.b.new_register_list(9);
+        for i in 0..9 {
+            s.b.lda_smi(i + 1).star(l.get(i as u32));
+        }
+        let list = |n: u32| RegisterList::new(l.get(0).local_index().unwrap(), n);
+        // new hk() .. new hk(1, .., 9): acc = hk, so new.target = hk.
+        for n in [0, 1, 3, 9] {
+            s.construct_global("hk", list(n));
+            s.print_acc();
+        }
+        // new.target = hk2 (a constructor in the accumulator), then 7 (not one: the callee).
+        s.lda_global("hk");
+        s.b.star(s.f);
+        s.lda_global("hk2");
+        s.b.construct(s.f, list(1), 1, s.call);
+        s.print_acc();
+        s.lda_global("hk");
+        s.b.star(s.f).lda_smi(7).construct(s.f, list(2), 2, s.call);
+        s.print_acc();
+        // A host constructor that throws, and a host function that is not a constructor.
+        try_print_message(&mut s, ctx, t, |s| {
+            s.construct_global("hthrow", list(3));
+        });
+        try_print_message(&mut s, ctx, t, |s| {
+            s.construct_global("echo", list(1));
+        });
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    fn run(d: Dispatch, stress: bool, on: bool) -> (Result<String, String>, Vec<String>, u64) {
+        use crate::call::HOST_ENTRY_HITS;
+        // The switch is process-wide: no `run_host` run at the same time.
+        let _one = RUN_HOST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::on_big_stack(move || {
+            let mut c = super::config(d, stress);
+            c.builtins = Some(&HOST_CTORS);
+            let mut iso = isolate(c);
+            iso.register_host_function("echo", 0, echo);
+            take_output();
+            HOST_ENTRY_HITS.with(|h| h.set(0));
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.set_human_fast_paths(on);
+                cx.run_script(make(), "host.js").map(|v| cx.display(v))
+            });
+            let out = take_output();
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            let _ = iso.with_cx(|cx| {
+                cx.set_human_fast_paths(true);
+                Ok(())
+            });
+            (
+                r.map_err(|e| e.message),
+                out,
+                HOST_ENTRY_HITS.with(|h| h.get()),
+            )
+        })
+    }
+    let want = [
+        "new:self:u:",
+        "new:self:u:1",
+        "new:self:u:1,2,3",
+        "new:self:u:1,2,3,4,5,6,7,8,9",
+        "new:other:u:1",
+        "new:self:u:1,2",
+        "hthrow 3",
+        "function echo is not a constructor",
+    ];
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run(d, stress, true);
+            let off = run(d, stress, false);
+            assert!(on.0.is_ok(), "{:?}", on.0);
+            assert_eq!(on.1, want, "{} stress={stress}", d.name());
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
+            assert_eq!(
+                (on.2, off.2),
+                (CONSTRUCTS + PRINTS, 0),
+                "{} stress={stress}",
+                d.name()
+            );
+        }
+    }
+}
+
+/// `realm_of()`: the global object of the realm the host function runs in.
+fn realm_of<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.global().into())
+}
+
+/// JIT review M8-P2 A1 (H20 R5 on the TS-HOSTCALL path): bytecode of the first realm calls
+/// and constructs host functions of a second realm through the decode-free entry
+/// (`host_entry`, `host_construct` -> `call::call_host_from_bytecode`): `f()` (a host function
+/// made in the second realm) gives the second realm's global, `new A(2)` (the second realm's
+/// Array) has the second realm's `Array.prototype`, `twice(f)` (a first-realm host function
+/// that calls `f` from Rust; ep9_vm has no `Array.prototype.map`) gives the second global too,
+/// and after these `mine()` (a first-realm host function) gives the first global again. The
+/// human fast paths on and off give the same values; on, the entry counts the 4 host calls of
+/// the bytecode (`f`, `new A`, `twice`, `mine`);
+/// off, none. Before this test no test made bytecode call or construct a host function of
+/// another realm through the entry (realm.rs calls from Rust; the FASTDIFF case has one realm).
+#[test]
+fn a_host_callee_of_another_realm_runs_in_its_realm_through_the_entry() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(1);
+        // r1 = f()
+        s.lda_global("f");
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+        s.sta_global("r1");
+        // r2 = new A(2)
+        s.b.lda_smi(2).star(l.get(0));
+        s.construct_global("A", l);
+        s.sta_global("r2");
+        // r3 = twice(f): a first-realm host function calls `f` from Rust (twice).
+        s.lda_global("f");
+        s.b.star(s.a.get(0));
+        s.lda_global("twice");
+        s.b.star(s.f)
+            .call_undefined_receiver1(s.f, s.a.get(0), s.call);
+        s.sta_global("r3");
+        // r4 = mine()
+        s.lda_global("mine");
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+        s.sta_global("r4");
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    /// (r1 is the second global, r2's prototype is the second Array.prototype and not the
+    /// first, r3 is the second global, r4 is the first global, the first realm is current
+    /// after the run), the host entries.
+    fn run(d: Dispatch, stress: bool, on: bool) -> ([bool; 6], u64) {
+        use crate::call::HOST_ENTRY_HITS;
+        let _one = RUN_HOST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::on_big_stack(move || {
+            let mut iso = isolate(super::config(d, stress));
+            iso.register_host_function("mine", 0, realm_of);
+            iso.register_host_function("twice", 1, call_twice);
+            HOST_ENTRY_HITS.with(|h| h.set(0));
+            let first = iso.cx.realm;
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.set_human_fast_paths(on);
+                let g1 = cx.global();
+                let g2 = cx.create_realm()?;
+                let f = cx.with_realm(g2, |cx| {
+                    Ok(cx.new_builtin_closure(realm_of, "f", 0, Local::undefined()))
+                })?;
+                let a2 = cx.get(g2, "Array")?;
+                cx.set(g1, "A", a2, true)?;
+                cx.set(g1, "f", f, true)?;
+                cx.set(g1, "g2", g2, true)?;
+                cx.run_script(make(), "realms.js")?;
+                let g1 = cx.global();
+                let g2 = cx.get(g1, "g2")?;
+                let a2 = cx.get_v(g2, "Array")?;
+                let p2 = cx.get_v(a2, "prototype")?;
+                let a1 = cx.get(g1, "Array")?;
+                let p1 = cx.get_v(a1, "prototype")?;
+                let r1 = cx.get(g1, "r1")?;
+                let r2 = cx.get(g1, "r2")?;
+                let r2p = crate::object::proto_of(r2.bits());
+                let r3 = cx.get(g1, "r3")?;
+                let r4 = cx.get(g1, "r4")?;
+                Ok([
+                    r1.bits() == g2.bits(),
+                    r2p == p2.bits(),
+                    r2p != p1.bits(),
+                    r3.bits() == g2.bits(),
+                    r4.bits() == g1.bits(),
+                    cx.inner().realm == first,
+                ])
+            });
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            let _ = iso.with_cx(|cx| {
+                cx.set_human_fast_paths(true);
+                Ok(())
+            });
+            (r.unwrap(), HOST_ENTRY_HITS.with(|h| h.get()))
+        })
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let on = run(d, stress, true);
+            let off = run(d, stress, false);
+            assert_eq!(on.0, [true; 6], "{label}");
+            assert_eq!(on.0, off.0, "{label}");
+            assert_eq!((on.1, off.1), (4, 0), "{label}");
+        }
+    }
+}

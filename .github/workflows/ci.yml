@@ -36,7 +36,7 @@
 #                      (kernels.mjs --check) as an artifact
 #   atomgate ......... the atom-key gate (G2, debug exec)            (Linux x64)
 #   miri ............. Miri on ep9_value, ep9_heap, ep9_math and ep9_platform --lib shared_mem waiters (Linux x64)
-#   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
+#   dep-guards ....... cargo tree/metadata guards; deny; cldr-tables (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
@@ -1018,6 +1018,16 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - run: cargo deny --locked check licenses bans
+      # The CLDR side tables of ep9_intl (INTL-V2-D5; tools/cldr-tables/README.md): the pinned
+      # CLDR JSON (a sparse fetch from github.com), then the generated crates/ep9_intl/src/cldr/gen
+      # files against the generator (--check), then the tool tests (the tables against the ICU4X
+      # compiled data of the same CLDR release). tools/cldr-tables is its own workspace (the root
+      # `exclude`), so only this step builds it.
+      - name: cldr-tables check and tests
+        run: |
+          { tools/cldr-tables/sync-cldr-json.sh || { echo "::warning::sync-cldr-json.sh failed; one retry in 20 s"; sleep 20; tools/cldr-tables/sync-cldr-json.sh; }; } &&
+            cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- --check &&
+            cargo test --locked --manifest-path tools/cldr-tables/Cargo.toml
 
   # perf CI v0 (docs/plan/10-quality.md section 2; tools/bench/README.md "perf CI v0"): the
   # instructions of t0-loop, t0-branchy, t0-call, t0-prop, ci-v0 and the generated v8-v7
@@ -1234,8 +1244,8 @@ jobs:
   # dispatched commit, so both builds run the same text. The job fails when a row is worse than
   # +0.5% or has no count. No `needs` and no job-level `if` (header; tag.sh refuses a skipped
   # job): on push, pull_request and a dispatch without bench_base the matrix is one "off" leg
-  # that prints "bench mode off" and runs the bench-set.mjs tests. Both builds share one target
-  # dir, so the dependencies build once; no cache (each dispatch builds 2 new commits).
+  # that prints "bench mode off" and runs the bench-set.mjs tests. Each side builds in its own
+  # target dirs (route BENCH-STALE-HEAD); no cache (each dispatch builds 2 new commits).
   # bench_workloads (MC-w36-1; empty: the 19 rows) is a comma list of bench-set.mjs --workloads
   # names (workloads.mjs names and set names, octane-typescript too). It goes through env only:
   # the mode step refuses any other character, the workloads step any unknown name (exit 2, both
@@ -1331,30 +1341,36 @@ jobs:
         run: bash scripts/sync-bench.sh bench-v8v7 bench-octane
       # Each tree with its own toolchain file and its own regress and icu4x forks (the
       # setup-rust steps, per tree). Each binary's build line must name its commit, clean
-      # (bench-set.mjs checks it). The jitless build of each side (MC-w36-4) goes to its own
-      # target dir, so the jit build's artifacts stay.
+      # (bench-set.mjs checks it). Each side has its own target dir and its own jitless target
+      # dir (MC-w36-4; route BENCH-STALE-HEAD: with one shared dir, a head crate whose files are
+      # older than the base artifacts was fresh to cargo, so the head binary kept base code).
+      # The head rebuild guard (bench-set.mjs --rebuild-guard) reads the head builds' JSON
+      # messages: each package that differs from base must have been compiled for head.
       - name: build ep9 at base and head
         if: ${{ steps.mode.outputs.on == 'true' }}
         env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/bench/target
-          JITLESS_TARGET_DIR: ${{ github.workspace }}/bench/target-jitless
+          BENCH_DIR: ${{ github.workspace }}/bench
         run: |
           set -euo pipefail
           retry() { "$@" || { echo "::warning::$* failed; one retry in 20 s"; sleep 20; "$@"; }; }
           for side in base head; do
+            target="$BENCH_DIR/target-$side" jitless="$BENCH_DIR/target-jitless-$side"
             pushd "bench/$side" > /dev/null
             chan="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
             comps="$(sed -n 's/^components *= *\[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' "')"
             rustup toolchain install "$chan" --profile minimal ${comps:+--component "$comps"} --no-self-update
             retry bash scripts/sync-regress.sh
             if [ -f scripts/sync-icu4x.sh ]; then retry bash scripts/sync-icu4x.sh; fi
-            cargo build --release --locked -p ep9_cli
-            cargo build --release --locked -p ep9_cli --no-default-features --target-dir "$JITLESS_TARGET_DIR"
+            cargo build --release --locked -p ep9_cli --target-dir "$target" --message-format=json-render-diagnostics > "$BENCH_DIR/build-$side.jsonl"
+            cargo build --release --locked -p ep9_cli --no-default-features --target-dir "$jitless" --message-format=json-render-diagnostics > "$BENCH_DIR/build-jitless-$side.jsonl"
             popd > /dev/null
-            cp "$CARGO_TARGET_DIR/release/ep9" "bench/ep9-$side"
-            cp "$JITLESS_TARGET_DIR/release/ep9" "bench/ep9-jitless-$side"
+            cp "$target/release/ep9" "bench/ep9-$side"
+            cp "$jitless/release/ep9" "bench/ep9-jitless-$side"
             "bench/ep9-$side" --version
             "bench/ep9-jitless-$side" --version
+          done
+          for b in build build-jitless; do
+            node .github/scripts/bench-set.mjs --rebuild-guard --base-tree bench/base --head-tree bench/head --cargo-json "bench/$b-head.jsonl"
           done
       - name: count
         id: count

@@ -7,7 +7,7 @@
 //!                         NumberToBigInt (Cx::number_to_bigint); else ToBigInt (Cx::to_bigint)
 //! BigInt.asIntN(b, x)     ToIndex(b), ToBigInt(x), then Cx::bigint_as_int_n
 //! BigInt.asUintN(b, x)    ToIndex(b), ToBigInt(x), then Cx::bigint_as_uint_n
-//! %BigInt.prototype%      an ordinary object: toLocaleString (= toString(10): no Intl),
+//! %BigInt.prototype%      an ordinary object: toLocaleString (ECMA-402: Intl.NumberFormat),
 //!                         toString(radix), valueOf, @@toStringTag "BigInt"
 //! global                  BigInt {w, c}
 //! ```
@@ -197,16 +197,22 @@ fn to_string<'s>(
     cx.bigint_to_string(x, radix_mv as u32).map(|s| s.value())
 }
 
-/// BigInt.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] ) (§21.2.3.2): ep9 has
-/// no ECMA-402, so it is the decimal text, as `toString()` (design SPEC-T-D9).
+/// BigInt.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.3.1; INTL
+/// W2 NF-CORE): the Intl.NumberFormat of `locales` and `options` formats the BigInt.
 fn to_locale_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    // 1. Let x be ? thisBigIntValue(this value).
     let x = cx.this_bigint_value(this)?;
-    cx.bigint_to_string(x, 10).map(|s| s.value())
+    // 2. Let numberFormat be ? Construct(%Intl.NumberFormat%, « locales, options »).
+    let r = ep9_intl::number_format::locale_string_format(cx, args.get(0), args.get(1))?;
+    // 3. Return FormatNumeric(numberFormat, ℝ(x)).
+    let mv = ep9_intl::number_format::decimal::to_intl_mv(cx, x)?;
+    let s = ep9_intl::number_format::format_numeric(cx, &r, &mv)?;
+    Ok(cx.new_string(&s)?.into())
 }
 
 /// BigInt.prototype.valueOf ( ) (§21.2.3.4).
