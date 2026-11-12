@@ -72,8 +72,9 @@ impl LinkedUnit {
 
     /// The whole unit container (its bytes for `ep9_unit::check`).
     pub fn unit(&self) -> &'static [u8] {
-        // SAFETY: `register` checked the record; the object's static data holds the bytes for
-        // the life of the process.
+        // SAFETY: the fields come from `new` (two `&'static [u8]`) or from a static that the
+        // linker filled from an `ep9_unit` writer object; the caller's unsafe access to that
+        // extern static vouches for it.
         unsafe { core::slice::from_raw_parts(self.unit, self.unit_len as usize) }
     }
 
