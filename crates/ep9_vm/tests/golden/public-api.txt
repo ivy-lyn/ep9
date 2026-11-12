@@ -796,7 +796,7 @@ ep9_vm::Isolate :: impl !core::marker::Send for Isolate (auto)
 ep9_vm::Isolate :: impl !core::marker::Sync for Isolate (auto)
 ep9_vm::Isolate :: impl Isolate
 ep9_vm::Isolate :: impl Isolate :: fn async_waiter_count(&self) -> usize
-ep9_vm::Isolate :: impl Isolate :: fn block_for_async_waiters(&self, core::time::Duration)
+ep9_vm::Isolate :: impl Isolate :: fn block_for_async_waiters(&self, core::time::Duration) -> bool
 ep9_vm::Isolate :: impl Isolate :: fn builtin_table(&self) -> core::option::Option<&'static BuiltinTable>
 ep9_vm::Isolate :: impl Isolate :: fn collect_garbage(&mut self)
 ep9_vm::Isolate :: impl Isolate :: fn compiler(&self) -> core::option::Option<&'static CompilerHooks>

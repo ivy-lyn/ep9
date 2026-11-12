@@ -2033,9 +2033,10 @@ const SETTLE_TICK: Duration = Duration::from_millis(2);
 /// `Atomics.waitAsync` waiters and the test has not printed its async result, sleep until one
 /// can end (a notify from an agent, its timeout, or [`SETTLE_TICK`]:
 /// `Isolate::block_for_async_waiters`), then run `checkpoint` (a microtask checkpoint, which
-/// resolves their promises and runs the jobs). A shell's event loop does the same. It ends at
-/// `timeout` after its start with a termination: the watchdog terminates the isolate by then,
-/// but an idle isolate runs no JS that would poll it.
+/// resolves their promises and runs the jobs). A shell's event loop does the same. It ends with
+/// a termination at `timeout` after its start, or once `block_for_async_waiters` reports that
+/// the isolate is terminated (the watchdog terminates it by then, but an idle isolate runs no
+/// JS that would poll it).
 fn settle_async_waiters(
     iso: &mut Isolate,
     timeout: Duration,
@@ -2043,7 +2044,8 @@ fn settle_async_waiters(
 ) -> Result<(), Exception> {
     let deadline = Instant::now() + timeout;
     while iso.async_waiter_count() > 0 && !OUT.with(|o| o.borrow().contains("Test262:AsyncTest")) {
-        if Instant::now() >= deadline {
+        // The deadline first; `block_for_async_waiters` is true when the isolate is terminated.
+        if Instant::now() >= deadline || iso.block_for_async_waiters(SETTLE_TICK) {
             return Err(Exception {
                 message: "the async waiters did not end before the timeout".to_string(),
                 constructor: None,
@@ -2052,7 +2054,6 @@ fn settle_async_waiters(
                 terminated: true,
             });
         }
-        iso.block_for_async_waiters(SETTLE_TICK);
         checkpoint(iso)?;
     }
     Ok(())

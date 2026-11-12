@@ -648,8 +648,9 @@ fn the_atomics_key_joins_the_lazy_group() {
 /// A termination (`TerminateHandle`, from another thread) ends
 /// `Isolate::block_for_async_waiters` before its `max` (TA-4 JIT review F2): the host block
 /// checks the terminate word at least every `waiters::SLICE`, as a sync `Atomics.wait` does,
-/// and leaves the termination pending. The `max` of 20 s and the check below bound the test:
-/// a regress fails it, it does not hang.
+/// and leaves the termination pending. It returns true, and a next call returns true at once
+/// (TA-4 JIT review r1 F1: the host stops its loop, it does not spin). The `max` of 20 s and
+/// the checks below bound the test: a regress fails it, it does not hang.
 #[test]
 fn a_termination_ends_the_block_for_async_waiters() {
     common::on_big_stack(|| {
@@ -666,12 +667,19 @@ fn a_termination_ends_the_block_for_async_waiters() {
             handle.terminate();
         });
         let start = Instant::now();
-        iso.block_for_async_waiters(Duration::from_secs(20));
+        let terminated = iso.block_for_async_waiters(Duration::from_secs(20));
         let took = start.elapsed();
         watchdog.join().unwrap();
         assert!(
             took < Duration::from_secs(10),
             "the block ran {took:?}: the termination did not end it"
+        );
+        assert!(terminated, "the block reports the pending termination");
+        let again = Instant::now();
+        assert!(iso.block_for_async_waiters(Duration::from_secs(20)));
+        assert!(
+            again.elapsed() < Duration::from_secs(10),
+            "a terminated block returns at once"
         );
         assert_eq!(iso.async_waiter_count(), 1, "the block resolves nothing");
     });

@@ -1159,7 +1159,8 @@ pub(crate) fn checked_argc(rt: &Runtime, f: u64, this: u64, args: &[Local<'_>]) 
 /// ```text
 /// embedder host loop (a shell, the test262 runner), after the script and its checkpoint:
 ///   while iso.async_waiter_count() > 0 and the host still waits for something:
-///     iso.block_for_async_waiters(tick)       sleeps: an inbox item, the next deadline, tick or a termination
+///     if iso.block_for_async_waiters(tick):   sleeps: an inbox item, the next deadline, tick or a termination
+///       stop (terminated)                     true: a termination is pending; no JS would see it
 ///     iso.perform_microtask_checkpoint()      resolves the ended waiters' promises, runs jobs
 /// ```
 impl Isolate {
@@ -1177,14 +1178,18 @@ impl Isolate {
 
     /// Blocks the thread until a notify wakes an async waiter of this isolate, the timeout of
     /// one passes, `max` passes, or the isolate is terminated ([`TerminateHandle`], checked at
-    /// least every 10 ms; the termination stays pending for the next JS); at once if it has
-    /// none or one has already ended. It only sleeps: the next
-    /// [`Isolate::perform_microtask_checkpoint`] resolves the promises.
-    pub fn block_for_async_waiters(&self, max: std::time::Duration) {
+    /// least every [`ep9_platform::waiters::SLICE`]); at once if it has none or one has already
+    /// ended. It only sleeps: the next [`Isolate::perform_microtask_checkpoint`] resolves the
+    /// promises. Returns true when a termination is pending: the host stops its loop (an idle
+    /// checkpoint runs no JS, so it does not see the termination; it stays pending for the next
+    /// JS).
+    pub fn block_for_async_waiters(&self, max: std::time::Duration) -> bool {
         let word = &self.rt.terminate;
-        self.rt.jobs.agent().block(max, || {
+        let stop = || {
             word.load(core::sync::atomic::Ordering::Relaxed) & crate::interp::interrupt::TERMINATE
                 != 0
-        });
+        };
+        self.rt.jobs.agent().block(max, stop);
+        stop()
     }
 }

@@ -799,5 +799,5 @@ path: ep9_vm::ArrayIterKind = abi::ArrayIterKind
 path: ep9_vm::abi::ArrayIterKind
 embed (not core): impl Isolate :: pub fn set_can_block(&mut self, bool)
 embed (not core): impl Isolate :: pub fn async_waiter_count(&self) -> usize
-embed (not core): impl Isolate :: pub fn block_for_async_waiters(&self, std::time::Duration)
+embed (not core): impl Isolate :: pub fn block_for_async_waiters(&self, std::time::Duration) -> bool
 abi: impl<'s> Cx<'s> :: pub fn array_prototype_to_string(&mut self, Local<'s>, Args<'s>, Local<'s>) -> JsResult<Local<'s>>
