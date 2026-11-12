@@ -51,7 +51,7 @@ use crate::{Args, Cx, Dispatch, Exception, Isolate, IsolateConfig, JsResult, Loc
 
 /// The table entries, in declaration order: name, offset of the field, `layout::RT_*`, and
 /// the function in the process table.
-fn table_entries(t: &RuntimeTable) -> [(&'static str, usize, usize, usize); 12] {
+fn table_entries(t: &RuntimeTable) -> [(&'static str, usize, usize, usize); 14] {
     use core::mem::offset_of;
     macro_rules! e {
         ($f:ident, $rt:ident) => {
@@ -76,6 +76,8 @@ fn table_entries(t: &RuntimeTable) -> [(&'static str, usize, usize, usize); 12] 
         e!(set_keyed, RT_SET_KEYED),
         e!(deopt, RT_DEOPT),
         e!(load_global, RT_LOAD_GLOBAL),
+        e!(alloc_site, RT_ALLOC_SITE),
+        e!(clone_widen, RT_CLONE_WIDEN),
     ]
 }
 
@@ -1209,5 +1211,271 @@ mod registered {
             assert_eq!(err.message, "Error: boom");
             assert_eq!(uninstall_code(&iso.rt, info(&iso, "g")), Ok(e));
         });
+    }
+}
+
+// ---- the recording entries (M8-P2 A2-CUT, MC-w20-4 (3); doc 13:349) ------------------------
+
+/// The functions of the recording-entry tests (all globals, run natively by the tests):
+/// `arr(a)` = `return [1]`, `arr0(a)` = `return []`, `cl(a, b)` = `return {...a}`. The
+/// script also makes the globals `src` and `res`, two objects `{x: 1}` of one literal shape.
+/// Also the site slot of each function (`Asm` makes other slots first).
+fn sites() -> (VerifiedUnit, [u64; 3]) {
+    use ep9_bytecode::FeedbackSlotKind;
+    let mut arr = Asm::new(meta("arr", 1, 0, 0, 0));
+    let lit = arr.b.feedback_slot(FeedbackSlotKind::Literal);
+    let k1 = arr.b.number_constant(1.0);
+    let bp = arr.b.array_boilerplate(vec![Some(k1)]);
+    arr.b.create_array_literal(bp, lit, 1).return_();
+    let mut slots = [u64::from(lit.0); 3];
+    let mut arr0 = Asm::new(meta("arr0", 1, 0, 0, 0));
+    let lit = arr0.b.feedback_slot(FeedbackSlotKind::Literal);
+    arr0.b.create_empty_array_literal(lit).return_();
+    slots[1] = u64::from(lit.0);
+    let mut cl = Asm::new(meta("cl", 2, 0, 0, 0));
+    let site = cl.b.feedback_slot(FeedbackSlotKind::CloneObject);
+    let a0 = cl.b.parameter(0);
+    cl.b.clone_object(a0, 0, site).return_();
+    slots[2] = u64::from(site.0);
+    let fns = vec![("arr", arr), ("arr0", arr0), ("cl", cl)];
+    let mut s = Asm::script(0);
+    let (kx, k1) = (s.b.string_constant("x"), s.b.number_constant(1.0));
+    let bp = s.b.object_boilerplate(vec![(kx, Some(k1))]);
+    for name in ["src", "res"] {
+        let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+        s.b.create_object_literal(bp, lit, 1);
+        s.sta_global(name);
+    }
+    for (i, (name, _)) in fns.iter().enumerate() {
+        let k = s.b.function_constant(FunctionId(i as u32 + 1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(name);
+    }
+    s.b.lda_undefined().return_();
+    let mut all = vec![s.finish()];
+    all.extend(fns.into_iter().map(|(_, a)| a.finish()));
+    (unit("", all), slots)
+}
+
+thread_local! {
+    /// The (bytecode offset, site slot) that `alloc_entry` and `clone_entry` pass to the
+    /// table entry.
+    static SITE: core::cell::Cell<(u32, u64)> = const { core::cell::Cell::new((0, 0)) };
+}
+
+/// Argument `i` of the native frame `fp`.
+///
+/// # Safety
+/// `fp` is a live frame with at least `i + 1` parameter slots.
+unsafe fn frame_arg(fp: *mut u64, i: u32) -> u64 {
+    // SAFETY: caller contract.
+    unsafe { *fp.byte_offset(layout::fp_param(i)) }
+}
+
+/// Native code in Rust with the [`NativeEntry`](crate::layout::NativeEntry) ABI: it calls
+/// one recording entry of the process table with the site in [`SITE`] and its arguments,
+/// and returns what the entry returns.
+macro_rules! site_entries {
+    ($($name:ident($cx:ident, $fp:ident) $body:block)*) => {$(
+        #[cfg(target_arch = "x86_64")]
+        unsafe extern "sysv64" fn $name($cx: *mut layout::NativeCx, $fp: *mut u64) -> u64 $body
+        #[cfg(not(target_arch = "x86_64"))]
+        unsafe extern "C" fn $name($cx: *mut layout::NativeCx, $fp: *mut u64) -> u64 $body
+    )*};
+}
+
+site_entries! {
+    alloc_entry(cx, fp) {
+        let (off, slot) = SITE.get();
+        // SAFETY: the entry runs as the native code of `arr` (one parameter), with its own
+        // `cx` and frame.
+        unsafe { (RUNTIME_TABLE.alloc_site)(cx, fp, off, slot, frame_arg(fp, 0)) }
+    }
+    alloc0_entry(cx, fp) {
+        let (off, slot) = SITE.get();
+        // SAFETY: the entry runs as the native code of `arr0` (one parameter), with its own
+        // `cx` and frame.
+        unsafe { (RUNTIME_TABLE.alloc_site)(cx, fp, off, slot, frame_arg(fp, 0)) }
+    }
+    clone_entry(cx, fp) {
+        let (off, slot) = SITE.get();
+        // SAFETY: the entry runs as the native code of `cl` (two parameters), with its own
+        // `cx` and frame.
+        unsafe {
+            let (a, b) = (frame_arg(fp, 0), frame_arg(fp, 1));
+            (RUNTIME_TABLE.clone_widen)(cx, fp, off, slot, a, b)
+        }
+    }
+}
+
+/// An isolate (eager vectors unless `threshold`) that ran `sites()`, with `alloc_entry`
+/// installed for `arr`, `alloc0_entry` for `arr0` and `clone_entry` for `cl`; and the site
+/// slots.
+fn sites_isolate(d: Dispatch, stress: bool, threshold: u32) -> (Isolate, [u64; 3]) {
+    let mut iso = isolate(IsolateConfig {
+        feedback_threshold: threshold,
+        ..config(d, stress)
+    });
+    let (u, slots) = sites();
+    iso.with_cx_checkpoint(|cx| cx.run_script(u, "sites.js").map(|_| ()))
+        .unwrap();
+    let a = code_start(alloc_entry as *const () as usize);
+    let a0 = code_start(alloc0_entry as *const () as usize);
+    let c = code_start(clone_entry as *const () as usize);
+    let kind = DispatchKind::AotBaseline;
+    // The vectors, as the counted entries make them (`call_native` does not count).
+    for name in ["arr", "arr0", "cl"] {
+        crate::feedback::ensure(&iso.rt, threshold, info(&iso, name));
+    }
+    // SAFETY: each range starts at a function of this binary with the NativeEntry ABI that
+    // gives the result of its function's bytecode for the arguments the tests pass, and the
+    // text lives as long as the process. One byte each: the registry only names the range.
+    unsafe {
+        install_code(&iso.rt, info(&iso, "arr"), kind, a..a + 1).unwrap();
+        install_code(&iso.rt, info(&iso, "arr0"), kind, a0..a0 + 1).unwrap();
+        install_code(&iso.rt, info(&iso, "cl"), kind, c..c + 1).unwrap();
+    }
+    (iso, slots)
+}
+
+/// The offset of the instruction after the first one of `fi` (its `Return`).
+fn second_offset(fi: &FunctionInfo) -> u32 {
+    // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified bytecode.
+    let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    ep9_bytecode::decode_at(code, 0).unwrap().bytes.len() as u32
+}
+
+/// `RuntimeTable::alloc_site`: native code that made an array at a `CreateArrayLiteral` or
+/// `CreateEmptyArrayLiteral` site records the site as T0's cold path does (the ALLOC_SITE
+/// handler with the birth kind and the count, and the array's back pointer ARRAY +32). A site
+/// slot or an offset that is not the site's, or a result that is not an array, is an internal
+/// error; with no vector the entry records nothing. On the old code the table had no
+/// `alloc_site` entry (12 entries), so this test did not build.
+#[test]
+fn native_entry_alloc_site_records_the_site_of_native_code() {
+    use crate::literal_site::site_of;
+    use crate::object::{arr, cell, rd};
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let r = on_big_stack(move || {
+                let mut out = Vec::new();
+                let (mut iso, slots) = sites_isolate(d, stress, 0);
+                for (name, slot) in [("arr", slots[0]), ("arr0", slots[1])] {
+                    let f = iso.global_raw(name).unwrap();
+                    SITE.set((0, slot));
+                    for n in 1..=2u32 {
+                        let a = iso.with_cx(|cx| Ok(cx.new_array().bits())).unwrap();
+                        let birth = crate::elements::kind_of(a);
+                        let v = crate::runtime::val(a);
+                        let r = call_through_entry(&mut iso, f, &[v]).unwrap().unwrap();
+                        assert_eq!(r.to_bits(), a, "{name}: the array is the result");
+                        let fv = crate::feedback::vector(info(&iso, name)).unwrap();
+                        let h = crate::feedback::value(fv, slot as u32);
+                        assert_eq!(site_of(h), Some((birth, n)), "{name}: run {n}");
+                        assert_eq!(rd(cell(a), arr::ALLOC_SITE), h, "{name}: ARRAY +32");
+                    }
+                    // Not the site: another slot, the Return's offset, or not an array.
+                    let ret = second_offset(info(&iso, name));
+                    let a = iso.with_cx(|cx| Ok(cx.new_array().bits())).unwrap();
+                    for (site, arg) in [
+                        ((0, slot + 1), crate::runtime::val(a)),
+                        ((ret, slot), crate::runtime::val(a)),
+                        ((0, slot), Value::int32(7)),
+                    ] {
+                        SITE.set(site);
+                        let e = call_through_entry(&mut iso, f, &[arg])
+                            .unwrap()
+                            .unwrap_err();
+                        out.push((e.message, bad_site(site.1, site.0)));
+                    }
+                    let fv = crate::feedback::vector(info(&iso, name)).unwrap();
+                    let h = crate::feedback::value(fv, slot as u32);
+                    assert_eq!(site_of(h).map(|s| s.1), Some(2), "{name}: no count");
+                    assert_ne!(rd(cell(a), arr::ALLOC_SITE), h, "{name}: no back pointer");
+                }
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+                // No vector (threshold u32::MAX): the entry returns the array and records
+                // nothing.
+                let (mut iso, slots) = sites_isolate(d, stress, u32::MAX);
+                let f = iso.global_raw("arr").unwrap();
+                SITE.set((0, slots[0]));
+                let a = iso.with_cx(|cx| Ok(cx.new_array().bits())).unwrap();
+                let back = rd(cell(a), arr::ALLOC_SITE);
+                let r = call_through_entry(&mut iso, f, &[crate::runtime::val(a)]);
+                assert_eq!(r.unwrap().unwrap().to_bits(), a);
+                assert!(crate::feedback::vector(info(&iso, "arr")).is_none());
+                assert_eq!(rd(cell(a), arr::ALLOC_SITE), back);
+                out
+            });
+            assert_eq!(r.len(), 6, "{label}");
+            for (got, want) in r {
+                assert_eq!(got, want, "{label}");
+            }
+        }
+    }
+}
+
+/// The internal error of a site that is not the instruction's.
+fn bad_site(slot: u64, off: u32) -> String {
+    format!(
+        "Error: ep9 internal error: native code passed site slot {slot} at bytecode offset {off}"
+    )
+}
+
+/// `RuntimeTable::clone_widen`: native code that cloned an object at a `CloneObject` site
+/// widens the result shape's fields to any value, as T0's cold path does, so a later T0 hit
+/// that copies fields with no value check stays correct (the H17 rep/const rule). With no
+/// vector, or at a megamorphic site, the entry changes nothing; a slot or an offset that is
+/// not the site's is an internal error. On the old code the table had no `clone_widen` entry,
+/// so this test did not build.
+#[test]
+fn native_entry_clone_widen_widens_the_result_shape() {
+    use crate::shape::{ANY_FIELD, field_bits_at, shape_of};
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            on_big_stack(move || {
+                // (threshold, megamorphic site, widened)
+                for (threshold, mega, widened) in
+                    [(0, false, true), (0, true, false), (u32::MAX, false, false)]
+                {
+                    let (mut iso, slots) = sites_isolate(d, stress, threshold);
+                    let slot = slots[2];
+                    let cl = iso.global_raw("cl").unwrap();
+                    let src = iso.global_raw("src").unwrap();
+                    let res = iso.global_raw("res").unwrap();
+                    let rs = shape_of(res.to_bits());
+                    assert_ne!(field_bits_at(rs, 0), ANY_FIELD, "{label}: a literal field");
+                    let ret = second_offset(info(&iso, "cl"));
+                    if mega {
+                        // The first call makes the vector; then the slot goes megamorphic.
+                        SITE.set((0, slot));
+                        let e = call_through_entry(&mut iso, cl, &[Value::int32(1), src]);
+                        assert_eq!(e.unwrap().unwrap().to_bits(), src.to_bits());
+                        let v = crate::feedback::vector(info(&iso, "cl")).unwrap();
+                        let (hole, mega) = (crate::frame::HOLE, crate::ic::MEGA);
+                        crate::feedback::set_slot(&iso.rt, v, slot as u32, hole, mega);
+                    }
+                    SITE.set((0, slot));
+                    let r = call_through_entry(&mut iso, cl, &[src, res])
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(r.to_bits(), res.to_bits(), "{label}");
+                    let got = field_bits_at(shape_of(res.to_bits()), 0) == ANY_FIELD;
+                    assert_eq!(got, widened, "{label}: threshold {threshold} mega {mega}");
+                    // Not the site: another slot or the Return's offset.
+                    for site in [(0, slot + 1), (ret, slot)] {
+                        SITE.set(site);
+                        let e = call_through_entry(&mut iso, cl, &[src, res]).unwrap();
+                        let msg = e.unwrap_err().message;
+                        assert_eq!(msg, bad_site(site.1, site.0), "{label}");
+                    }
+                    iso.collect_garbage();
+                    iso.verify_heap().unwrap();
+                }
+            });
+        }
     }
 }
