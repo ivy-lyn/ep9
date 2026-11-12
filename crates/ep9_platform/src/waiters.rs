@@ -80,13 +80,24 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: the number of waiters that [`remove_where`] inspected on this thread.
+    static SCANNED: Cell<usize> = const { Cell::new(0) };
+}
+
 /// Removes the waiters of `key` for which `f` is true; drops the key when its queue is empty.
+/// One pass over the queue of `key`.
 fn remove_where(map: &mut Map, key: Key, mut f: impl FnMut(&Waiter) -> bool) -> usize {
     let Some(q) = map.get_mut(&key) else {
         return 0;
     };
     let before = q.len();
-    q.retain(|w| !f(w));
+    q.retain(|w| {
+        #[cfg(test)]
+        SCANNED.with(|n| n.set(n.get() + 1));
+        !f(w)
+    });
     let removed = before - q.len();
     if q.is_empty() {
         map.remove(&key);
@@ -311,21 +322,40 @@ impl Agent {
         let mut pending = self.pending.borrow_mut();
         if pending.iter().any(|p| p.deadline.is_some()) {
             let now = Instant::now();
-            if pending.iter().any(|p| p.deadline.is_some_and(|d| now >= d)) {
+            let due = |p: &Pending| p.deadline.is_some_and(|d| now >= d);
+            if pending.iter().any(due) {
+                // The due waiters by (key, id), sorted before the lock: one pass over the
+                // queue of each key with the list lock held (not one per waiter).
+                let mut keys: Vec<(Key, u64)> = pending
+                    .iter()
+                    .filter(|p| due(p))
+                    .map(|p| (p.key, p.id))
+                    .collect();
+                keys.sort_unstable();
+                let mut removed = Vec::with_capacity(keys.len());
                 let mut g = lock(&LIST);
+                for run in keys.chunk_by(|a, b| a.0 == b.0) {
+                    let key = run[0].0;
+                    remove_where(&mut g, key, |w| match w {
+                        Waiter::Async { agent, id, .. }
+                            if *agent == self.id && run.binary_search(&(key, *id)).is_ok() =>
+                        {
+                            removed.push(*id);
+                            true
+                        }
+                        _ => false,
+                    });
+                }
+                drop(g);
+                removed.sort_unstable();
+                // A due waiter that is not in the list any more was taken by a notify first:
+                // its id is in the inbox (pushed under the list lock, before this lock), so
+                // it stays pending. The others end as TimedOut, in the order they were made.
                 pending.retain(|p| {
-                    if !p.deadline.is_some_and(|d| now >= d) {
-                        return true;
-                    }
-                    let me = |w: &Waiter| {
-                        matches!(w, Waiter::Async { agent, id, .. } if *agent == self.id && *id == p.id)
-                    };
-                    if remove_where(&mut g, p.key, me) == 1 {
+                    if removed.binary_search(&p.id).is_ok() {
                         out.push((p.id, Outcome::TimedOut));
                         false
                     } else {
-                        // A notify took it first: its id is in the inbox (pushed under the
-                        // list lock, before this lock).
                         true
                     }
                 });
@@ -386,18 +416,24 @@ impl Agent {
 impl Drop for Agent {
     /// Removes the async waiters of this agent from the list (V8
     /// `FutexEmulation::IsolateDeinit`, JSC `WaiterListManager::unregister`): a later notify
-    /// does not count them. Takes the list lock only if the agent has async waiters.
+    /// does not count them. Takes the list lock only if the agent has async waiters, and then
+    /// makes one pass over the queue of each of their keys (V8 walks each list once too).
     fn drop(&mut self) {
         let pending = self.pending.get_mut();
         if pending.is_empty() {
             return;
         }
+        let mut keys: Vec<Key> = pending.drain(..).map(|p| p.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let me = self.id;
         let mut g = lock(&LIST);
-        for p in pending.drain(..) {
+        for key in keys {
+            // The agent goes away: every one of its async waiters leaves the list.
             remove_where(
                 &mut g,
-                p.key,
-                |w| matches!(w, Waiter::Async { agent, id, .. } if *agent == self.id && *id == p.id),
+                key,
+                |w| matches!(w, Waiter::Async { agent, .. } if *agent == me),
             );
         }
     }
@@ -588,6 +624,74 @@ mod tests {
         assert_eq!(waiting(k), 1);
         assert_eq!(notify(k, u64::MAX), 1, "only the live agent's waiter");
         assert_eq!(other.take_ready().len(), 1);
+    }
+
+    /// The drop of an agent with many async waiters on one key inspects each waiter of the
+    /// list once (one pass per key), not once per waiter of the agent (n(n+1)/2 checks with
+    /// the list lock held, Codex TA-4 r1 #1). The waiter of another agent stays.
+    #[test]
+    fn bulk_drop_scans_each_waiter_once() {
+        const N: usize = 2_000;
+        let (k, k2) = (key(), key());
+        let other = Agent::new();
+        let a = Agent::new();
+        for _ in 0..N {
+            assert!(matches!(
+                a.wait_async(k, || true, None),
+                AsyncWait::Waiting(_)
+            ));
+        }
+        assert!(matches!(
+            other.wait_async(k, || true, None),
+            AsyncWait::Waiting(_)
+        ));
+        for _ in 0..3 {
+            assert!(matches!(
+                a.wait_async(k2, || true, None),
+                AsyncWait::Waiting(_)
+            ));
+        }
+        assert_eq!((waiting(k), waiting(k2)), (N + 1, 3));
+        SCANNED.with(|n| n.set(0));
+        drop(a);
+        let scanned = SCANNED.with(Cell::get);
+        assert!(
+            scanned <= N + 1 + 3,
+            "{scanned} waiters inspected for {} in the list",
+            N + 4
+        );
+        assert_eq!((waiting(k), waiting(k2)), (1, 0));
+        assert_eq!(notify(k2, u64::MAX), 0);
+        assert_eq!(notify(k, u64::MAX), 1, "only the live agent's waiter");
+        assert_eq!(other.take_ready().len(), 1);
+    }
+
+    /// `take_ready` removes many due async waiters of one key in one pass over the key's
+    /// queue (Codex TA-4 r1 #1), and gives them as TimedOut in the order they were made.
+    #[test]
+    fn bulk_expiry_scans_each_waiter_once() {
+        const N: usize = 2_000;
+        let k = key();
+        let a = Agent::new();
+        let mut ids = Vec::with_capacity(N);
+        for _ in 0..N {
+            let AsyncWait::Waiting(id) = a.wait_async(k, || true, Some(Duration::from_millis(1)))
+            else {
+                panic!("waits")
+            };
+            ids.push(id);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        SCANNED.with(|n| n.set(0));
+        let got = a.take_ready();
+        let scanned = SCANNED.with(Cell::get);
+        assert!(
+            scanned <= N + 1,
+            "{scanned} waiters inspected for {N} in the list"
+        );
+        let want: Vec<_> = ids.iter().map(|&id| (id, Outcome::TimedOut)).collect();
+        assert_eq!(got, want);
+        assert_eq!((a.pending(), waiting(k)), (0, 0));
     }
 
     #[test]
