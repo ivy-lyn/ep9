@@ -1,18 +1,19 @@
 //! The `.o` form of a unit (`ep9_unit::obj`, H35-Q3; route MC-w34-5; M8-P3 A2-OBJ).
 //!
 //! ```text
-//! TestUnit (text: one small function, unwind: form 1 of the target) --encode--> unit bytes
-//!   --write_object--> object bytes --read back here (ELF, Mach-O, COFF)--> sections, relocations
-//!   host only: object --rustc (a small program)--> binary: the record names the container
-//!   and the linked text; the text runs; a panic unwinds through it (the linker's unwind tables)
+//! TestUnit (text: two small functions, at 0 and 32; unwind: form 1 of the target) --encode--> unit
+//!   bytes --write_object--> object bytes --read back here (ELF, Mach-O, COFF)--> sections,
+//!   relocations; host only: object --rustc (a small program)--> binary: the record names the
+//!   container and the linked text; each function runs; a panic unwinds through each function
+//!   (the linker's unwind tables; JIT review M8-P3 F1: ld64 kept only the first FDE)
 //! ```
 //!
 //! | Test | What it shows |
 //! |---|---|
-//! | `each_target_object_has_its_sections_and_no_text_relocation` | 5 targets: the section names of `section_names`, the text and the container unchanged, zero text relocations (H35 S5), 2 record relocations, one unwind relocation per FDE (COFF: 3 per entry), the record symbol |
+//! | `each_target_object_has_its_sections_and_no_text_relocation` | 5 targets: the section names of `section_names`, the text and the container unchanged, zero text relocations (H35 S5), 2 record relocations, one unwind relocation per FDE (COFF: 3 per entry), the record symbol; Mach-O: a local symbol at each FDE start |
 //! | `the_writer_refuses_what_has_no_object_form` | a bad symbol, no text, Windows on AArch64, a bad unwind section |
 //! | `check_linked_needs_the_same_text` | `check_linked` is `check` when the linked bytes are the text, else Bytecode |
-//! | `the_object_links_and_runs_on_the_host` | the 4 CI targets (host only): the static linker takes the object; the text runs in place; a panic unwinds through the unit frame |
+//! | `the_object_links_and_runs_on_the_host` | the 4 CI targets (host only): the static linker takes the object; both functions run in place; a panic unwinds through the frame of each |
 #![cfg(feature = "aot")]
 
 mod common;
@@ -26,20 +27,30 @@ use ep9_unit::obj::{AppleOs, ObjError, ObjFormat, section_names, write_object, w
 use ep9_unit::{HostInfo, Outcome, SectionKind, check, check_linked, target_abi, target_arch};
 
 // ---------------------------------------------------------------------------------------------
-// A unit with one function: `f(cb)` calls `cb()` with a frame and returns.
+// A unit with two functions, at 0 and at `SECOND`: each `f(cb)` calls `cb()` with a frame and
+// returns.
+
+/// The text offset of the second function (each target).
+const SECOND: usize = 32;
 
 /// AArch64: stp x29, x30, [sp, #-16]!; mov x29, sp; blr x0; ldp x29, x30, [sp], #16; ret.
+const A64_FN: [u32; 5] = [
+    0xa9bf_7bfd,
+    0x9100_03fd,
+    0xd63f_0000,
+    0xa8c1_7bfd,
+    0xd65f_03c0,
+];
+
+/// The AArch64 text: the function, `nop` to `SECOND`, the function again.
 fn a64_text() -> Vec<u8> {
-    [
-        0xa9bf_7bfdu32,
-        0x9100_03fd,
-        0xd63f_0000,
-        0xa8c1_7bfd,
-        0xd65f_03c0,
-    ]
-    .iter()
-    .flat_map(|w| w.to_le_bytes())
-    .collect()
+    let f: Vec<u8> = A64_FN.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut t = f.clone();
+    while t.len() < SECOND {
+        t.extend_from_slice(&0xd503_201fu32.to_le_bytes());
+    }
+    t.extend_from_slice(&f);
+    t
 }
 
 /// x86-64 System V: push rbp; mov rbp, rsp; call rdi; pop rbp; ret.
@@ -47,7 +58,8 @@ const X64_SYSV_TEXT: [u8; 8] = [0x55, 0x48, 0x89, 0xe5, 0xff, 0xd7, 0x5d, 0xc3];
 
 /// x86-64 Windows: push rbp; sub rsp, 32; call rcx; add rsp, 32; pop rbp; ret (13 bytes), 3
 /// bytes of int3, then the UNWIND_INFO at 16: version 1, prolog 5 bytes, 2 codes (at 5:
-/// UWOP_ALLOC_SMALL 32; at 1: UWOP_PUSH_NONVOL rbp).
+/// UWOP_ALLOC_SMALL 32; at 1: UWOP_PUSH_NONVOL rbp). The second function (the first 13 bytes)
+/// at `SECOND` uses the same UNWIND_INFO.
 const X64_WIN_TEXT: [u8; 24] = [
     0x55, 0x48, 0x83, 0xec, 0x20, 0xff, 0xd1, 0x48, 0x83, 0xc4, 0x20, 0x5d, 0xc3, 0xcc, 0xcc, 0xcc,
     0x01, 0x05, 0x02, 0x00, 0x05, 0x32, 0x01, 0x50,
@@ -62,7 +74,7 @@ fn record(out: &mut Vec<u8>, body: &[u8]) {
 }
 
 /// The unix unwind section of form 1 (module doc of `ep9_vm` `unit_loader.rs`): one CIE, one
-/// FDE over `0..len` of the text, the zero terminator.
+/// FDE over `0..len` and one over `SECOND..SECOND + len` of the text, the zero terminator.
 fn eh_unwind(arch: u8, len: usize) -> Vec<u8> {
     let (cie_tail, fde_insns): (&[u8], &[u8]) = if arch == target_arch::AARCH64 {
         // code align 4, data align -8, return address x30; CFA = sp.
@@ -83,12 +95,14 @@ fn eh_unwind(arch: u8, len: usize) -> Vec<u8> {
     let mut cie = vec![0, 0, 0, 0, 1, b'z', b'R', 0];
     cie.extend_from_slice(cie_tail);
     record(&mut out, &cie);
-    let fde_at = out.len();
-    let mut fde = ((fde_at + 4) as u32).to_le_bytes().to_vec();
-    fde.extend_from_slice(&0u64.to_le_bytes());
-    fde.extend_from_slice(&(len as u64).to_le_bytes());
-    fde.extend_from_slice(fde_insns);
-    record(&mut out, &fde);
+    for begin in [0, SECOND as u64] {
+        let fde_at = out.len();
+        let mut fde = ((fde_at + 4) as u32).to_le_bytes().to_vec();
+        fde.extend_from_slice(&begin.to_le_bytes());
+        fde.extend_from_slice(&(len as u64).to_le_bytes());
+        fde.extend_from_slice(fde_insns);
+        record(&mut out, &fde);
+    }
     out.extend_from_slice(&[0; 4]);
     out
 }
@@ -96,18 +110,24 @@ fn eh_unwind(arch: u8, len: usize) -> Vec<u8> {
 /// The text and the unwind section of a target.
 fn code(arch: u8, abi: u8) -> (Vec<u8>, Vec<u8>) {
     if abi == target_abi::WINDOWS {
+        let mut text = X64_WIN_TEXT.to_vec();
+        text.resize(SECOND, 0xcc);
+        text.extend_from_slice(&X64_WIN_TEXT[..13]);
         let mut pdata = Vec::new();
-        for v in [0u32, 13, 16] {
+        for v in [0, 13, 16, SECOND as u32, SECOND as u32 + 13, 16] {
             pdata.extend_from_slice(&v.to_le_bytes());
         }
-        return (X64_WIN_TEXT.to_vec(), pdata);
+        return (text, pdata);
     }
-    let text = if arch == target_arch::AARCH64 {
-        a64_text()
+    let (text, len) = if arch == target_arch::AARCH64 {
+        (a64_text(), 4 * A64_FN.len())
     } else {
-        X64_SYSV_TEXT.to_vec()
+        let mut t = X64_SYSV_TEXT.to_vec();
+        t.resize(SECOND, 0xcc);
+        t.extend_from_slice(&X64_SYSV_TEXT);
+        (t, X64_SYSV_TEXT.len())
     };
-    let unwind = eh_unwind(arch, text.len());
+    let unwind = eh_unwind(arch, len);
     (text, unwind)
 }
 
@@ -300,6 +320,41 @@ fn read_macho(b: &[u8]) -> Obj {
     Obj { sections, globals }
 }
 
+/// The text-section offsets of the symbols of a Mach-O object that are defined in the text
+/// (section 1), sorted, without repeats; it also checks that the flags have no
+/// MH_SUBSECTIONS_VIA_SYMBOLS and that `LC_DYSYMTAB` names every local symbol, then the one
+/// external symbol.
+fn macho_text_symbols(b: &[u8]) -> Vec<u64> {
+    assert_eq!(u32_at(b, 24) & 0x2000, 0, "MH_SUBSECTIONS_VIA_SYMBOLS");
+    let (mut syms, mut dysym, mut text_addr) = (None, None, None);
+    let mut at = 32;
+    for _ in 0..u32_at(b, 16) {
+        match u32_at(b, at) {
+            2 => syms = Some((u32_at(b, at + 8) as usize, u32_at(b, at + 12) as usize)),
+            0xb => {
+                let w: Vec<usize> = (8..24)
+                    .step_by(4)
+                    .map(|k| u32_at(b, at + k) as usize)
+                    .collect();
+                dysym = Some(w);
+            }
+            0x19 => text_addr = Some(u64_at(b, at + 72 + 32)),
+            _ => {}
+        }
+        at += u32_at(b, at + 4) as usize;
+    }
+    let ((symoff, nsyms), text_addr) = (syms.unwrap(), text_addr.unwrap());
+    assert_eq!(dysym.unwrap(), [0, nsyms - 1, nsyms - 1, 1], "LC_DYSYMTAB");
+    let mut v: Vec<u64> = (0..nsyms)
+        .map(|i| &b[symoff + 16 * i..symoff + 16 * (i + 1)])
+        .filter(|s| s[4] & 0x0e == 0x0e && s[5] == 1)
+        .map(|s| u64_at(s, 8) - text_addr)
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// The `LC_BUILD_VERSION` of a Mach-O object: (platform, minos).
 fn macho_build_version(b: &[u8]) -> Option<(u32, u32)> {
     let mut at = 32;
@@ -435,12 +490,13 @@ fn each_target_object_has_its_sections_and_no_text_relocation() {
         );
         let unwind = &obj.sec(w);
         let kinds: Vec<(u32, &str)> = unwind.relocs.iter().map(|x| (x.1, x.2.as_str())).collect();
+        // Two functions: two FDEs (two RUNTIME_FUNCTION entries).
         let want: Vec<(u32, &str)> = match (format, arch) {
-            (ObjFormat::Elf, target_arch::X86_64) => vec![(2, t)],
-            (ObjFormat::Elf, _) => vec![(261, t)],
+            (ObjFormat::Elf, target_arch::X86_64) => vec![(2, t); 2],
+            (ObjFormat::Elf, _) => vec![(261, t); 2],
             (ObjFormat::MachO, target_arch::X86_64) => vec![],
-            (ObjFormat::MachO, _) => vec![(1, w), (0, t)],
-            (ObjFormat::Coff, _) => vec![(3, t); 3],
+            (ObjFormat::MachO, _) => vec![(1, w), (0, t), (1, w), (0, t)],
+            (ObjFormat::Coff, _) => vec![(3, t); 6],
         };
         assert_eq!(kinds, want, "{what}: unwind relocations");
         assert_eq!(
@@ -460,6 +516,14 @@ fn each_target_object_has_its_sections_and_no_text_relocation() {
             assert!(obj.names().contains(&".note.GNU-stack"), "{what}");
         }
         if format == ObjFormat::MachO {
+            // JIT review M8-P3 F1: ld64 splits a section into atoms at its symbols and keeps
+            // one FDE per atom. A local symbol at each FDE start (and no
+            // MH_SUBSECTIONS_VIA_SYMBOLS: the text stays one atom) keeps every FDE.
+            assert_eq!(
+                macho_text_symbols(&o),
+                [0, SECOND as u64],
+                "{what}: FDE starts"
+            );
             let a64 = arch == target_arch::AARCH64;
             let mac = if a64 {
                 11 << 16
@@ -523,7 +587,11 @@ fn the_writer_refuses_what_has_no_object_form() {
         }
         t.encode()
     };
-    let past = with_unwind(&unit, &|d| d[40] += 1);
+    // The first FDE (at 24) gets a range one byte past the text end.
+    let text_len = code(target_arch::AARCH64, target_abi::LINUX).0.len() as u64;
+    let past = with_unwind(&unit, &|d| {
+        d[40..48].copy_from_slice(&(text_len + 1).to_le_bytes())
+    });
     assert!(matches!(write_object(&past, "s"), Err(ObjError::Unwind(_))));
     let pcrel = with_unwind(&unit, &|d| d[16] = 0x1b);
     assert!(matches!(
@@ -531,7 +599,8 @@ fn the_writer_refuses_what_has_no_object_form() {
         Err(ObjError::Unwind(_))
     ));
     let (win, _) = unit_for(&host, target_arch::X86_64, target_abi::WINDOWS);
-    let win_past = with_unwind(&win, &|d| d[4] = 25);
+    let win_len = code(target_arch::X86_64, target_abi::WINDOWS).0.len() as u8;
+    let win_past = with_unwind(&win, &|d| d[4] = win_len + 1);
     assert!(matches!(
         write_object(&win_past, "s"),
         Err(ObjError::Unwind(_))
@@ -612,12 +681,16 @@ fn main() {
     let t = unsafe { std::slice::from_raw_parts(r.text, r.text_len as usize) };
     assert!(u == &unit[..], "the record's container");
     assert!(t == &text[..], "the record's text");
-    let f: extern "C-unwind" fn(extern "C-unwind" fn()) = unsafe { std::mem::transmute(r.text) };
-    f(count);
-    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     std::panic::set_hook(Box::new(|_| {}));
-    let e = std::panic::catch_unwind(|| f(boom)).unwrap_err();
-    assert_eq!(e.downcast_ref::<u32>(), Some(&7));
+    // Each function: the one at 0 and the one at 32 (its own FDE or RUNTIME_FUNCTION entry).
+    for (k, at) in [0usize, 32].into_iter().enumerate() {
+        let f: extern "C-unwind" fn(extern "C-unwind" fn()) =
+            unsafe { std::mem::transmute(r.text.add(at)) };
+        f(count);
+        assert_eq!(CALLS.load(Ordering::SeqCst), k as u32 + 1);
+        let e = std::panic::catch_unwind(|| f(boom)).unwrap_err();
+        assert_eq!(e.downcast_ref::<u32>(), Some(&7));
+    }
     println!("linked unit: ran in place, unwound through");
 }
 "#;

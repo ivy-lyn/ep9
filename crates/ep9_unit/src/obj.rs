@@ -14,6 +14,7 @@
 //! | record | `.data.rel.ro.ep9u` (WA, 8) | `__DATA,__ep9u_rec` (8) | `.rdata$ep9ur` (R, 8) | `ep9_platform::linked::LinkedUnit` (48 bytes): 2 absolute addresses (unit, text), the only data relocations |
 //! | unwind | `.eh_frame` (`pc_begin` pcrel sdata4; PC32 / PREL32) | `__TEXT,__eh_frame` (pcrel 8 bytes; arm64 SUBTRACTOR + UNSIGNED, x86-64 none, as LLVM writes it) | `.pdata` (the RUNTIME_FUNCTION entries; ADDR32NB; the UNWIND_INFO bytes stay in the text) | the container's unwind section (form 1, `ep9_vm` `unit_loader.rs`), rebased on the text |
 //! | symbol | the record symbol, global (ELF `<name>`, Mach-O `_<name>`, COFF `<name>`) | | | |
+//! | Mach-O text symbols | | a local symbol at each FDE start (`ltmp_ep9u_f<k>`); no `MH_SUBSECTIONS_VIA_SYMBOLS` | | ld64 splits a section into atoms at its symbols and keeps one FDE per atom: with no symbol at an FDE start it drops that FDE (JIT review M8-P3 F1); without the flag the text stays one atom |
 //!
 //! ELF also gets an empty `.note.GNU-stack` (no executable stack). The target comes from the
 //! header (`target_arch`, `target_abi`); Windows on AArch64 has no form (no tier-1 target).
@@ -557,7 +558,10 @@ fn macho(p: &Parts<'_>, mut eh: Vec<u8>, fields: &[(usize, u64)]) -> Vec<u8> {
         };
         eh[off..off + 8].copy_from_slice(&v.to_le_bytes());
     }
-    // Symbols: 0 text, 1 unit, 2 eh_frame (locals), 3 the record (external).
+    // Symbols: 0 text, 1 unit, 2 eh_frame, then one per FDE start in the text (locals), then the
+    // record (external). ld64 keeps one FDE per atom of a section; the FDE symbols make an
+    // atom start at each FDE, so it keeps every FDE (JIT review M8-P3 F1). The header sets no
+    // MH_SUBSECTIONS_VIA_SYMBOLS, so the text is not split and stays in one piece.
     let mut strtab = vec![0u8, 0];
     let mut syms = Vec::new();
     let locals = ["ltmp_ep9u_text", "ltmp_ep9u_unit", "ltmp_ep9u_eh"];
@@ -567,6 +571,12 @@ fn macho(p: &Parts<'_>, mut eh: Vec<u8>, fields: &[(usize, u64)]) -> Vec<u8> {
         strtab.extend_from_slice(n.as_bytes());
         strtab.push(0);
     }
+    for (k, &(_, begin)) in fields.iter().enumerate() {
+        syms.push((strtab.len() as u32, 0x0eu8, 1, addr[0] + begin));
+        strtab.extend_from_slice(format!("ltmp_ep9u_f{k}").as_bytes());
+        strtab.push(0);
+    }
+    let nlocal = syms.len() as u32;
     syms.push((strtab.len() as u32, 0x0f, 3, addr[2]));
     strtab.push(b'_');
     strtab.extend_from_slice(p.symbol.as_bytes());
@@ -668,7 +678,7 @@ fn macho(p: &Parts<'_>, mut eh: Vec<u8>, fields: &[(usize, u64)]) -> Vec<u8> {
     put32(&mut out, strtab.len() as u32);
     put32(&mut out, 0xb); // LC_DYSYMTAB
     put32(&mut out, 80);
-    for v in [0u32, 3, 3, 1, 4, 0] {
+    for v in [0u32, nlocal, nlocal, 1, nlocal + 1, 0] {
         put32(&mut out, v); // ilocalsym, nlocalsym, iextdefsym, nextdefsym, iundefsym, nundefsym
     }
     out.extend_from_slice(&[0u8; 80 - 32]);
