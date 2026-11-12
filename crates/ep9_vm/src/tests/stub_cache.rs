@@ -9,8 +9,8 @@
 //! weak, and a shape that dies frees its case.
 
 use super::ic::{
-    MASK, SLOT, Site, T, below_a_pad, collect_after_a_pad, each, int, key, object_prototype,
-    object_with, own,
+    MASK, SLOT, Site, T, at_capacity, below_a_pad, collect_after_a_pad, each, grow_adds, int, key,
+    object_prototype, object_with, own,
 };
 use crate::frame::UNDEFINED;
 use crate::ic::{self, KEY_STRING, State, hk, smi};
@@ -566,5 +566,163 @@ fn a_new_stub_cache_is_empty() {
         let t = T::new(c, &[Site::Get("x")]);
         assert_eq!(t.rt().stub_cache.len(), 0);
         assert_eq!(stub_cache::ENTRIES, 8192);
+    });
+}
+
+// ---- the probe of the store handlers and the add with growth (M8-P0 TS-STORE) ----------------
+
+/// The number of stores that the probe in the cold bodies of `SetNamedProperty` and
+/// `DefineNamedOwnProperty` answered (`ic::handler_mega_store`).
+fn store_hits() -> u32 {
+    ic::HANDLER_STORE_HITS.with(|c| c.get())
+}
+
+/// Makes the store site `i` of `t` megamorphic with five objects under `p` that get `name` (a
+/// field store). The caller roots the result while the state matters.
+fn megamorphic_store(t: &mut T, i: usize, p: u64, name: &str) -> [u64; 5] {
+    let pads = ["a", "b", "c", "d", "e"];
+    let objs = core::array::from_fn(|j| {
+        object_with(t.rt(), p, &[(pads[j], int(0)), (name, int(10 + j as i32))])
+    });
+    for &o in &objs {
+        t.ok(i, o, int(1));
+    }
+    assert_eq!(t.state(i), State::Megamorphic);
+    objs
+}
+
+/// Stores `v` into `o.<name>` at site `i` twice, with `o2` (same shape as `o`) the second
+/// time: the first store fills the entry (the runtime call), the second one must come from the
+/// probe of the handler. Without GC stress the count proves it; under GC stress a collection
+/// may empty the table first, so only the values are checked.
+fn store_fill_then_hit(t: &mut T, i: usize, o: u64, o2: u64, name: &str, stress: bool) {
+    assert_eq!(id(o), id(o2));
+    t.ok(i, o, int(7));
+    let before = store_hits();
+    t.ok(i, o2, int(8));
+    assert_eq!(own(t.rt(), o, name), Some(int(7)));
+    assert_eq!(own(t.rt(), o2, name), Some(int(8)));
+    if !stress {
+        assert_eq!(
+            store_hits(),
+            before + 1,
+            "the handler's probe stored `{name}`"
+        );
+    }
+}
+
+#[test]
+fn the_set_named_handlers_answer_megamorphic_stores_from_the_stub_cache() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(
+            c,
+            &[
+                Site::Set("x", false),
+                Site::Define("x"),
+                Site::Set("x", true),
+            ],
+        );
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in [0, 1, 2] {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        for i in [0, 1, 2] {
+            // An own field in the object, and an add with room (in the object).
+            let f = |t: &T, pad: &str| object_with(t.rt(), op, &[(pad, int(0)), ("x", int(3))]);
+            let (o, o2) = (f(&t, "f"), f(&t, "f"));
+            store_fill_then_hit(&mut t, i, o, o2, "x", stress);
+            let a = |t: &T| object_with(t.rt(), op, &[("g", int(0))]);
+            let (o, o2) = (a(&t), a(&t));
+            store_fill_then_hit(&mut t, i, o, o2, "x", stress);
+            assert_eq!(id(o), id(o2), "both took the add");
+        }
+        // Not an object at the megamorphic site: the runtime call (a sloppy store to a
+        // primitive is ignored; a strict one throws).
+        let before = store_hits();
+        let s = string::new_string(t.rt(), "abc");
+        t.ok(0, s, int(1));
+        t.ok(0, int(7), int(1));
+        assert!(t.call(2, int(7), int(1)).is_err());
+        assert_eq!(store_hits(), before);
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
+
+/// A probe hit of a 0x24 add still checks the validity cell: a setter that a prototype gets
+/// after the entry was made runs (the probe misses, the runtime call takes the generic path).
+#[test]
+fn a_store_probe_hit_still_checks_the_validity_cell() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Set("x", false)]);
+        let op = object_prototype(t.rt());
+        let p = object_with(t.rt(), op, &[("pp", int(0))]);
+        let objs = megamorphic_store(&mut t, 0, p, "q");
+        let kept = t.keep_all(&objs);
+        let a = |t: &T| object_with(t.rt(), p, &[("lone", int(0))]);
+        let (o, o2) = (a(&t), a(&t));
+        store_fill_then_hit(&mut t, 0, o, o2, "x", stress);
+        // A read-only `x` on the prototype: the add case of the entry no longer applies.
+        props::own_define(
+            t.rt(),
+            p,
+            key(t.rt(), "x"),
+            int(5),
+            attr::ENUMERABLE | attr::CONFIGURABLE,
+        );
+        let o3 = a(&t);
+        let before = store_hits();
+        t.ok(0, o3, int(9));
+        assert_eq!(
+            own(t.rt(), o3, "x"),
+            None,
+            "the read-only `x` blocks the add"
+        );
+        assert_eq!(store_hits(), before);
+        t.release_all(kept);
+    });
+}
+
+/// An add whose stub cache entry has no room in the SLOTS cell: the probe of the handler
+/// misses, and the runtime call grows the SLOTS cell and stores through the entry (`ic::mega_store`,
+/// `ic::grow_add`).
+#[test]
+fn a_megamorphic_add_with_no_room_grows_through_the_stub_cache_entry() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Set("x", false), Site::Define("x")]);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in [0, 1] {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        for i in [0, 1] {
+            let first = at_capacity(t.rt(), op);
+            let from = id(first);
+            t.ok(i, first, int(1));
+            let to = id(first);
+            let op_ = if i == 0 { Op::Store } else { Op::Define };
+            let made = stub_cache::probe(t.rt(), op_, from, key(t.rt(), "x")).is_some();
+            let (hits, grown) = (store_hits(), grow_adds());
+            let q = at_capacity(t.rt(), op);
+            assert_eq!(id(q), from);
+            t.ok(i, q, int(2));
+            assert_eq!(own(t.rt(), q, "x"), Some(int(2)));
+            assert_eq!(id(q), to);
+            assert_eq!(store_hits(), hits, "the handler's probe cannot grow");
+            if !stress {
+                assert!(made, "the first add made the entry");
+                assert_eq!(grow_adds(), grown + 1, "the runtime call grew it");
+            }
+        }
+        for k in kept {
+            t.release_all(k);
+        }
     });
 }

@@ -1025,9 +1025,9 @@ fn emit_shape(s: &mut Asm, shape: Shape, callee: &str, l: RegisterList) {
 /// and a test that counts T0 forwards sees too few.
 static RUN_HOST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Runs `make` with `echo`, `sp`, `fcall` and `fapply` registered, the human fast paths `on`
-/// or off: (result, output, host entries, forwarded calls, the forwarded calls of the T0 call
-/// fast path). Holds [`RUN_HOST`] until it returns.
+/// Runs `make` with `echo`, `sp`, `targs`, `fcall` and `fapply` registered, the human fast
+/// paths `on` or off: (result, output, host entries, forwarded calls, the forwarded calls of
+/// the T0 call fast path). Holds [`RUN_HOST`] until it returns.
 fn run_host(
     make: fn() -> VerifiedUnit,
     d: Dispatch,
@@ -1045,6 +1045,7 @@ fn run_host(
         let mut iso = isolate(c);
         iso.register_host_function("echo", 0, echo);
         iso.register_host_function("sp", 0, sp);
+        iso.register_host_function("targs", 0, targs);
         take_output();
         HOST_ENTRY_HITS.with(|h| h.set(0));
         FORWARDED_CALLS.with(|h| h.set(0));
@@ -1301,25 +1302,22 @@ fn the_t0_call_fast_path_pushes_a_forwarded_call_in_place() {
             assert!(on.0.is_ok(), "{:?}", on.0);
             assert_eq!(on.1, want, "{} stress={stress}", d.name());
             assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
-            // The T0 call fast path takes most forwards (not the first call of each builtin,
-            // not the call that makes add3's vector, not a call in the profile window); the
-            // cold path takes the rest. Off: none.
-            // The x86-64 form of the fast path does not forward (`call::forward_frame`).
+            // The T0 call path takes most forwards (not the first call of each builtin, not
+            // the call that makes add3's vector; on a64 also not a call in the profile
+            // window); `slow::call` takes the rest. Off: none.
+            // x86-64 (not spike-native): from the cold body of the call (`forward_or_call`,
+            // M8-P0 X86-CALL-FWD); before it, every x86-64 forward took `slow::call` (t0 0).
             let (all, t0) = (on.3, on.4);
             assert!(
                 all > ROUNDS as u64 && all <= 4 * ROUNDS as u64,
                 "{}: {all}",
                 d.name()
             );
-            if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
-                assert_eq!(t0, 0, "{} stress={stress}", d.name());
-            } else {
-                assert!(
-                    t0 > ROUNDS as u64 && t0 < all,
-                    "{} stress={stress}: {t0} of {all}",
-                    d.name()
-                );
-            }
+            assert!(
+                t0 > ROUNDS as u64 && t0 < all,
+                "{} stress={stress}: {t0} of {all}",
+                d.name()
+            );
             assert_eq!((off.3, off.4), (0, 0), "{} stress={stress}", d.name());
         }
     }
@@ -1341,6 +1339,8 @@ fn sp<'s>(
 /// ```text
 /// handler ──fast──> call::forward_frame (out of line in an unoptimized build only)
 ///         ──tail jump──> the next handler          (no native frame stays behind)
+/// x86-64: handler ──tail jump──> <op>_cold ──> forward_or_call ──> forward_frame
+///         <op>_cold ──tail jump──> the next handler
 /// ```
 ///
 /// At c66480e3 `forward_frame` was out of line in every build with debug assertions, also an
@@ -1448,13 +1448,10 @@ fn forwarding_call_handlers_keep_the_sibling_dispatch_flat() {
     let (r, out, _, all, t0) = run_host(make, Dispatch::Sibling, false, true);
     assert_eq!(r, Ok("undefined".to_string()));
     let [d0, d1, d2] = [0, 1, 2].map(|i| out[i].parse::<f64>().expect("a number"));
-    // The forwards ran: in both windows of rounds; on a64 the T0 call fast path took most.
+    // The forwards ran: in both windows of rounds; the T0 call path took most (x86-64: in
+    // the cold handler of the call, which ends in a tail jump too; M8-P0 X86-CALL-FWD).
     assert!(all > ROUNDS as u64, "{all}");
-    if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
-        assert_eq!(t0, 0);
-    } else {
-        assert!(t0 > ROUNDS as u64, "{t0} of {all}");
-    }
+    assert!(t0 > ROUNDS as u64, "{t0} of {all}");
     if d1 != d0 {
         eprintln!(
             "skip: this build has no tail calls (d0 {d0}, d1 {d1}: opt-level 0), so the \
@@ -1469,4 +1466,151 @@ fn forwarding_call_handlers_keep_the_sibling_dispatch_flat() {
          calls; d0 {d0}): a Call* handler of the sibling expansion has no tail jump",
         d2 - d0
     );
+}
+
+/// `targs(...)`: "<function|undefined|other>:<args joined by ,>", the kind of `this` and the
+/// arguments: a host callee that is not a forwarder (M8-P0 X86-CALL-FWD).
+fn targs<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let mut parts = Vec::new();
+    for v in args.iter() {
+        parts.push(cx.to_rust_string(v)?);
+    }
+    let t = if this.is_callable() {
+        "function"
+    } else if this.is_undefined() {
+        "undefined"
+    } else {
+        "other"
+    };
+    let s = format!("{t}:{}", parts.join(","));
+    Ok(cx.new_string(&s)?.value())
+}
+
+/// The arms of the x86-64 cold call body that do not forward (M8-P0 X86-CALL-FWD,
+/// `interp::ops::call_receiver_cold` and `forward_or_call`) give the result of the cold path,
+/// with the human fast paths on and off, on every target:
+///
+/// ```text
+/// targs with this = add3 (a FUNCTION), 5 receiver shapes ──> forward_or_call: forward_frame
+///   refuses (not apply or call) ──> slow::call ──> host_entry runs targs
+/// targs() as CallProperty with count 0 (a list form, no receiver) ──> call_record_cold
+/// add3.fcall(null, 7) in registers above 127 (Wide) ──> forward_or_call: a prefixed call
+///   ──> slow::call (host_entry refuses a prefixed call) ──> the builtin runs add3
+/// ```
+///
+/// On x86-64 (not spike-native) none of these calls forwards. The other targets may forward
+/// the prefixed call in `call_fast` (the prefixed step runs the fast body).
+#[test]
+fn the_cold_call_arms_that_do_not_forward_give_the_cold_path_result() {
+    const ROUNDS: usize = 12;
+    const SHAPES: [Shape; 5] = [
+        Shape::CallProperty0,
+        Shape::CallProperty1,
+        Shape::CallProperty2,
+        Shape::CallProperty,
+        Shape::CallAnyReceiver,
+    ];
+    fn script() -> FunctionCode {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(4);
+        // 200 registers, so that the operands of the list after them need the Wide prefix
+        // (one-byte register operands end at 127).
+        let _pad = s.b.new_register_list(200);
+        let w = s.b.new_register_list(3);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("add3");
+        for _ in 0..ROUNDS {
+            for shape in SHAPES {
+                let n: u32 = match shape {
+                    Shape::CallProperty0 => 0,
+                    Shape::CallProperty1 => 1,
+                    Shape::CallProperty2 => 2,
+                    _ => 3,
+                };
+                s.lda_global("add3");
+                s.b.star(l.get(0));
+                for i in 1..=n {
+                    s.b.lda_smi(i as i32).star(l.get(i));
+                }
+                s.lda_global("targs");
+                s.b.star(s.f);
+                let (f, slot) = (s.f, s.call);
+                let list = RegisterList::new(l.get(0).local_index().unwrap(), n + 1);
+                match shape {
+                    Shape::CallProperty0 => s.b.call_property0(f, l.get(0), slot),
+                    Shape::CallProperty1 => s.b.call_property1(f, l.get(0), l.get(1), slot),
+                    Shape::CallProperty2 => {
+                        s.b.call_property2(f, l.get(0), l.get(1), l.get(2), slot)
+                    }
+                    Shape::CallProperty => s.b.call_property(f, list, n + 1, slot),
+                    _ => s.b.call_any_receiver(f, list, n + 1, slot),
+                };
+                s.print_acc();
+            }
+            // targs() as CallProperty with count 0 (an empty list): no receiver.
+            let none = RegisterList::new(l.get(0).local_index().unwrap(), 0);
+            s.lda_global("targs");
+            s.b.star(s.f).call_property(s.f, none, 0, s.call);
+            s.print_acc();
+            // add3.fcall(null, 7) with Wide register operands.
+            s.lda_global("add3");
+            s.b.star(w.get(0))
+                .lda_null()
+                .star(w.get(1))
+                .lda_smi(7)
+                .star(w.get(2));
+            s.lda_global("fcall");
+            s.b.star(s.f)
+                .call_property2(s.f, w.get(0), w.get(1), w.get(2), s.call);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        s.finish()
+    }
+    fn make() -> VerifiedUnit {
+        unit("", vec![script(), add3_code()])
+    }
+    // The fcall of `w` is a prefixed instruction.
+    let code = script();
+    let wide = ep9_bytecode::Instructions::new(code.bytecode())
+        .map(|i| i.expect("valid bytecode"))
+        .filter(|i| {
+            i.opcode == ep9_bytecode::Opcode::CallProperty2
+                && i.scale == ep9_bytecode::OperandScale::Wide
+        })
+        .count();
+    assert_eq!(wide, ROUNDS, "one Wide CallProperty2 per round");
+    let want = [
+        "function:",
+        "function:1",
+        "function:1,2",
+        "function:1,2,3",
+        "function:1,2,3",
+        "undefined:",
+        "undefinedundefined7object",
+    ]
+    .repeat(ROUNDS);
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run_host(make, d, stress, true);
+            let off = run_host(make, d, stress, false);
+            assert!(on.0.is_ok(), "{:?}", on.0);
+            assert_eq!(on.1, want, "{} stress={stress}", d.name());
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{}", d.name());
+            // The decode-free host entry: the 6 targs calls and the 7 prints of each round
+            // (never the prefixed fcall). Off: none.
+            let hits = 13 * ROUNDS as u64;
+            assert_eq!((on.2, off.2), (hits, 0), "{} stress={stress}", d.name());
+            if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
+                assert_eq!((on.3, on.4), (0, 0), "{} stress={stress}", d.name());
+            }
+            assert_eq!((off.3, off.4), (0, 0), "{} stress={stress}", d.name());
+        }
+    }
 }

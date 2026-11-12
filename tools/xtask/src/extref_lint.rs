@@ -150,6 +150,9 @@ pub(crate) const VM_STACK: &[(&str, &str)] = &[
     // A sampled call record after `call_fast` pushed the callee frame: the caller frame's
     // FunctionInfo slot (its key store goes through `ExternalRef`, `target_key`).
     ("crates/ep9_vm/src/profile.rs", "record_call_pushed"),
+    // The no-change test of a record exit (M8-P1 RECCOST2): the FunctionInfo slot of the
+    // running frame, decoded with no 64-bit constant (`frame::native(0)` gives the mask).
+    ("crates/ep9_vm/src/profile.rs", "adds_bit"),
 ];
 
 /// The macros that build or hide a name, so that a token rule never sees it (finding

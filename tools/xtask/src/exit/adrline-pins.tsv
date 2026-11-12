@@ -444,6 +444,11 @@ history	H36-fp-semantics.md	tools/xtask/src/fpcheck.rs:1669	3 Verifier (spec-int
 # line 423 to 441; these 2 H34 Review record rows keep their text at the M7-P3 tag 3cc9e671.
 history	H34-relocation-kinds.md	.github/scripts/dep-guards.sh:423	| 3 Verifier (M7-P2 amendment: the 2026-11-07 fill row, ep9_masm as built, A2-MASM)	3cc9e671	^deps_within 21 ep9_masm$
 history	H34-relocation-kinds.md	.github/scripts/dep-guards.sh:423	| 4 Data (M7-P2 amendment: the 2026-11-07 clarify row, the ep9_masm not-built notes)	3cc9e671	^deps_within 21 ep9_masm$
+# M8-P1 A2-CONSTRUCT (329db756): crates/ep9_vm/src/unit_loader.rs:1016, the install refusal, now
+# refuses only class constructors (is_class_constructor); these 2 Review record rows keep their
+# text at the M8-P0 head a542d985, where the line refused every constructor.
+history	H20-builtin-abi.md	crates/ep9_vm/src/unit_loader.rs:1016	| 3 Verifier (M7-P5 amendment: the 2026-11-10 fill (API addition) row, the unsafe install method	a542d985	^        if kind != Some\(DispatchKind::AotBaseline\) \|\| !obj\.deps\.is_empty\(\) \|\| fi\.is_constructor\(\) \{$
+history	H35-aot-unit-format.md	crates/ep9_vm/src/unit_loader.rs:1016	| 3 Verifier (M7-P5 amendment: the 2026-11-10 fill row, RW template form 1 and unwind form 1 (A2-RW))	a542d985	^        if kind != Some\(DispatchKind::AotBaseline\) \|\| !obj\.deps\.is_empty\(\) \|\| fi\.is_constructor\(\) \{$
 # TA-0 merge fixer (ADRLINE of the TypedArray TA-0 merge head 249e0f7e, branch m1m7/spec-ta): dated
 # Review record rows and one dated Freeze-table note keep the line of the commit they read. TA-DECL
 # moved the kinds.rs flag-mask asserts (tests module), the elements.rs kind module and storage(), and

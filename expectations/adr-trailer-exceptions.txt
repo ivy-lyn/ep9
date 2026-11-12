@@ -41,3 +41,10 @@ de26d35fb8528d3b823c486abd94c28f43ae4a12 none M6-P2-TRAILER
 # change; main's tree is b2e461ee, already here).
 0b2442a69089c1079cefcd24960ac2397c3262b3 none M7-P0-MAIN-MERGE
 c9277d2c47617393e20cf65903a41f055ad8b4a3 none M7-P0-MAIN-MERGE
+#
+# M8-P0: PR #8 (m2/m7) was squash-merged into main by GitHub (the async merge API, squash).
+# The squash commit b30e76b copies the tree of m2/m7 500df6b6, whose commits carry their own
+# trailers; the squash message has none. 1645772 merges main into m2m8/p0-merge with `-s ours`
+# (no tree change; main's tree is 500df6b6, already here).
+b30e76b0db4c8931467513fbc3148c71b68710fc none M8-P0-MAIN-MERGE
+164577239308cbc73c958c7788d8d94d717e7afd none M8-P0-MAIN-MERGE

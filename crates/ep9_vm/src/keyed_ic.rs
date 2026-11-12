@@ -52,10 +52,10 @@
 //!
 //! **Two tails (M5-P1-ORCH-3, MC-w19-10; M5-P2 ELEM2).** The StoreKeyed hit has two tails
 //! with no flag between them: the monomorphic one (store, `Flow::Next`) and the megamorphic
-//! one (store, then the sampled kinds-set bit, `profile::keyed_hit_kind`). The monomorphic
-//! path pays no budget test. The kinds-set record is the only `profile.rs` hook on either
-//! keyed hit path (here, and after the array path of `GetKeyedProperty`, where the bit goes
-//! out through `record_next`); it is what the `ics_only` table strips (PROFILE6).
+//! one (store, then the sampled kinds-set bit, `profile::keyed_hit_kind`). The monomorphic path
+//! pays no budget test. The kinds-set record is the only `profile.rs` hook on either keyed hit path
+//! (here, and after the array path of `GetKeyedProperty`, where the bit goes out through
+//! `record_next` if new (`profile::adds_bit`), else `skip_next`); `ics_only` strips it (PROFILE6).
 //!
 //! **Fuses (MC-w14-18).** The fast case assumes no fuse: it writes a present own element.
 //! The generic paths of `property.rs` keep using the `proto_index` flag

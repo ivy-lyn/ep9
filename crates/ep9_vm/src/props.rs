@@ -240,13 +240,26 @@ fn field_init(rt: &Runtime, o: u64, s: u64, f: usize, v: u64) {
 }
 
 /// Makes room for field `f` of `o` under the fast shape `s` (a new SLOTS cell if the
-/// out-of-line store is too small). GC point.
-fn reserve_field(rt: &Runtime, o: u64, s: u64, f: usize) {
+/// out-of-line store is too small; also the add with growth of `ic::grow_add`). GC point.
+///
+/// The front only: an in-object field (`f` below the capacity of `s`) returns with no call.
+/// It has two callers (`own_add` and `ic::grow_add`), so it is `#[inline(always)]`: as an
+/// out-of-line function, each add paid a call and 6 register saves on this early return
+/// (M8-P0 bench mode: t0-gen +1.9% Ir). The rest is [`reserve_field_slots`].
+#[inline(always)]
+pub(crate) fn reserve_field(rt: &Runtime, o: u64, s: u64, f: usize) {
     let cap = usize::from(shape::capacity(s));
     if f < cap {
         return;
     }
-    let need = f - cap + 1;
+    reserve_field_slots(rt, o, f - cap + 1);
+}
+
+/// The out-of-line part of [`reserve_field`]: makes the SLOTS cell of `o` hold at least `need`
+/// fields (a new cell if it is too small). GC point.
+#[cold]
+#[inline(never)]
+fn reserve_field_slots(rt: &Runtime, o: u64, need: usize) {
     let old = rd(cell(o), obj::SLOTS);
     let have = if old == UNDEFINED {
         0

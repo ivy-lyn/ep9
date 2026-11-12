@@ -1756,3 +1756,59 @@ Packet.prototype.toString = function () {
   return "Packet";
 };
 "##;
+
+/// Runs richards (the [`source`] script: 3 runs) on a fresh isolate with `Feedback::FULL`, the
+/// default feedback threshold and the dispatch expansion `d`: the encoded facts of its unit.
+fn facts_under(src: &str, d: ep9_vm::Dispatch) -> Vec<u8> {
+    let unit = compile(src);
+    let mut iso = Isolate::new_with(
+        IsolateConfig {
+            builtins: Some(&ep9_builtins::TABLE),
+            dispatch: d,
+            ..IsolateConfig::default()
+        },
+        ExecOptions::default().feedback(Feedback::FULL),
+    )
+    .expect("an isolate");
+    let u = unit.clone();
+    iso.with_cx(|cx| cx.run_script(u, "facts.js").map(|_| ()))
+        .unwrap_or_else(|e| panic!("the script threw under {d:?}: {}", e.message));
+    export_facts(&iso, &unit.content_hash())
+        .expect("the unit is loaded")
+        .encode()
+}
+
+/// M8-P1 RECCOST2 (plan v13 4.3 task 3): the exported facts of richards are the same bytes
+/// under the match loop, which records every `Flow::Record` inline (`profile::record`), and
+/// under the sibling handlers, which test for a new bit first and call `record_next` only for
+/// one (`interp::dsl::record_exit`). So the no-change test drops no record and adds none
+/// (FACT_SCHEMA 2 stays). Not in debug builds: a debug sibling dispatch has no tail calls, so
+/// it grows the native stack by one frame per instruction, far past any thread stack for
+/// richards (`interp::dsl::debug_native_stack_check`); the CI release test job runs it on
+/// every target.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "a debug sibling dispatch needs one native frame per instruction"
+)]
+fn sibling_records_give_the_facts_of_the_inline_records() {
+    on_big_stack(|| {
+        let src = source();
+        let inline = facts_under(&src, ep9_vm::Dispatch::Match);
+        let sibling = facts_under(&src, ep9_vm::Dispatch::Sibling);
+        assert!(
+            inline == sibling,
+            "the facts differ: {} bytes (match) vs {} bytes (sibling)",
+            inline.len(),
+            sibling.len()
+        );
+        // The check is not empty: some CompareOp slot has a recorded bit, not only the
+        // implicit int32 bit that the exporter adds to each one.
+        let facts = FactSnapshot::decode(&inline).expect("the exporter's bytes decode");
+        assert!(
+            facts.records().any(|(_, r)| matches!(r,
+                SlotFacts::CompareOp(h) if h.bits() & !CompareHint::INT32.bits() != 0)),
+            "no recorded CompareOp bit in richards"
+        );
+    });
+}
