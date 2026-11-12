@@ -371,6 +371,7 @@ fn an_x64_field_is_decoded_from_its_instruction_start() {
     // word 8 * 10 = 0x50 or the Runtime slot 0x800).
     let abs = |at| Finding::AbsoluteAddress { at };
     let out = |at, target| Finding::OutsideFunction { at, target };
+    let und = |at| Finding::Undecodable { at };
     let no = |v: Vec<Finding>| Err(FinalizeError::TextRelocations(v));
     let lk = Target::LinkSlot(0);
     let rt = Target::Runtime(0);
@@ -439,12 +440,13 @@ fn an_x64_field_is_decoded_from_its_instruction_start() {
             lk,
             no(vec![nrr(6), nud(6)]),
         ),
-        // mov rax, qword ptr fs:[r14 + d32]: a segment prefix before the REX byte.
+        // mov rax, qword ptr fs:[r14 + d32]: a segment prefix before the REX byte. Since
+        // Codex M8-P2 r2 the decode also stops at the FS prefix.
         (
             "fs",
             &[0x64, 0x49, 0x8b, 0x86],
             lk,
-            no(vec![nrr(4), nud(4)]),
+            no(vec![nrr(4), und(0), nud(4)]),
         ),
         // A load of the right form through the wrong register for the kind.
         // mov rax, qword ptr [r14 + d32] as a Runtime, RootIndex and DeoptExit.
@@ -597,15 +599,16 @@ fn an_x64_unit_load_needs_a_known_instruction_boundary() {
     // Since M8-P2 the decode of the whole final text (UNIT-X64-DECODE) adds its findings
     // between the field rules and the register rule: the field's start `at` is not an
     // instruction start (nis), or the decode stops (und) at a REX REX pair (48 49, offset 0)
-    // or at 00 90 (offset 7), which needs a disp32 past the end. After 80 the record's start
+    // or at 00 90 (offset 7), which needs a disp32 past the end, or at the FS or GS prefix
+    // (offset 0; refused since Codex M8-P2 r2). After 80 the record's start
     // is an instruction start (80 49 8b 86 is `or byte ptr [rcx - 117], -122`, then
     // `push rax`), so only the field rules and the decode stop find it; as a Runtime the
     // field bytes 00 08 00 00 decode as two `add`s and the decode does not stop.
     let nis = |at| Finding::NotInstructionStart { at };
     let und = |at| Finding::Undecodable { at };
     let pres: [(&[u8], &[Finding], &[Finding]); 12] = [
-        (&[0x64], &[nis(4)], &[nis(4)]),
-        (&[0x65], &[nis(4)], &[nis(4)]),
+        (&[0x64], &[und(0)], &[und(0)]),
+        (&[0x65], &[und(0)], &[und(0)]),
         (&[0x67], &[nis(4)], &[nis(4)]),
         (&[0x66], &[nis(4)], &[nis(4)]),
         (&[0xf0], &[nis(4)], &[nis(4)]),
@@ -648,7 +651,7 @@ fn an_x64_unit_load_needs_a_known_instruction_boundary() {
 
     // An `x64` chunk with a byte after its field (64), then a load: the second load is
     // mov rax, qword ptr fs:[r14 + 80]. The first record keeps its start (0). The decode
-    // (since M8-P2) reads 64 49 8b 86 .. as one instruction at 7, so 11 is not a start.
+    // (since Codex M8-P2 r2) stops at the FS prefix at 7, so the field at 11 is not read.
     let mut a = Assembler::new(Arch::X64);
     let mut fs_tail = m14.to_vec();
     fs_tail.push(0x64);
@@ -661,7 +664,7 @@ fn an_x64_unit_load_needs_a_known_instruction_boundary() {
     assert_eq!((d.relocs[0].insn, d.relocs[1].insn), (0, 11));
     assert_eq!(
         finalize_unit(&d, &common::TestUnit).map(|_| ()),
-        no(vec![nrr(11), nis(11), nud(11)])
+        no(vec![nrr(11), und(7), nud(11)])
     );
 
     // An `x64` rel32 chunk that is not a call, jmp or jcc (b8 e8 rel32), then a load:
@@ -1118,4 +1121,26 @@ fn the_x64_check_refuses_an_eip_relative_load() {
     );
     assert_eq!(text(&[0x8b, 0x05, 0, 0, 0, 0, 0xc3]), []);
     assert_eq!(text(&[0x66, 0x48, 0x68, 0x00, 0x00, 0xeb, 0x7f, 0xc3]), []);
+}
+
+/// Codex M8-P2 r2 R2-1: `mov eax, fs:[rip + 0]; ret` (`64 8b 05 00 00 00 00 c3`). The CPU adds
+/// the FS base to the address, so the load does not read the text byte at offset 7 that the old
+/// check reported as its target. GS (65) is the same. No ep9 emitter writes 64 or 65, so the
+/// decode stops at every instruction with one, also with a register base (`gs:[r14 + 80]`
+/// reads FS/GS base + r14 + 80, not the unit-data word). The old decoder dropped the prefix,
+/// and the check gave no finding for each text here.
+#[test]
+fn the_x64_check_refuses_an_fs_or_gs_override() {
+    let text = |b: &[u8]| check_text(Arch::X64, b, &[]);
+    let und = |at| [Finding::Undecodable { at }];
+    assert_eq!(text(&[0x64, 0x8b, 0x05, 0, 0, 0, 0, 0xc3]), und(0));
+    assert_eq!(
+        text(&[0x90, 0x65, 0x48, 0x8b, 0x05, 0xf8, 0xff, 0xff, 0xff, 0xc3]),
+        und(1)
+    );
+    assert_eq!(text(&[0x65, 0x49, 0x8b, 0x46, 0x50, 0xc3]), und(0));
+    assert_eq!(
+        text(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0xc3]),
+        und(0)
+    );
 }

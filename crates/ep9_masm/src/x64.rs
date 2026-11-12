@@ -21,6 +21,9 @@
 //! - a pc-relative branch with the 66 prefix (Intel ignores it, AMD makes the target 16-bit);
 //! - a RIP-relative operand with the 67 prefix (`[eip + disp32]`: the CPU cuts the address to
 //!   32 bits, so it is not the text address that the check reads);
+//! - every instruction with an FS (64) or GS (65) segment override: the CPU adds the FS or GS
+//!   base to a memory address (a RIP, register-base, absolute, `moffs` or string operand), so
+//!   it is not the address that the check reads. No ep9 emitter writes 64 or 65;
 //! - a one-byte-map opcode with 66 or 67 and F2 or F3 (decoders differ on the operand or
 //!   address size);
 //! - `xbegin` (C7 F8: a branch whose rel field this decoder does not report);
@@ -81,6 +84,10 @@ pub(crate) fn decode(text: &[u8], at: usize) -> Option<Insn> {
     while let Some(&p) = b.get(i) {
         if !LEGACY.contains(&p) {
             break;
+        }
+        if p == 0x64 || p == 0x65 {
+            // FS or GS: the address is the segment base plus the operand (Codex M8-P2 r2).
+            return None;
         }
         opsize16 |= p == 0x66;
         addr32 |= p == 0x67;
@@ -274,11 +281,12 @@ mod tests {
     use super::*;
 
     /// Lengths from `llvm-mc` (see `tests/golden/x64-lengths.txt`): every line is the bytes
-    /// of one instruction that llvm-mc encoded, and the decoder gives that length.
+    /// of one instruction that llvm-mc encoded, and the decoder gives that length, or `None`
+    /// for the 8 lines with an FS (64) override (refused since Codex M8-P2 r2).
     #[test]
     fn the_decoder_gives_the_llvm_mc_length_of_each_corpus_instruction() {
         let corpus = include_str!("../tests/golden/x64-lengths.txt");
-        let mut n = 0;
+        let (mut n, mut segs) = (0, 0);
         for line in corpus
             .lines()
             .filter(|l| !l.starts_with('#') && !l.is_empty())
@@ -289,9 +297,15 @@ mod tests {
                 .map(|h| u8::from_str_radix(h, 16).expect("hex byte"))
                 .collect();
             let insn = decode(&bytes, 0);
+            // An FS or GS override is refused (see the module text); its length is not read.
+            let seg = bytes
+                .iter()
+                .take_while(|p| LEGACY.contains(p))
+                .any(|&p| p == 0x64 || p == 0x65);
+            segs += usize::from(seg);
             assert_eq!(
                 insn.map(|i| usize::from(i.len)),
-                Some(bytes.len()),
+                (!seg).then_some(bytes.len()),
                 "{asm}: {hex}"
             );
             // The instruction followed by more bytes has the same length; cut short, none.
@@ -302,6 +316,7 @@ mod tests {
             n += 1;
         }
         assert!(n > 300, "{n} corpus lines");
+        assert_eq!(segs, 8);
     }
 
     #[test]
@@ -366,6 +381,32 @@ mod tests {
         assert_eq!((r.len, r.rip), (6, Some(2)));
         let r = decode(&[0x67, 0x49, 0x8b, 0x46, 0x50], 0).unwrap();
         assert_eq!((r.len, r.rip), (5, None));
+    }
+
+    /// Codex M8-P2 r2 R2-1: `64 8b 05 d32` is `mov eax, fs:[rip + d32]`. The CPU adds the FS
+    /// base (GS for 65), so the address is not the text byte that the check reads. No ep9
+    /// emitter writes 64 or 65, so the decoder refuses every instruction with one: a RIP,
+    /// register-base, absolute, `moffs` or string operand. The old decoder dropped the prefix
+    /// and gave `rip: Some(2)` for the first form. Without the prefix each form decodes.
+    #[test]
+    fn the_decoder_refuses_an_fs_or_gs_override() {
+        for b in [
+            &[0x64, 0x8b, 0x05, 0, 0, 0, 0][..],
+            &[0x65, 0x48, 0x8b, 0x05, 0, 0, 0, 0],
+            &[0x65, 0x49, 0x8b, 0x46, 0x50],
+            &[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0],
+            &[0x64, 0xa1, 0, 0, 0, 0, 0, 0, 0, 0],
+            &[0x65, 0xac],
+            &[0x66, 0x64, 0x8b, 0x05, 0, 0, 0, 0],
+        ] {
+            assert_eq!(decode(b, 0), None, "{b:02x?}");
+            let plain: Vec<u8> = b
+                .iter()
+                .copied()
+                .filter(|&p| p != 0x64 && p != 0x65)
+                .collect();
+            assert!(decode(&plain, 0).is_some(), "{plain:02x?}");
+        }
     }
 
     /// Codex M8-P2 r1 H1 (premise check; the premise does not hold). `push imm` (68) has a
