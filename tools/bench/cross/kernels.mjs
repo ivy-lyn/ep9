@@ -50,12 +50,16 @@
 // checkouts at the run; `ep9.build` is the build: a binary built from an edited or stale fork
 // says dirty after a resync too. m1-exit gives OPEN unless it is clean and names `commit`.
 //
+// The executable (KERNELS-BIN-SNAPSHOT): the check copies --check once, before the first probe,
+// beside it (or into its temp dir), and runs only the copy: the Math probe, every kernel,
+// --version and the sha256. A rebuild of --check during the run does not change the result.
+//
 // Exit status: 0 every kernel ran with node's output (kernels on --not-yet may fail); 1 a kernel
 // failed; 2 usage error; 3 the oracle or the generator failed (no verdict).
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants as fsConstants, copyFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -347,9 +351,13 @@ export function check(o, deps = {}) {
   const log = deps.log ?? ((s) => process.stderr.write(`${s}\n`));
   const started = new Date().toISOString();
   const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-kernels-"));
+  // KERNELS-BIN-SNAPSHOT: one copy of the executable, made before the first probe, runs every
+  // kernel and gives --version and the hash, so a rebuild of o.check during the run cannot give
+  // its build line to the rows of the old binary.
+  const bin = snapshot(o.check, dir);
   try {
     const version = (bin) => clean(runVersion(bin));
-    const mathNames = mathNamesOf(o.check, dir, o.timeoutS);
+    const mathNames = mathNamesOf(bin, dir, o.timeoutS);
     const rows = [];
     for (const id of KERNEL_IDS) {
       let g;
@@ -371,7 +379,7 @@ export function check(o, deps = {}) {
         const why = node.error ? node.error.message : node.status !== 0 ? `exit ${node.status}: ${clean(node.stderr).split("\n")[0]}` : `printed ${JSON.stringify(nodeOut)}`;
         throw new OracleError(`${id} on the oracle ${o.node}: ${why}; want ${JSON.stringify(g.expect)}${g.probe ? ` and the probe lines ${JSON.stringify(wantChecks.join("\n"))}` : ""}`);
       }
-      const r = runOnce(o.check, file, o.timeoutS);
+      const r = runOnce(bin, file, o.timeoutS);
       const out = clean(r.stdout);
       const row = {
         id,
@@ -421,7 +429,7 @@ export function check(o, deps = {}) {
       dirty: st.dirty,
       forks: forkState(),
       host: { ...host, target: TRIPLES[host.platform] ?? null },
-      ep9: { bin: path.basename(o.check), ...ep9Version(o.check), sha256: sha256File(o.check) },
+      ep9: { bin: path.basename(o.check), ...ep9Version(bin), sha256: sha256File(bin) },
       oracle: { engine: "node", bin: path.basename(o.node), version: version(o.node) },
       n: o.n,
       harness: { v8v7: o.harness, octane: rows.find((r) => r.suite === "octane")?.harness ?? null },
@@ -441,8 +449,31 @@ export function check(o, deps = {}) {
       },
     };
   } finally {
+    if (bin !== o.check) rmSync(bin, { force: true });
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The copy of the executable `exe` that check() runs (KERNELS-BIN-SNAPSHOT): in the same
+ * directory, so a script engine that reads files beside itself still finds them, with the same
+ * extension (a Windows .exe); in `dir` when that directory takes no new file. The copy keeps
+ * the mode bits. If `exe` cannot be read, it is `exe` itself (the probes then fail as before).
+ */
+function snapshot(exe, dir) {
+  const ext = path.extname(exe);
+  const name = `${path.basename(exe, ext)}.kernels-${process.pid}-${randomBytes(4).toString("hex")}${ext}`;
+  for (const d of [path.dirname(exe), dir]) {
+    const copy = path.join(d, name);
+    try {
+      copyFileSync(exe, copy, fsConstants.COPYFILE_EXCL);
+      chmodSync(copy, statSync(exe).mode & 0o777);
+      return copy;
+    } catch {
+      rmSync(copy, { force: true });
+    }
+  }
+  return exe;
 }
 
 /**

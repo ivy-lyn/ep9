@@ -1,0 +1,309 @@
+{
+ "schema": "ep9-pathb-compare/v1",
+ "commit": "0123456789abcdef0123456789abcdef01234567",
+ "platform": "linux-x64",
+ "boxes": [
+  "box-1",
+  "box-2"
+ ],
+ "checks": [
+  {
+   "box": 1,
+   "build": "jit",
+   "commit_ok": true,
+   "rounds": 31,
+   "load": {
+    "before": {
+     "load1": 0.27,
+     "limit": 0.53,
+     "pass": true
+    },
+    "after": {
+     "load1": 0.15,
+     "limit": 0.53,
+     "pass": true
+    }
+   }
+  },
+  {
+   "box": 1,
+   "build": "jitless",
+   "commit_ok": true,
+   "rounds": 31,
+   "load": {
+    "before": {
+     "load1": 0.27,
+     "limit": 0.53,
+     "pass": true
+    },
+    "after": {
+     "load1": 0.16,
+     "limit": 0.53,
+     "pass": true
+    }
+   }
+  },
+  {
+   "box": 2,
+   "build": "jit",
+   "commit_ok": true,
+   "rounds": 31,
+   "load": {
+    "before": {
+     "load1": 0.29,
+     "limit": 0.54,
+     "pass": true
+    },
+    "after": {
+     "load1": 0.14,
+     "limit": 0.54,
+     "pass": true
+    }
+   }
+  },
+  {
+   "box": 2,
+   "build": "jitless",
+   "commit_ok": true,
+   "rounds": 31,
+   "load": {
+    "before": {
+     "load1": 0.33,
+     "limit": 0.54,
+     "pass": true
+    },
+    "after": {
+     "load1": 0.15,
+     "limit": 0.54,
+     "pass": true
+    }
+   }
+  }
+ ],
+ "cells": [
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jit",
+   "cell": "item 1: Octane-7 geomean vs QuickJS",
+   "threshold": 1.33,
+   "box1": {
+    "median": 1.659850635,
+    "interval": [
+     1.623655778,
+     1.672768878
+    ],
+    "note": "provisional"
+   },
+   "box2": {
+    "median": 1.638958692,
+    "interval": [
+     1.612746375,
+     1.670816355
+    ],
+    "note": "provisional"
+   },
+   "sides": [
+    "above",
+    "above"
+   ],
+   "result": "AGREE above",
+   "overlap": "yes"
+  },
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jit",
+   "cell": "item 2: v8-v7 geomean vs node --jitless",
+   "threshold": 1,
+   "box1": {
+    "median": 1.064200345,
+    "interval": [
+     1.054021613,
+     1.0941315
+    ],
+    "note": "provisional"
+   },
+   "box2": {
+    "median": 1.004,
+    "interval": [
+     0.991,
+     1.018
+    ],
+    "note": "provisional"
+   },
+   "sides": [
+    "above",
+    "straddles"
+   ],
+   "result": "NO AGREEMENT",
+   "overlap": "yes"
+  },
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jit",
+   "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+   "threshold": 1,
+   "box1": {
+    "median": 1.031,
+    "interval": [
+     1.012,
+     1.052
+    ],
+    "note": "net, void"
+   },
+   "box2": {
+    "median": 1.027,
+    "interval": [
+     1.008,
+     1.049
+    ],
+    "note": "net, void"
+   },
+   "sides": [
+    "above",
+    "above"
+   ],
+   "result": "AGREE above",
+   "overlap": "yes"
+  },
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jit",
+   "cell": "item 6: splay vs node --jitless",
+   "threshold": 1,
+   "box1": {
+    "median": 1.181611511,
+    "interval": [
+     1.143213473,
+     1.230025242
+    ],
+    "note": "provisional"
+   },
+   "box2": {
+    "median": 1.183154424,
+    "interval": [
+     1.146196804,
+     1.225336742
+    ],
+    "note": "provisional"
+   },
+   "sides": [
+    "above",
+    "above"
+   ],
+   "result": "AGREE above",
+   "overlap": "yes"
+  },
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jitless",
+   "cell": "item 1: Octane-7 geomean vs QuickJS",
+   "threshold": 1.33,
+   "box1": {
+    "median": 1.722529638,
+    "interval": [
+     1.696680377,
+     1.748220562
+    ],
+    "note": "provisional"
+   },
+   "box2": {
+    "median": 1.718993819,
+    "interval": [
+     1.679473689,
+     1.740425749
+    ],
+    "note": "provisional"
+   },
+   "sides": [
+    "above",
+    "above"
+   ],
+   "result": "AGREE above",
+   "overlap": "yes"
+  },
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jitless",
+   "cell": "item 2: v8-v7 geomean vs node --jitless",
+   "threshold": 1,
+   "box1": {
+    "median": 1.134627959,
+    "interval": [
+     1.122901226,
+     1.155191509
+    ],
+    "note": "provisional"
+   },
+   "box2": {
+    "median": 1.114762765,
+    "interval": [
+     1.110763226,
+     1.128288027
+    ],
+    "note": "provisional"
+   },
+   "sides": [
+    "above",
+    "above"
+   ],
+   "result": "AGREE above",
+   "overlap": "yes"
+  },
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jitless",
+   "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+   "threshold": 1,
+   "box1": {
+    "median": 1.031,
+    "interval": [
+     1.012,
+     1.052
+    ],
+    "note": "net, void"
+   },
+   "box2": {
+    "median": 1.027,
+    "interval": [
+     1.008,
+     1.049
+    ],
+    "note": "net"
+   },
+   "sides": [
+    "above",
+    "above"
+   ],
+   "result": "AGREE above",
+   "overlap": "yes"
+  },
+  {
+   "group": "A. M2 gate items (m2gate.mjs)",
+   "build": "jitless",
+   "cell": "item 6: splay vs node --jitless",
+   "threshold": 1,
+   "box1": {
+    "median": 1.205807276,
+    "interval": [
+     1.171408759,
+     1.23003617
+    ],
+    "note": "provisional"
+   },
+   "box2": {
+    "median": 1.21035317,
+    "interval": [
+     1.167203697,
+     1.244293669
+    ],
+    "note": "provisional"
+   },
+   "sides": [
+    "above",
+    "above"
+   ],
+   "result": "AGREE above",
+   "overlap": "yes"
+  }
+ ]
+}
