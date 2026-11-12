@@ -36,7 +36,7 @@
 #                      (kernels.mjs --check) as an artifact
 #   atomgate ......... the atom-key gate (G2, debug exec)            (Linux x64)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
-#   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
+#   dep-guards ....... cargo tree/metadata guards; deny; cldr-tables (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
@@ -1014,6 +1014,16 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - run: cargo deny --locked check licenses bans
+      # The CLDR side tables of ep9_intl (INTL-V2-D5; tools/cldr-tables/README.md): the pinned
+      # CLDR JSON (a sparse fetch from github.com), then the generated crates/ep9_intl/src/cldr/gen
+      # files against the generator (--check), then the tool tests (the tables against the ICU4X
+      # compiled data of the same CLDR release). tools/cldr-tables is its own workspace (the root
+      # `exclude`), so only this step builds it.
+      - name: cldr-tables check and tests
+        run: |
+          { tools/cldr-tables/sync-cldr-json.sh || { echo "::warning::sync-cldr-json.sh failed; one retry in 20 s"; sleep 20; tools/cldr-tables/sync-cldr-json.sh; }; } &&
+            cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- --check &&
+            cargo test --locked --manifest-path tools/cldr-tables/Cargo.toml
 
   # perf CI v0 (docs/plan/10-quality.md section 2; tools/bench/README.md "perf CI v0"): the
   # instructions of t0-loop, t0-branchy, t0-call, t0-prop, ci-v0 and the generated v8-v7
@@ -1174,8 +1184,8 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096): the slowest target took 21 min.
+    timeout-minutes: 75
+    # Rule 25 (M6-ORCH-545): windows-x64 took 38.9 min on m2/m8 (43124645044), 42.6 min with INTL W2 (43003201072), > 45 with W3 (43056384143: the build, +30 INTL crates); 1.5 x about 48 min.
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

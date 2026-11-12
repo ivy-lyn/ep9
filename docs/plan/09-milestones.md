@@ -116,7 +116,7 @@ All exit items of a milestone must hold. All 4 targets are tier-1 from week 1, W
 - Scope: all ES2026 and ES2027-so-far builtins. Annex B. Modules (rest). Proxy and Reflect (rest of their test262 directories; core in M1). TypedArrays. SAB, Atomics, agents. WeakRef/FinReg (rest; core with the GC from S0, 03 §5 and 06 §5). ERM. Iterator helpers. Intl. Temporal. Date. BigInt (dashu).
 - Exit:
   1. test262 full suite ≥ 97.5% per file, by the G1 rule (V8: 97.69%).
-  2. `intl402` ≥ 90%. Temporal (6,715 tagged tests) ≥ 97%.
+  2. `intl402` ≥ the SpiderMonkey rate on the same test262 commit. Temporal (6,715 tagged tests) ≥ 97%.
   3. Every M2 gate still green.
   4. Nightly GC-stress test262: 0 new failures.
   5. Fuzzilli 2,000 CPU-h, 0 unique crashes.
