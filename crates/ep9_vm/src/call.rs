@@ -2135,28 +2135,6 @@ pub(crate) fn construct_result(cx: &mut Cx, r: u64, this: u64) -> Res<u64> {
     }
 }
 
-/// [`call_host`] for a call instruction of bytecode (M8-P2 TS-HOSTCALL: the host arms of
-/// `interp/slow/call.rs` `do_call`): [`call_host_fn_from_bytecode`] with the host function of
-/// `fi`. (At the end of the file, so [`call_host`] and the cited lines keep their places.)
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn call_host_from_bytecode(
-    cx: &mut Cx,
-    f: u64,
-    fi: &FunctionInfo,
-    this: u64,
-    argc: u32,
-    arg: impl Fn(u32) -> u64,
-    new_target: u64,
-    caller_fp: *mut u64,
-    return_pc: *const u8,
-) -> Res<u64> {
-    let h = fi.host.expect("a host function");
-    call_host_fn_from_bytecode(
-        cx, f, fi, h, this, argc, arg, new_target, caller_fp, return_pc,
-    )
-}
-
 /// [`call_host`] for a call instruction of bytecode (M8-P2 TS-HOSTCALL: `interp/slow/call.rs`
 /// `host_entry` and `host_construct`, which pass the host function `h` of `fi` that they
 /// read). `caller_fp` is the live top frame of that bytecode, and bytecode runs with no
@@ -2166,10 +2144,11 @@ pub(crate) fn call_host_from_bytecode(
 /// is the [`call_host`] form, in its order: the native stack check (RangeError), the host
 /// frame on the VM stack (H14), the realm switch (H20 R5), the call, [`host_return`] (the
 /// tail-call request, H20-Q3), the throw protocol in debug builds (H20 R4), and no budget
-/// unit (H23).
+/// unit (H23). (At the end of the file, so [`call_host`] and the cited lines keep their
+/// places; `do_call`'s host arms keep [`call_host`], whose lines H14 cites.)
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn call_host_fn_from_bytecode(
+pub(crate) fn call_host_from_bytecode(
     cx: &mut Cx,
     f: u64,
     fi: &FunctionInfo,

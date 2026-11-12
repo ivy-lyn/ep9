@@ -143,7 +143,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         };
         let fi = object::function_info(callee);
         if fi.host.is_some() {
-            let r = call::call_host_from_bytecode(
+            let r = call::call_host(
                 cx,
                 callee,
                 fi,
@@ -237,7 +237,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     };
     let fi = object::function_info(callee);
     if fi.host.is_some() {
-        let r = call::call_host_from_bytecode(
+        let r = call::call_host(
             cx,
             callee,
             fi,
@@ -702,10 +702,10 @@ fn runs_bytecode(fi: &FunctionInfo) -> bool {
 //         %Function.prototype.call%, its `this` a bytecode function of this realm, and the
 //         list (apply) undefined, null, an unmodified arguments object or a packed Array:
 //         push the bytecode frame from the source, in this dispatch run (H20-Q3 rest)
-//     ──> anything else: call::call_host_fn_from_bytecode (the call_host form), as do_call
-//         does
+//     ──> anything else: call::call_host_from_bytecode (the call_host form for a bytecode
+//         caller), with what do_call gives call::call_host
 //   ──> host_construct: unprefixed Construct of a host constructor (M8-P2 TS-HOSTCALL),
-//       the same fixed places ──> call::call_host_fn_from_bytecode with new.target
+//       the same fixed places ──> call::call_host_from_bytecode with new.target
 //   ──> anything else: decode_call ──> do_call (a prefixed, spread or bound call of apply or
 //       call runs the builtin)
 // ```
@@ -802,7 +802,7 @@ impl Fixed {
 /// constructor, with `acc` its new.target operand.
 /// It reads the operands at their fixed single-scale places and the arguments straight from
 /// the caller's registers: no `decode_call`, no `CallSite`, no `ArgBuf`, for any argument
-/// count. Then [`forward`] or `call::call_host_fn_from_bytecode` (the `call_host` form for a
+/// count. Then [`forward`] or `call::call_host_from_bytecode` (the `call_host` form for a
 /// bytecode caller), with the receiver, arguments, return pc and result that `do_call` gives
 /// them, and the realm switch of `call_host`.
 ///
@@ -907,7 +907,7 @@ unsafe fn host_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> Opti
     if let Some(r) = forward(cx, fp, f.next, callee, f.this, f.argc, arg) {
         return Some(r);
     }
-    let r = call::call_host_fn_from_bytecode(
+    let r = call::call_host_from_bytecode(
         cx, callee, fi, h, f.this, f.argc, arg, UNDEFINED, fp, f.next,
     );
     if r.is_ok() {
@@ -1052,7 +1052,7 @@ fn push_forwarded(
 /// constructor. `new F(...args)` as the host arm of `do_call`'s construct path makes it, with
 /// no `decode_call` and no `ArgBuf`: the operands at their fixed single-scale places (callee,
 /// list, count; the feedback slot is not read), new.target = `acc` if it is a constructor
-/// (BytecodeGen sets it) else the callee, then `call::call_host_fn_from_bytecode` with an
+/// (BytecodeGen sets it) else the callee, then `call::call_host_from_bytecode` with an
 /// undefined receiver, the list registers as the arguments and the return pc of the next
 /// instruction. No feedback count, no construct-site record and no budget unit, as in
 /// `do_call` (a host callee has none).
@@ -1098,7 +1098,7 @@ unsafe fn host_construct(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> 
     } else {
         callee
     };
-    let r = call::call_host_fn_from_bytecode(
+    let r = call::call_host_from_bytecode(
         cx, callee, fi, h, UNDEFINED, argc, arg, new_target, fp, next,
     );
     if r.is_ok() {
