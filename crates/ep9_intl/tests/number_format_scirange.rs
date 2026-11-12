@@ -138,3 +138,34 @@ fn a_termination_stops_the_range_parts_loop() {
         Some((true, Some("before".to_string()), Some("again".to_string())))
     );
 }
+
+const APPROXIMATELY_ROUNDING: &str = r#"const fr = (l, o, ...xs) => xs.map(([x, y]) => new Intl.NumberFormat(l, o).formatRange(x, y)).join(" | ");
+for (const m of ["ceil", "floor", "halfCeil", "halfFloor", "expand", "trunc"]) {
+  const o = {maximumFractionDigits: 0, roundingMode: m};
+  print(m, fr("en", o, [1.1, 1.2], [1.5, 1.6], [-1.2, -1.1]), "/", fr("en", Object.assign({style: "currency", currency: "USD"}, o), [1.1, 1.2], [1.5, 1.6]), "/", fr("nl", Object.assign({style: "currency", currency: "EUR"}, o), [1.1, 1.2]), "/", fr("en", Object.assign({style: "unit", unit: "meter", unitDisplay: "long"}, o), [1.1, 1.2]));
+}
+print(new Intl.NumberFormat("en", {maximumFractionDigits: 0, roundingMode: "ceil"}).formatRangeToParts(1.1, 1.2).map(p => p.type + ":" + p.value + ":" + p.source).join());
+print(["ceil", "floor"].map(m => fr("en", {maximumFractionDigits: 0, roundingMode: m, signDisplay: "never"}, [-1.2, -1.1], [1.1, 1.2])).join(" / "));"#;
+
+/// FormatApproximately (§16.5.20) keeps the number of FormatNumeric(x): the directional
+/// rounding modes round x, not -x (ceil 1.1 is "~2", floor 1.1 is "~1"), also in a currency
+/// pattern, in the nl pattern where the approximately sign takes the place of the minus sign
+/// ("€ ~2") and in the plural form of a unit ("~2 meters"); with signDisplay "never" a
+/// negative x keeps its own rounding (ceil -1.2 is "~1"). Old code: the parts of -x rounded
+/// with the same mode ("~1" for ceil 1.1, "~2" for floor 1.1).
+#[test]
+fn approximately_keeps_the_rounded_value() {
+    assert_eq!(
+        run_both(APPROXIMATELY_ROUNDING),
+        lines(&[
+            "ceil ~2 | ~2 | ~-1 / ~$2 | ~$2 / €\u{a0}~2 / ~2 meters",
+            "floor ~1 | ~1 | ~-2 / ~$1 | ~$1 / €\u{a0}~1 / ~1 meter",
+            "halfCeil ~1 | ~2 | ~-1 / ~$1 | ~$2 / €\u{a0}~1 / ~1 meter",
+            "halfFloor ~1 | 1–2 | ~-1 / ~$1 | $1 – $2 / €\u{a0}~1 / ~1 meter",
+            "expand ~2 | ~2 | ~-2 / ~$2 | ~$2 / €\u{a0}~2 / ~2 meters",
+            "trunc ~1 | ~1 | ~-1 / ~$1 | ~$1 / €\u{a0}~1 / ~1 meter",
+            "approximatelySign:~:shared,integer:2:shared",
+            "~1 | ~2 / ~2 | ~1",
+        ])
+    );
+}

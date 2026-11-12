@@ -347,15 +347,19 @@ fn sign_symbol(p: &mut Parts, i: usize, affix: &str) -> core::ops::Range<usize> 
     start..end
 }
 
-/// The negative of the finite or infinite value `x` (`None` for NaN and for a WideDecimal).
-fn negative_of(x: &IntlMv) -> Option<IntlMv> {
+/// The negative value with the magnitude of the finite or infinite value `x`, and whether it
+/// is -x (`x` was not negative; a negative `x` is itself: signDisplay "never"). `None` for
+/// NaN and for a WideDecimal.
+fn negative_of(x: &IntlMv) -> Option<(IntlMv, bool)> {
     match x {
         IntlMv::Finite(d) => {
+            let negated = d.sign != Sign::Negative;
             let mut d = d.clone();
             d.sign = Sign::Negative;
-            Some(IntlMv::Finite(d))
+            Some((IntlMv::Finite(d), negated))
         }
-        IntlMv::PosInf | IntlMv::NegInf => Some(IntlMv::NegInf),
+        IntlMv::PosInf => Some((IntlMv::NegInf, true)),
+        IntlMv::NegInf => Some((IntlMv::NegInf, false)),
         IntlMv::Wide(_) | IntlMv::NaN => None,
     }
 }
@@ -370,7 +374,10 @@ fn negative_of(x: &IntlMv) -> Option<IntlMv> {
 /// - No sign: the parts of the negative value, with the approximately sign in place of the
 ///   minus sign symbol (nl "€ ~3,00", de-CH "CHF≈3.00", ar "\u{200F}~3.00 €"); if they have
 ///   no minus sign part, the approximately sign goes at the start of the style pattern, after
-///   the outer layer ("~$3", "~3 €").
+///   the outer layer ("~$3", "~3 €"). The negative value -x is rounded with the mode for -x
+///   ([`crate::digits::RoundingMode::for_negated`]), so its number is the number of `p`
+///   (ceil: 1.1 is "~2", not the "~1" of -1.1 rounded up); a negative x (signDisplay
+///   "never") is rounded with its own mode.
 ///
 /// Every part is "shared".
 fn format_approximately(
@@ -401,9 +408,12 @@ fn format_approximately(
     {
         return shared(p, work);
     }
-    if let Some(negative) = negative_of(x) {
+    if let Some((negative, negated)) = negative_of(x) {
         let mut rn = r.clone();
         rn.sign_display = SignDisplay::Auto;
+        if negated {
+            rn.digits.rounding_mode = rn.digits.rounding_mode.for_negated();
+        }
         let mut n = partition_numeric(&rn, &negative, work)?;
         if let Some(i) = position(&n, 0, work, |t, _| t == PartType::MinusSign)? {
             let symbol = sign_symbol(&mut n, i, &minus);
