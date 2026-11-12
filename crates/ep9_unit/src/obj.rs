@@ -255,7 +255,9 @@ fn u64_at(b: &[u8], at: usize) -> Option<u64> {
 /// Converts the unix unwind section of form 1 (`zR` CIEs with `DW_EH_PE_absptr`, FDEs with
 /// 8-byte `pc_begin` and `pc_range` that are text offsets, a zero terminator) into the
 /// `.eh_frame` of an object: each CIE gets the `pcrel` encoding of `form`, each FDE its new
-/// CIE pointer, and the terminator is dropped (the linker ends the output section).
+/// CIE pointer, and the terminator is dropped (the linker ends the output section). Each
+/// record is read inside its own length (Codex M8-P3 r1 #3: a short length field is an
+/// [`ObjError::Unwind`], not a read of the next record and a panic).
 /// Returns the bytes and, per FDE, (the offset of its `pc_begin` field, the text offset).
 fn eh_frame(src: &[u8], text_len: usize, form: EhForm) -> Result<EhFrame, ObjError> {
     let bad = ObjError::Unwind;
@@ -273,24 +275,26 @@ fn eh_frame(src: &[u8], text_len: usize, form: EhForm) -> Result<EhFrame, ObjErr
         }
         let end = at.checked_add(4 + len).filter(|&e| e <= src.len());
         let end = end.ok_or(bad("a record runs past the section"))?;
-        let id = u32_at(src, at + 4).ok_or(bad("a record ends early"))?;
+        // The record (its length field too): every field below is read inside it.
+        let rec = &src[at..end];
+        let id = u32_at(rec, 4).ok_or(bad("a record ends early"))?;
         if id == 0 {
             // CIE: version 1, "zR", code and data alignment, return register (u8), augmentation
             // length 1, the FDE encoding (absptr).
-            let mut p = at + 8;
-            if src.get(p) != Some(&1) || src.get(p + 1..p + 4) != Some(b"zR\0") {
+            let mut p = 8;
+            if rec.get(p) != Some(&1) || rec.get(p + 1..p + 4) != Some(b"zR\0") {
                 return Err(bad("a CIE that is not version 1 with \"zR\""));
             }
             p += 4;
-            uleb(src, &mut p).ok_or(bad("a CIE ends early"))?;
-            uleb(src, &mut p).ok_or(bad("a CIE ends early"))?;
+            uleb(rec, &mut p).ok_or(bad("a CIE ends early"))?;
+            uleb(rec, &mut p).ok_or(bad("a CIE ends early"))?;
             p += 1;
-            if uleb(src, &mut p) != Some(1) || src.get(p) != Some(&0) {
+            if uleb(rec, &mut p) != Some(1) || rec.get(p) != Some(&0) {
                 return Err(bad("a CIE whose FDE encoding is not absptr"));
             }
             cies.push((at, out.len()));
-            let enc_at = out.len() + (p - at);
-            out.extend_from_slice(&src[at..end]);
+            let enc_at = out.len() + p;
+            out.extend_from_slice(rec);
             out[enc_at] = match form {
                 EhForm::Sdata4 => 0x1b,
                 EhForm::Pcrel8 => 0x10,
@@ -303,12 +307,13 @@ fn eh_frame(src: &[u8], text_len: usize, form: EhForm) -> Result<EhFrame, ObjErr
                 .iter()
                 .find(|(o, _)| *o == cie_old)
                 .ok_or(bad("an FDE whose CIE pointer names no CIE"))?;
-            let begin = u64_at(src, at + 8).ok_or(bad("an FDE ends early"))?;
-            let range = u64_at(src, at + 16).ok_or(bad("an FDE ends early"))?;
+            // pc_begin and pc_range: the record is at least 24 bytes, so `len - 8` holds.
+            let begin = u64_at(rec, 8).ok_or(bad("an FDE ends early"))?;
+            let range = u64_at(rec, 16).ok_or(bad("an FDE ends early"))?;
             if range == 0 || begin.checked_add(range).is_none_or(|e| e > text_len as u64) {
                 return Err(bad("an FDE that does not lie inside the text"));
             }
-            let rest = &src[at + 24..end];
+            let rest = &rec[24..];
             let start = out.len();
             match form {
                 EhForm::Sdata4 => {

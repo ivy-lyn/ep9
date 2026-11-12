@@ -12,6 +12,7 @@
 //! |---|---|
 //! | `each_target_object_has_its_sections_and_no_text_relocation` | 5 targets: the section names of `section_names`, the text and the container unchanged, zero text relocations (H35 S5), 2 record relocations, one unwind relocation per FDE (COFF: 3 per entry), the record symbol; Mach-O: a local symbol at each FDE start |
 //! | `the_writer_refuses_what_has_no_object_form` | a bad symbol, no text, Windows on AArch64, a bad unwind section |
+//! | `the_writer_refuses_short_unwind_records` | ELF and Mach-O: an FDE of length 4 or 12 and a CIE of length 4 are ObjError::Unwind, not a panic |
 //! | `the_coff_writer_refuses_over_65535_pdata_relocations` | 21,845 RUNTIME_FUNCTION entries (65,535 relocations) write; one more is ObjError::Unwind |
 //! | `check_linked_needs_the_same_text` | `check_linked` is `check` when the linked bytes are the text, else Bytecode |
 //! | `the_object_links_and_runs_on_the_host` | the 4 CI targets (host only): the static linker takes the object; both functions run in place; a panic unwinds through the frame of each |
@@ -611,6 +612,32 @@ fn the_writer_refuses_what_has_no_object_form() {
         write_object(&win_past, "s"),
         Err(ObjError::Unwind(_))
     ));
+}
+
+/// Codex M8-P3 r1 #3: the eh_frame reader read the CIE and FDE fields bounded by the whole
+/// unwind section, not by the record's own length, so a record with a short length field (the
+/// bytes after it kept, the container hash made again) made `write_object` panic: an FDE of
+/// length 4 or 12 at `&src[at + 24..end]`, a CIE of length 4 at the encoding byte. Each now
+/// gives ObjError::Unwind (the 4 unix targets: ELF and Mach-O, x86-64 and AArch64).
+#[test]
+fn the_writer_refuses_short_unwind_records() {
+    let host = HostInfo::current();
+    let mut bad = Vec::new();
+    for (arch, abi, _) in TARGETS.into_iter().filter(|t| t.2 != ObjFormat::Coff) {
+        let (text, unwind) = code(arch, abi);
+        // The CIE length is at 0 (a 24-byte CIE), the first FDE length at 24.
+        for (at, len) in [(24, 4u32), (24, 12), (0, 4)] {
+            let mut d = unwind.clone();
+            d[at..at + 4].copy_from_slice(&len.to_le_bytes());
+            let unit = unit_with(&host, arch, abi, &text, d);
+            let what = format!("arch {arch}, abi {abi}: length {len} at {at}");
+            let o = std::panic::catch_unwind(|| write_object(&unit, "s"));
+            if !matches!(o, Ok(Err(ObjError::Unwind(_)))) {
+                bad.push(format!("{what}: {o:?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
 }
 
 /// JIT review M8-P3 F4, Codex M8-P3 r1 #2: a COFF section header counts its relocations in
