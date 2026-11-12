@@ -126,3 +126,46 @@ fn x64_has_no_pad_form_yet() {
     assert_eq!(check_pads(Arch::X64, &d.text), []);
     assert!(finalize_unit(&d, &Padded).unwrap().has_pads());
 }
+
+/// JIT review M8-P2 B2: `adr x16, L; br x16` enters L by an indirect jump, so under BTI the
+/// word at L must be a landing pad. The old check read only the entry and the `br` register,
+/// so `bti c; adr x16, +8; br x16; mov x0, #1` passed `finalize_unit` and would fault at
+/// offset 12 under PROT_BTI.
+#[test]
+fn the_pad_check_refuses_an_adr_jump_target_with_no_pad() {
+    const ADR_X16_8: u32 = 0x1000_0050; // adr x16, #8
+    const ADR_X17_8: u32 = 0x1000_0051; // adr x17, #8
+    const ADR_X0_8: u32 = 0x1000_0040; // adr x0, #8
+    const RET: u32 = 0xd65f_03c0;
+    let unit = |words: &[u32]| {
+        let mut a = Assembler::new(Arch::A64);
+        a.pad();
+        for &w in words {
+            a.put32(w);
+        }
+        a.finish().unwrap()
+    };
+    let d = unit(&[ADR_X16_8, a64::BR_X16, a64::MOVZ_X0_1, RET]);
+    assert_eq!(
+        finalize_unit(&d, &Padded),
+        Err(FinalizeError::TextRelocations(vec![
+            Finding::NoLandingPad { at: 12 }
+        ]))
+    );
+    assert!(finalize_unit(&d, &common::TestUnit).is_ok());
+    let d = unit(&[ADR_X17_8, 0xd61f_0220, a64::MOVZ_X0_1, RET]);
+    assert_eq!(
+        check_pads(Arch::A64, &d.text),
+        [Finding::NoLandingPad { at: 12 }]
+    );
+    // With `bti c` (or `bti jc`) at the target: no finding.
+    for pad in [A64_BTI_C, 0xd503_24df] {
+        let d = unit(&[ADR_X16_8, a64::BR_X16, pad, RET]);
+        assert!(finalize_unit(&d, &Padded).unwrap().has_pads());
+    }
+    // An `adr` into another register is not a jump target of this check.
+    assert_eq!(
+        check_pads(Arch::A64, &unit(&[ADR_X0_8, RET, a64::MOVZ_X0_1]).text),
+        []
+    );
+}
