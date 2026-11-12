@@ -313,7 +313,7 @@ pub enum Finding {
         target: i64,
     },
     /// A unit with landing pads whose AArch64 function entry (offset 0), or the target of an
-    /// `adr` into x16 or x17, is not `bti c` or `bti jc` (see [`check_pads`]).
+    /// `adr` (into any register), is not `bti c` or `bti jc` (see [`check_pads`]).
     NoLandingPad {
         /// The entry or target offset.
         at: u32,
@@ -668,10 +668,13 @@ const A64_BTI_JC: u32 = 0xd503_24df;
 /// |---|---|---|
 /// | the function entry (offset 0) is `bti c` or `bti jc`: the target of `blr` (a call) and of `br x16`/`br x17` (a tail call) from other code (else [`Finding::NoLandingPad`]) | yes | - |
 /// | each indirect jump (`br`, `braa`, `brab`, `braaz`, `brabz`) goes through x16 or x17, so its target needs only `bti c` (a jump through another register needs `bti j`; else [`Finding::IndirectJumpRegister`]) | yes | - |
-/// | each `adr` into x16 or x17 with a target in the text is a jump target: the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
+/// | each `adr` with a target in the text, into any register, makes an indirect entry (a `br x16`/`br x17` or a `blr` through the register or a copy of it): the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
 ///
-/// `blr` and `ret` may use any register. x86-64 has no pad form here yet (CET IBT `endbr64`
-/// is not built): the check gives no finding.
+/// `blr` and `ret` may use any register (the spike-b unit probe calls through x1), so the
+/// check reads the target where it is made, at the `adr`, for every register. `adrp` and a
+/// direct call are [`check_text`] findings, so in unit text only an `adr` gives a text
+/// address. x86-64 has no pad form here yet (CET IBT `endbr64` is not built): the check
+/// gives no finding.
 pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
     let mut out = Vec::new();
     if arch != Arch::A64 {
@@ -688,9 +691,9 @@ pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
         if br && !matches!((w >> 5) & 31, 16 | 17) {
             out.push(Finding::IndirectJumpRegister { at: at as u32 });
         }
-        // `adr x16, L` / `adr x17, L` then `br x16`: L is entered by an indirect jump (JIT
-        // review M8-P2 B2).
-        if is_adr(w) && matches!(w & 31, 16 | 17) {
+        // `adr Xn, L` then `br x16` or `blr Xn` (or a copy of Xn): L is entered by an indirect
+        // branch (JIT review M8-P2 B2; Codex M8-P2 r2: `adr x0, L; blr x0`).
+        if is_adr(w) {
             let target = at as i64 + sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21);
             if (0..text.len() as i64).contains(&target) {
                 let t = target as usize;

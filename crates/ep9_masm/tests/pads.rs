@@ -163,9 +163,49 @@ fn the_pad_check_refuses_an_adr_jump_target_with_no_pad() {
         let d = unit(&[ADR_X16_8, a64::BR_X16, pad, RET]);
         assert!(finalize_unit(&d, &Padded).unwrap().has_pads());
     }
-    // An `adr` into another register is not a jump target of this check.
+    // An `adr` into another register is a target too (Codex M8-P2 r2, below).
     assert_eq!(
         check_pads(Arch::A64, &unit(&[ADR_X0_8, RET, a64::MOVZ_X0_1]).text),
-        []
+        [Finding::NoLandingPad { at: 12 }]
     );
+}
+
+/// Codex M8-P2 r2 R2-2: `bti c; adr x0, +8; blr x0; mov x0, #1; ret`. `blr` may use any
+/// register, so the call reaches offset 12, which is not a landing pad, and the text would
+/// fault under PROT_BTI. The old check read only an `adr` into x16 or x17, so this unit passed
+/// `finalize_unit`. Now every `adr` target in the text must be `bti c` or `bti jc`, also
+/// through a copy of the register (`adr x0; mov x16, x0; br x16`).
+#[test]
+fn the_pad_check_refuses_an_adr_call_target_with_no_pad_in_any_register() {
+    const ADR_X0_8: u32 = 0x1000_0040; // adr x0, #8
+    const ADR_X0_12: u32 = 0x1000_0060; // adr x0, #12
+    const BLR_X0: u32 = 0xd63f_0000;
+    const MOV_X16_X0: u32 = 0xaa00_03f0; // mov x16, x0
+    const RET: u32 = 0xd65f_03c0;
+    let unit = |words: &[u32]| {
+        let mut a = Assembler::new(Arch::A64);
+        a.pad();
+        for &w in words {
+            a.put32(w);
+        }
+        a.finish().unwrap()
+    };
+    let d = unit(&[ADR_X0_8, BLR_X0, a64::MOVZ_X0_1, RET]);
+    assert_eq!(
+        finalize_unit(&d, &Padded),
+        Err(FinalizeError::TextRelocations(vec![
+            Finding::NoLandingPad { at: 12 }
+        ]))
+    );
+    assert!(finalize_unit(&d, &common::TestUnit).is_ok());
+    let d = unit(&[ADR_X0_12, MOV_X16_X0, a64::BR_X16, a64::MOVZ_X0_1, RET]);
+    assert_eq!(
+        check_pads(Arch::A64, &d.text),
+        [Finding::NoLandingPad { at: 16 }]
+    );
+    // With `bti c` (or `bti jc`) at the target: no finding.
+    for pad in [A64_BTI_C, 0xd503_24df] {
+        let d = unit(&[ADR_X0_8, BLR_X0, pad, RET]);
+        assert!(finalize_unit(&d, &Padded).unwrap().has_pads());
+    }
 }
