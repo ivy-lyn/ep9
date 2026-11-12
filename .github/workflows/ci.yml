@@ -1184,8 +1184,8 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096): the slowest target took 21 min.
+    timeout-minutes: 75
+    # Rule 25 (M6-ORCH-545): windows-x64 took 38.9 min on m2/m8 (43124645044), 42.6 min with INTL W2 (43003201072), > 45 with W3 (43056384143: the build, +30 INTL crates); 1.5 x about 48 min.
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
