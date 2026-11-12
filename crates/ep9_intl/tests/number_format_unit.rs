@@ -64,10 +64,10 @@ print(fmt("en", {unit: "liter-per-kilometer", unitDisplay: "narrow"}, 3), "|", f
 print(fmt("gsw", {unit: "hour", unitDisplay: "long"}, 1, 2));
 "#;
 
-/// The units "X-per-Y" that T2 does not list (X in the per-unit pattern of Y, or in the
-/// "per" pattern with the name of Y), the plural form of the rounded value (ar, he, ru, pl,
-/// fr; gsw: a language with CLDR plural rules and no ICU4X rules), a pattern with no number (ar one and two hours, he one and two degrees), NaN and
-/// the infinities ("other").
+/// The units "X-per-Y" that T2 does not list (X in the per-unit pattern of Y, or in the "per"
+/// pattern with the name of Y), the plural form of the rounded value (ar, he, ru, pl, fr; gsw: a
+/// language with CLDR plural rules and no ICU4X rules), a pattern with no number (ar one and two
+/// hours, he one and two degrees), NaN and the infinities ("other").
 #[test]
 fn per_units_and_plural_forms_give_the_node_lines() {
     assert_eq!(

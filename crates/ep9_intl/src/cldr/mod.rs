@@ -402,8 +402,8 @@ mod tests {
     /// category of a sample number comes from the cardinal rules that NumberFormat uses
     /// (`plural_rules::cardinal_rules`: the ICU4X rules of `plural_rules::CardinalRules`; a
     /// language with only CLDR rules has no ICU4X units data); ICU4X selects its pattern with
-    /// the same rules. The
-    /// `tools/cldr-tables` test compares only the "other" pattern (it has no `icu_plurals`).
+    /// the same rules. The `tools/cldr-tables` test compares only the "other" pattern (it has no
+    /// `icu_plurals`).
     #[test]
     fn t2_equals_icu4x_in_every_plural_category() {
         use fixed_decimal::Decimal;
