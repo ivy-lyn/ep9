@@ -2,7 +2,7 @@
 //! 8-byte aligned. A section table follows it, then the sections.
 //!
 //! ```text
-//!   0 magic "\x89EP9UN\r\n"      8 container_version u32 (3)    12 header_size u32 (256)
+//!   0 magic "\x89EP9UN\r\n"      8 container_version u32 (4)    12 header_size u32 (256)
 //!  16 total_size u64            24 section_count u32           28 section_table_offset u32 (256)
 //!     -- 32-byte frozen prefix: the same place and meaning in every container version --
 //!  32 hash_alg u8 (1 = SHA-256)  33 header_flags u8 (bit 0 signed)  34 reserved [6] = 0
@@ -32,7 +32,7 @@ use crate::codes::{Contract, SectionKind, Versions};
 pub const MAGIC: [u8; 8] = [0x89, b'E', b'P', b'9', b'U', b'N', 0x0D, 0x0A];
 /// Container version. Any change to [`crate::layout_text`] bumps it (`tests/header.rs`
 /// enforces this).
-pub const CONTAINER_VERSION: u32 = 3;
+pub const CONTAINER_VERSION: u32 = 4;
 /// Header size in bytes.
 pub const HEADER_SIZE: usize = 256;
 /// Size of the frozen prefix: magic, container version, header size, total size and the

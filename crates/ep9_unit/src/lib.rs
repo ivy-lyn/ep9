@@ -37,7 +37,9 @@ pub use header::{
     incompat_flags, offsets, source_flags_valid,
 };
 pub use host::{ENGINE_BUILD_ID, HostInfo, RUNTIME_TABLE_LEN};
-pub use layout::{ENTRY_FIELDS, Field, HEADER_FIELDS, OnChange, layout_text};
+pub use layout::{
+    CODE_TABLES_V4, ENTRY_FIELDS, Field, HEADER_FIELDS, OnChange, code_table_lines, layout_text,
+};
 
 /// The unit writer (A2). Empty until then: tests build units with their own encoder
 /// (`tests/common/mod.rs`).
