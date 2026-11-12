@@ -9,6 +9,16 @@
 //! waiters. Each single-isolate script prints the lines of node v26.13.1 for the same script
 //! (`print` here, `console.log` there) unless its doc names a difference, and runs with and
 //! without GC stress.
+//!
+//! The order of a `waitAsync` promise against other jobs is the node/V8 host-task order
+//! (decision M6-ORCH-601; `ep9_vm` `abi/typed.rs`, `queue_head_after_async_waiters`): a
+//! notify puts the waiter into its agent's inbox and the promise resolves at the next job
+//! boundary. On Codex's trace S1 (waitAsync; queue A, which queues B, which queues C; then
+//! notify) that gives the spec order A,W,B,C (node: A,B,C,W); on S2 (a job calls notify, then
+//! queues B) and S3 (notify, then queue a job) it gives node's order, not the spec's: ECMA-262
+//! resolves a waiter of the same agent inside `Atomics.notify`, and V8 posts a task
+//! (`futex-emulation.cc:185-210`). `wait_async_resolves_in_notify_order` pins node's order
+//! (job, r3, r4, r5; the spec gives r3, r4, job, r5).
 
 mod common;
 

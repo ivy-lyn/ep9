@@ -574,6 +574,22 @@ impl<'s> Cx<'s> {
     /// (`abi/jobs.rs`), so the harness's promise-loop timers see a notify. With no async
     /// waiter it is one load of a plain counter (no clock read, no lock). GC point when one
     /// resolves.
+    ///
+    /// The order against other jobs is the node/V8 host-task order (decision M6-ORCH-601). A
+    /// notify, from this agent too, only puts the id into the inbox, and the promise resolves
+    /// at the next job boundary of this agent. ECMA-262 NotifyWaiter resolves a waiter of the
+    /// same agent inside `Atomics.notify` and sends one of another agent through
+    /// EnqueueResolveInAgentJob (HostEnqueueGenericJob: no order against promise jobs). V8
+    /// posts a task for every waiter, of the same agent too (`futex-emulation.cc:185-210`).
+    /// So ep9 matches the spec on S1 (Codex's trace) and node on S2 and S3, and neither in
+    /// every case (W: the reaction of the waiter's promise):
+    ///
+    /// ```text
+    /// trace                                                   ep9       node      spec
+    /// S1  waitAsync; queue A (A queues B, B queues C); notify  A,W,B,C   A,B,C,W   A,W,B,C
+    /// S2  job A calls notify, then queues B                    A,B,W     A,B,W     A,W,B
+    /// S3  notify, then queue A                                 A,W       A,W       W,A
+    /// ```
     pub(crate) fn queue_head_after_async_waiters(&mut self) -> u64 {
         let rt = self.rt();
         if rt.jobs.agent().pending() != 0 {
