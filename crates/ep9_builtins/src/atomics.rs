@@ -1,4 +1,4 @@
-//! The Atomics object (`sec-atomics-object`): module `atomics`, block 38. Makes `%Atomics%`
+//! The Atomics object (`sec-atomics-object`): module `atomics`, block 43. Makes `%Atomics%`
 //! (`IntrinsicId::Atomics`), an ordinary object whose prototype is `%Object.prototype%`, with
 //! its 14 functions and `@@toStringTag` "Atomics", and the global key `Atomics` {w, c}. Owner
 //! of the tables: TypedArray TA-4 R1; owner of the function bodies: TypedArray TA-4 R2
@@ -7,7 +7,7 @@
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-atomics.txt`. The ids follow node v26's key order. A missing definition
-//! is appended at the end (38.14 and on), never inserted.
+//! is appended at the end (43.14 and on), never inserted.
 //!
 //! ```text
 //! load, store, add .. exchange, compareExchange
@@ -42,7 +42,7 @@ use ep9_vm::{
 use crate::array_buffer::to_index;
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 38;
+pub const BLOCK: u8 = 43;
 
 /// The builtin functions, in id order (append-only). Lengths: the spec's (node v26 gives the
 /// same).

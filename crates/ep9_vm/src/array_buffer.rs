@@ -4,12 +4,12 @@
 //! the views (`typed_array.rs`), the DataView and the Atomics share.
 //!
 //! ```text
-//! ArrayBuffer / SAB (SLOT_OBJECT, ObjectClass 5 / 28)       Runtime.buffers: BufferTable (Rust memory)
+//! ArrayBuffer / SAB (SLOT_OBJECT, ObjectClass 5 / 35)       Runtime.buffers: BufferTable (Rust memory)
 //!   slot 0 store: BYTES cell | int32 entry | undefined     entries[i]: owner (weak), store, views (weak)
 //!   slot 1 byteLength  2 maxByteLength (undefined: fixed)      store: Resizable(Reservation) | Shared(Arc)
 //!   slot 3 detach key  4 flags (int32)                     one weak source (every GC kind):
 //!   slot 5 its own entry index (int32)                       owner dead -> remove its external bytes,
-//! DataView (SLOT_OBJECT, ObjectClass 29)                       free the entry (the store is dropped
+//! DataView (SLOT_OBJECT, ObjectClass 36)                       free the entry (the store is dropped
 //!   slot 4 its own entry index (int32; no store, no views)     after the GC); else drop dead views
 //!
 //!   BYTES (kind 85): +8 byte length, +16 bytes (zeroed)
@@ -104,7 +104,7 @@ pub(crate) mod flag {
     pub const RESIZABLE: i32 = 2;
 }
 
-/// The internal slots of a DataView (design §2.2; ObjectClass 29).
+/// The internal slots of a DataView (design §2.2; ObjectClass 36).
 pub(crate) mod dv_slot {
     /// `[[ViewedArrayBuffer]]`.
     pub const BUFFER: usize = 0;

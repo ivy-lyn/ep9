@@ -1,6 +1,6 @@
-//! DataView (§25.3): module `data_view`, block 34. Owner: TypedArray TA-2 TA-BUFFERS (design
+//! DataView (§25.3): module `data_view`, block 39. Owner: TypedArray TA-2 TA-BUFFERS (design
 //! `docs/plan/notes/typedarray-design.md` §8.2). Makes `%DataView%` and `%DataView.prototype%`
-//! (`IntrinsicId` 113-114). The global key `DataView` is in the lazy group of `array_buffer`
+//! (`IntrinsicId` 125-126). The global key `DataView` is in the lazy group of `array_buffer`
 //! (TA-D14).
 //!
 //! ```text
@@ -30,7 +30,7 @@ use ep9_vm::{
 use crate::array_buffer::{incompatible, requires_new, to_index};
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 34;
+pub const BLOCK: u8 = 39;
 
 mod def {
     pub const DATA_VIEW: u16 = 0;

@@ -36,5 +36,5 @@
   32  Segments
   33  Segment Iterator
   34  Intl.DisplayNames
-  28  SharedArrayBuffer
-  29  DataView
+  35  SharedArrayBuffer
+  36  DataView

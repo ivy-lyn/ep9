@@ -22,7 +22,7 @@
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-typed_array_proto.txt`. The ids follow node v26's key order. A missing
-//! definition is appended at the end (36.32 and on), never inserted.
+//! definition is appended at the end (41.32 and on), never inserted.
 
 use ep9_vm::{
     BuiltinDef, BuiltinModule, IntrinsicId, ObjectProps, PropAttrs, PropDef, PropKey,
@@ -32,7 +32,7 @@ use ep9_vm::{
 use super::{proto_copy, proto_iter};
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 36;
+pub const BLOCK: u8 = 41;
 
 /// The builtin functions, in id order (append-only). Lengths: the spec's (node v26 gives the same).
 pub const DEFS: &[BuiltinDef] = &[

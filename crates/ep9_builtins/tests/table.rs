@@ -105,10 +105,10 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_intl::list_format::BLOCK, 35);
     assert_eq!(ep9_intl::segmenter::BLOCK, 36);
     assert_eq!(ep9_intl::display_names::BLOCK, 37);
-    assert_eq!(ep9_builtins::typed_array::BLOCK, 35);
-    assert_eq!(ep9_builtins::typed_array::proto::BLOCK, 36);
-    assert_eq!(ep9_builtins::typed_array::base64::BLOCK, 37);
-    assert_eq!(ep9_builtins::atomics::BLOCK, 38);
+    assert_eq!(ep9_builtins::typed_array::BLOCK, 40);
+    assert_eq!(ep9_builtins::typed_array::proto::BLOCK, 41);
+    assert_eq!(ep9_builtins::typed_array::base64::BLOCK, 42);
+    assert_eq!(ep9_builtins::atomics::BLOCK, 43);
 }
 
 #[test]
