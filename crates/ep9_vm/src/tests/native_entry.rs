@@ -1479,3 +1479,111 @@ fn native_entry_clone_widen_widens_the_result_shape() {
         }
     }
 }
+
+/// Codex M8-P2 r1 H2 and JIT review B1: the site that native code passes must be an
+/// instruction start, and a cell in the slot's value half must be an ALLOC_SITE handler.
+/// `trap` is `Wide LdaSmi 0x<n>6e; CreateEmptyArrayLiteral [n]; Return`: the immediate bytes
+/// at offset 2 are `6e n`, which decode as `CreateEmptyArrayLiteral [n]`, the slot of the true
+/// site at offset 4. The old `site_slot` decoded at any offset, so (2, n) passed and the entry
+/// recorded the site. And with another IC_HANDLER (a CLONE handler) in the value half, the old
+/// entry wrote ALLOC_SITE fields into it. Now both are internal errors, and the slot keeps its
+/// value.
+#[test]
+fn native_entry_alloc_site_refuses_an_offset_inside_an_instruction_and_a_foreign_cell() {
+    use crate::literal_site::site_of;
+    use ep9_bytecode::FeedbackSlotKind;
+    for &d in Dispatch::ALL {
+        let label = d.name();
+        on_big_stack(move || {
+            let mut trap = Asm::new(meta("trap", 1, 0, 0, 0));
+            let lit = trap.b.feedback_slot(FeedbackSlotKind::Literal);
+            let n = lit.0;
+            assert!(
+                (1..256).contains(&n),
+                "{label}: a one-byte slot that is not 0"
+            );
+            trap.b
+                .lda_smi(0x6e | (n as i32) << 8)
+                .create_empty_array_literal(lit)
+                .return_();
+            let mut s = Asm::script(0);
+            let k = s.b.function_constant(FunctionId(1));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global("trap");
+            s.b.lda_undefined().return_();
+            let u = unit("", vec![s.finish(), trap.finish()]);
+            let mut iso = isolate(IsolateConfig {
+                feedback_threshold: 0,
+                ..config(d, false)
+            });
+            iso.with_cx_checkpoint(|cx| cx.run_script(u, "trap.js").map(|_| ()))
+                .unwrap();
+            let fi = info(&iso, "trap");
+            // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified
+            // bytecode.
+            let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+            let fake = ep9_bytecode::decode_at(code, 2).unwrap();
+            assert_eq!(
+                (fake.opcode, fake.bytes),
+                (
+                    ep9_bytecode::Opcode::CreateEmptyArrayLiteral,
+                    &[0x6e, n as u8][..]
+                ),
+                "{label}: the bytes at offset 2"
+            );
+            assert_eq!(ep9_bytecode::decode_at(code, 0).unwrap().next_offset(), 4);
+            crate::feedback::ensure(&iso.rt, 0, fi);
+            let a = code_start(alloc_entry as *const () as usize);
+            // SAFETY: as in `sites_isolate`.
+            unsafe {
+                install_code(&iso.rt, fi, DispatchKind::AotBaseline, a..a + 1).unwrap();
+            }
+            let f = iso.global_raw("trap").unwrap();
+            let v = crate::feedback::vector(info(&iso, "trap")).unwrap();
+            let slot = u64::from(lit.0);
+            let new_array = |iso: &mut Isolate| {
+                let a = iso.with_cx(|cx| Ok(cx.new_array().bits())).unwrap();
+                crate::runtime::val(a)
+            };
+            // Inside the LdaSmi: refused, nothing recorded.
+            let before = crate::feedback::value(v, n);
+            SITE.set((2, slot));
+            let arg = new_array(&mut iso);
+            let e = call_through_entry(&mut iso, f, &[arg]).unwrap();
+            assert_eq!(e.unwrap_err().message, bad_site(slot, 2), "{label}");
+            assert_eq!(crate::feedback::value(v, n), before, "{label}");
+            assert_eq!(site_of(before), None, "{label}");
+            // The true site records.
+            SITE.set((4, slot));
+            let arg = new_array(&mut iso);
+            let r = call_through_entry(&mut iso, f, &[arg]).unwrap();
+            assert_eq!(r.unwrap().to_bits(), arg.to_bits(), "{label}");
+            let h = crate::feedback::value(v, n);
+            assert_eq!(site_of(h).map(|s| s.1), Some(1), "{label}");
+            // A CLONE handler in the value half: refused, and the handler is not written.
+            let c = iso.rt.alloc(crate::kinds::IC_HANDLER, 40);
+            let i32b = crate::frame::int32_bits;
+            crate::object::init(c, 8, i32b(crate::ic::hk::CLONE));
+            crate::object::init(c, 16, i32b(5));
+            crate::object::init(c, 24, UNDEFINED);
+            crate::object::init(c, 32, i32b(0));
+            let c = c.to_value().to_bits();
+            let key = crate::feedback::key(v, n);
+            crate::feedback::set_slot(&iso.rt, v, n, key, c);
+            let arg = new_array(&mut iso);
+            let e = call_through_entry(&mut iso, f, &[arg]).unwrap();
+            assert_eq!(e.unwrap_err().message, bad_site(slot, 4), "{label}");
+            assert_eq!(crate::feedback::value(v, n), c, "{label}");
+            let cc = crate::object::cell(c);
+            assert_eq!(
+                crate::object::rd_i32(cc, 8),
+                crate::ic::hk::CLONE,
+                "{label}"
+            );
+            assert_eq!(crate::object::rd_i32(cc, 16), 5, "{label}");
+            assert_eq!(crate::object::rd(cc, 24), UNDEFINED, "{label}");
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}

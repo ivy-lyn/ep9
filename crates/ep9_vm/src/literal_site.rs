@@ -1048,11 +1048,21 @@ fn nested_plan(fi: &FunctionInfo, k: u32) -> Option<NestedPlan> {
 
 // ---- the native entries (M8-P2 A2-CUT, MC-w20-4 (3); doc 13:349) --------------------------
 
-/// The feedback slot of the instruction at `pc` of `fi` if it is one of `ops`.
+/// The feedback slot of the instruction at `pc` of `fi` if it is one of `ops`. `pc` comes from
+/// native code, so it must be an instruction start: the walk from offset 0 must land on it
+/// (else `None`; an operand byte can decode as a site of another slot, Codex M8-P2 r1 H2).
+/// O(code length) per call (no emitter calls the hooks yet).
 fn site_slot(fi: &FunctionInfo, pc: *const u8, ops: &[Opcode]) -> Option<u32> {
     let off = fi.offset_of(pc)?;
     // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified bytecode.
     let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let mut at = 0;
+    while at < off {
+        at = ep9_bytecode::decode_at(code, at).ok()?.next_offset();
+    }
+    if at != off {
+        return None;
+    }
     let insn = ep9_bytecode::decode_at(code, off).ok()?;
     if !ops.contains(&insn.opcode) {
         return None;
@@ -1063,7 +1073,8 @@ fn site_slot(fi: &FunctionInfo, pc: *const u8, ops: &[Opcode]) -> Option<u32> {
 /// The object-model part of [`miss`] at an array-literal site, for native code
 /// (`RuntimeTable::alloc_site`): the site is (`fi`, `slot`), and the instruction at `pc` must
 /// be a `CreateArrayLiteral` or `CreateEmptyArrayLiteral` that names `slot`, and `result` an
-/// array (else false: the caller throws an internal error). With a vector and a slot that
+/// array, and a cell in the slot's value half an ALLOC_SITE handler (else false: the caller
+/// throws an internal error). With a vector and a slot that
 /// this site alone uses, [`array_site`] runs as on T0's cold path (the birth kind, the count,
 /// ARRAY +32); with no vector it does nothing, as T0 does (one feedback threshold for every
 /// preset, M5-P3-ORCH-1). It writes no key half: native code records no shape feedback
@@ -1086,6 +1097,12 @@ pub(crate) fn native_alloc_site(
         return true;
     };
     if i < feedback::slot_count(v) && !shared_slot(fi, i) {
+        // A cell in the value half must be this site's ALLOC_SITE handler (array_site writes
+        // its fields).
+        let value = feedback::value(v, i);
+        if is_cell_bits(value) && site_of(value).is_none() {
+            return false;
+        }
         // GC point: `result` lives in a Rust local; `v` is rooted by the unit.
         array_site(rt, v, i, result);
     }
