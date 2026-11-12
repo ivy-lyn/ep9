@@ -186,7 +186,7 @@ fn string_tree(cps: &[u32]) -> Tree {
 
 /// The ranges of a non-`v` class item, as V8's parser adds them (`ParseClassRanges`,
 /// `TryParseCharacterClassEscape`).
-fn add_class_item(item: ClassItem, flags: Flags, ranges: &mut Vec<CharacterRange>) {
+pub(crate) fn add_class_item(item: ClassItem, flags: Flags, ranges: &mut Vec<CharacterRange>) {
     match item {
         ClassItem::Range(from, to) => ranges.push(CharacterRange::range(from, to)),
         ClassItem::Standard(set) => {

@@ -2,12 +2,15 @@
 //!
 //! ```text
 //!   step 1 (M7-P4)                    step 2 (M7-P5)                    later steps
-//!   pattern units + Flags             class items of the Tree           compiler (regexp-
-//!     -> parser.rs (regexp-parser.cc)   -> sets.rs: ClassSet,             compiler.cc), bytecode
-//!     -> Pattern { Tree (ast.rs,           StringSet (code points,         + peephole skip scans,
-//!        regexp-ast.h), captures,          strings, case closure)          interpreter (regexp-
-//!        names }                           charset.rs, special_case.rs,    interpreter.cc)
+//!   pattern units + Flags             class items of the Tree           bytecode + peephole
+//!     -> parser.rs (regexp-parser.cc)   -> sets.rs: ClassSet,             skip scans,
+//!     -> Pattern { Tree (ast.rs,           StringSet (code points,         interpreter (regexp-
+//!        regexp-ast.h), captures,          strings, case closure)          interpreter.cc)
+//!        names }                           charset.rs, special_case.rs,
 //!                                          unicode_sets.rs (UCD tables)
+//!   step 3 (M8-P3)
+//!   Pattern + Flags + CompileOptions -> compiler/ (regexp-compiler.cc, regexp-compiler-tonode.cc)
+//!     -> Program: the node graph (regexp-nodes.h) after the analysis
 //! ```
 //!
 //! Nothing in the engine calls this crate yet: RX0 (`ep9_regexp`, the regress fork) is the
@@ -25,6 +28,7 @@
 //! | `special_case.rs` | `src/regexp/special-case.h` (`CaseFolding`), `TextNode::GetCaseIndependentLetters` of `regexp-compiler.cc` |
 //! | `sets.rs` | the set part of `regexp-compiler-tonode.cc` (`ClassRanges::ToNodeImpl`, `ComputeExpression`) and of `regexp-compiler.cc` (`MakeCaseIndependent`); the ICU part of `regexp-parser.cc` (`AddPropertyClassRange`) |
 //! | `unicode_sets.rs` | not V8: the ICU sets and V8's generated `special-case.cc`, as tables from the same UCD (`data/gen-sets.py`, a port of `gen-regexp-special-case.cc`) |
+//! | `compiler/` | `src/regexp/regexp-nodes.h`, `regexp-compiler.cc` (the analysis, the quick check, `BoyerMooreLookahead`, `FirstCharacterSet`), `regexp-compiler-tonode.cc` (`ToNode`), the order of `regexp.cc` `RegExpImpl::Compile` up to the code generator ([`compile`]) |
 //!
 //! Known gaps of the parser port, each by name (none changes which patterns parse, except the
 //! nesting cap and the last four, which follow ECMA-262 where V8 follows ICU or its own
@@ -66,6 +70,7 @@
 
 mod ast;
 mod charset;
+pub mod compiler;
 mod error;
 mod flags;
 mod parser;
@@ -86,6 +91,7 @@ pub use charset::{
     add_unicode_case_equivalents, canonicalize, clamp_to_one_byte, contains, intersect, intersects,
     is_canonical, negate, subtract,
 };
+pub use compiler::{CompileOptions, Program, compile};
 pub use error::{Error, ParseError};
 pub use flags::Flags;
 pub use parser::{MAX_CAPTURES, MAX_NESTING, Pattern, Unit};
