@@ -21,7 +21,8 @@
 //!           literals of their patterns: collapsed if both sides have the same middle and
 //!           it has more than one code point ("+$2.90–3.10", "-€3.00–5.00", but "$3 – $5")
 //!   outer   the unit, or the currency name: always collapsed ("3–5 km/h"); its plural form
-//!           is the one of the range (CLDR plural ranges: en "0–1 kilometers per hour")
+//!           is the one of the range category (CLDR plural ranges: en "0–1 kilometers per
+//!           hour"), also when no end has it (sl 102 two, 201 one: few "102–201 metri")
 //! ```
 //!
 //! The separator gets a space on each side that has none if a layer of the first side shows
@@ -33,11 +34,11 @@
 
 use std::rc::Rc;
 
-use fixed_decimal::Sign;
+use fixed_decimal::{Decimal, Sign};
 use icu_plurals::{PluralCategory, PluralOperands, PluralRules, PluralRulesWithRanges};
 
 use super::decimal::{self, IntlMv, PartType, Parts, SignDisplay};
-use super::{CURRENCY_DISPLAYS, Resolved, STYLES, partition_numeric};
+use super::{CURRENCY_DISPLAYS, Resolved, STYLES, partition_numeric, partition_numeric_as};
 use crate::cache::{self, Service};
 use crate::digits::{Interrupted, Work};
 use crate::plural_rules;
@@ -205,8 +206,38 @@ fn code_points(parts: &[Part]) -> usize {
 }
 
 /// The cardinal plural rules with the CLDR plural ranges of one data locale (the rules of the
-/// unit and currency name patterns, `plural_rules::cardinal_rules`).
-struct RangeRules(Option<PluralRulesWithRanges<PluralRules>>);
+/// unit and currency name patterns, `plural_rules::cardinal_rules`), and the operands of a
+/// sample value of each category of the rules ([`samples`]).
+struct RangeRules(Option<(PluralRulesWithRanges<PluralRules>, Samples)>);
+
+/// The operands of a sample value of each plural category that has one.
+type Samples = Vec<(PluralCategory, PluralOperands)>;
+
+/// The sample values of [`samples`], in the order they are tried: integers, then values with
+/// fraction digits, then 0 and 1 last (a pattern may have an explicit "0" or "1" form, which
+/// ICU4X picks by the value; the range category is a category, not a value).
+const SAMPLE_VALUES: [&str; 8] = ["1000000", "1000", "0.5", "1.5", "0.1", "1.1", "0", "1"];
+
+/// The operands of a sample value of each category of `rules`: the first of the integers 2 to
+/// 200 and [`SAMPLE_VALUES`] whose category it is. The category of a range may be the
+/// category of neither end (sl 102 is two, 201 is one, the range is few), so the range form
+/// of a unit or currency name pattern comes from such a value.
+fn samples(rules: &PluralRules) -> Samples {
+    let mut out = Samples::new();
+    let values = (2u32..=200).map(Decimal::from).chain(
+        SAMPLE_VALUES
+            .iter()
+            .filter_map(|s| Decimal::try_from_str(s).ok()),
+    );
+    for d in values {
+        let o = PluralOperands::from(&d);
+        let c = rules.category_for(o);
+        if !out.iter().any(|(k, _)| *k == c) {
+            out.push((c, o));
+        }
+    }
+    out
+}
 
 /// The cached plural rules with ranges of `data_locale`.
 fn range_rules(data_locale: &str) -> Option<Rc<RangeRules>> {
@@ -215,7 +246,10 @@ fn range_rules(data_locale: &str) -> Option<Rc<RangeRules>> {
         let rules = plural_rules::cardinal_rules(data_locale);
         Some(RangeRules(rules.and_then(|rules| {
             let prefs = (&icu_locale(data_locale)).into();
-            PluralRulesWithRanges::try_new_with_rules(prefs, rules).ok()
+            let samples = samples(&rules);
+            PluralRulesWithRanges::try_new_with_rules(prefs, rules)
+                .ok()
+                .map(|r| (r, samples))
         })))
     })
 }
@@ -238,26 +272,44 @@ fn outer_category(
     )
 }
 
-/// Whether the outer layer of the range takes the one of `y` (true) or of `x` (false): the
-/// side whose plural category is the category of the range (CLDR plural ranges); `y` if
-/// neither is.
-fn outer_of_end(
+/// The side whose outer layer the range takes: the one whose plural category is the range
+/// category (CLDR plural ranges), or the pattern form of the range category.
+enum OuterForm {
+    Start,
+    /// The end (also with no range data: the CLDR default range category is the end one).
+    End,
+    /// Neither end has the range category: the form of these operands (a sample value of
+    /// the category).
+    Other(PluralOperands),
+}
+
+/// The [`OuterForm`] of the range from `x` to `y`.
+fn outer_form(
     r: &Resolved,
     x: &IntlMv,
     y: &IntlMv,
     work: &mut Work,
-) -> Result<bool, Interrupted> {
+) -> Result<OuterForm, Interrupted> {
     let data_locale = tag::remove_unicode_extension(&r.locale);
     let Some(rules) = range_rules(&data_locale) else {
-        return Ok(true);
+        return Ok(OuterForm::End);
     };
-    let Some(rules) = rules.0.as_ref() else {
-        return Ok(true);
+    let Some((rules, samples)) = rules.0.as_ref() else {
+        return Ok(OuterForm::End);
     };
     let cx = outer_category(r, rules, x, work)?;
     let cy = outer_category(r, rules, y, work)?;
     let c = rules.resolve_range(cx, cy);
-    Ok(!(c == cx && c != cy))
+    Ok(if c == cy {
+        OuterForm::End
+    } else if c == cx {
+        OuterForm::Start
+    } else {
+        samples
+            .iter()
+            .find(|(k, _)| *k == c)
+            .map_or(OuterForm::End, |(_, o)| OuterForm::Other(*o))
+    })
 }
 
 /// Appends `parts` with the source `source` (one budget unit per part).
@@ -478,19 +530,29 @@ pub fn partition(
         return Ok(out);
     };
     // The outer layers (empty, or the unit or currency name) always collapse, in the plural
-    // form of the range.
-    let outer_end = if outer
-        && (xp[..lx.outer_prefix] != yp[..ly.outer_prefix]
-            || xp[lx.outer_suffix..] != yp[ly.outer_suffix..])
-    {
-        outer_of_end(r, x, y, work)?
+    // form of the range category (also if both ends have the same form: sl 1 and 101 are
+    // one, the range is few).
+    let form = if outer {
+        outer_form(r, x, y, work)?
     } else {
-        false
+        OuterForm::Start
     };
-    let (op, os) = if outer_end {
-        (&yp[..ly.outer_prefix], &yp[ly.outer_suffix..])
-    } else {
-        (&xp[..lx.outer_prefix], &xp[lx.outer_suffix..])
+    // The parts of y in the pattern form of the range category, if no end has it.
+    let zp = match form {
+        OuterForm::Other(o) => Some(partition_numeric_as(r, y, Some(o), work)?),
+        _ => None,
+    };
+    let lz = match &zp {
+        Some(zp) => Layers::of(zp, outer, work)?,
+        None => None,
+    };
+    let (op, os) = match (form, &zp, lz) {
+        (OuterForm::Start, _, _) => (&xp[..lx.outer_prefix], &xp[lx.outer_suffix..]),
+        (OuterForm::Other(_), Some(zp), Some(lz)) => {
+            (&zp[..lz.outer_prefix], &zp[lz.outer_suffix..])
+        }
+        // A form with no number (a unit pattern with no `{0}`) has no outer layer: the end's.
+        _ => (&yp[..ly.outer_prefix], &yp[ly.outer_suffix..]),
     };
     // The middle layers collapse if they are the same and have more than one code point.
     let (mx, my) = (lx.middle(&xp), ly.middle(&yp));
@@ -621,6 +683,35 @@ mod tests {
         let l = unpolled(|w| Layers::of(&p, false, w)).unwrap();
         assert_eq!((l.number, l.inner), ((0, 3), 7));
         assert!(unpolled(|w| Layers::of(&parts(&[(Unit, "ساعة")]), true, w)).is_none());
+    }
+
+    /// Each category of the cardinal rules has a sample value (the range form of a category
+    /// that no end has), for the locales with CLDR plural ranges and many categories; sl:
+    /// two is 2, few is 3, one is 101 (not 1: the integers 2 to 200 come first).
+    #[test]
+    fn every_category_has_a_sample() {
+        for l in [
+            "sl", "lv", "ru", "uk", "pl", "cs", "lt", "ar", "he", "ga", "cy", "br", "mt", "ro",
+            "hr", "fr", "pt", "it", "es", "ca", "en", "is", "mk", "gd",
+        ] {
+            let rules = plural_rules::cardinal_rules(l).expect(l);
+            let s = samples(&rules);
+            for c in rules.categories() {
+                let o = s.iter().find(|(k, _)| *k == c).map(|(_, o)| *o);
+                assert_eq!(o.map(|o| rules.category_for(o)), Some(c), "{l} {c:?}");
+            }
+        }
+        let sl = samples(&plural_rules::cardinal_rules("sl").expect("sl"));
+        let of = |c| sl.iter().find(|(k, _)| *k == c).map(|(_, o)| *o);
+        let op = |n: u32| Some(PluralOperands::from(&Decimal::from(n)));
+        assert_eq!(
+            (
+                of(PluralCategory::Two),
+                of(PluralCategory::Few),
+                of(PluralCategory::One)
+            ),
+            (op(2), op(3), op(101))
+        );
     }
 
     /// The range pattern parts and the ICU pattern spaces.

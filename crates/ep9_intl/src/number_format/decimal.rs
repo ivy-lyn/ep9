@@ -42,6 +42,7 @@ use icu_decimal::provider::{Baked, DecimalSymbolsV1};
 use icu_decimal::{CompactDecimalFormatter, DecimalFormatter, DecimalFormatterPreferences};
 use icu_locale_core::extensions::unicode::Value;
 use icu_locale_core::preferences::extensions::unicode::keywords::NumberingSystem;
+use icu_plurals::PluralOperands;
 use icu_provider::prelude::*;
 
 use ep9_vm::{Cx, JsResult, Local, ToPrimitiveHint};
@@ -320,6 +321,10 @@ pub struct Format<'a> {
     pub exponent: Option<Exponent>,
     pub grouping: Grouping,
     pub sign_display: SignDisplay,
+    /// The plural operands that pick the form of the unit or currency name pattern, in place
+    /// of the operands of the rounded value: the range category of a number range
+    /// (`super::range`). `None`: the operands of the rounded value.
+    pub plural: Option<PluralOperands>,
 }
 
 // ---- the ICU4X objects (crate::cache) ---------------------------------------------------------
@@ -1054,6 +1059,7 @@ mod tests {
             exponent: None,
             grouping: Grouping::Auto,
             sign_display: SignDisplay::Auto,
+            plural: None,
         };
         let icu = icu_for(&f).expect("data");
         assert_eq!(icu.t1.map(|t| t.nan), Some("非數值"));

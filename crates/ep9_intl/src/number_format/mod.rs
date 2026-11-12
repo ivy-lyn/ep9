@@ -44,6 +44,8 @@ use ep9_vm::{
 
 use std::rc::Rc;
 
+use icu_plurals::PluralOperands;
+
 use crate::available;
 use crate::cache::{self, Service};
 use crate::digits::{
@@ -318,6 +320,7 @@ impl Resolved {
             },
             grouping: self.grouping,
             sign_display: self.sign_display,
+            plural: None,
         }
     }
 }
@@ -685,8 +688,21 @@ fn set_number_format_unit_options<'s>(
 ///
 /// The passes over the digits count in `work` ([`decimal`] polls).
 pub fn partition_numeric(r: &Resolved, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
+    partition_numeric_as(r, x, None, work)
+}
+
+/// [`partition_numeric`] with the unit or currency name pattern of the plural operands
+/// `plural` (`None`: of the rounded value of `x`): the range category of a number range
+/// ([`range`]).
+fn partition_numeric_as(
+    r: &Resolved,
+    x: &IntlMv,
+    plural: Option<PluralOperands>,
+    work: &mut Work,
+) -> Result<Parts, Interrupted> {
     let data_locale = tag::remove_unicode_extension(&r.locale);
-    let f = r.format(&data_locale);
+    let mut f = r.format(&data_locale);
+    f.plural = plural;
     match (STYLES[r.style as usize], NOTATIONS[r.notation as usize]) {
         (_, "scientific" | "engineering") => scientific::partition(r, f, x, work),
         ("percent" | "currency", _) => currency::partition(r, f, x, work),

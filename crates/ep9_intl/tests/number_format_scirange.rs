@@ -169,3 +169,27 @@ fn approximately_keeps_the_rounded_value() {
         ])
     );
 }
+
+const RANGE_FORMS: &str = r#"const fr = (l, o, ...xs) => xs.map(([x, y]) => new Intl.NumberFormat(l, o).formatRange(x, y)).join(" | ");
+const m = {style: "unit", unit: "meter", unitDisplay: "long"}, usd = {style: "currency", currency: "USD", currencyDisplay: "name", maximumFractionDigits: 0};
+const pr = (l, ...xs) => xs.map(([x, y]) => new Intl.PluralRules(l).selectRange(x, y)).join(" | ");
+print(pr("sl", [102, 201], [1, 101], [5, 101]), "/", fr("sl", m, [102, 201], [1, 101], [5, 101], [3, 4]), "/", fr("sl", usd, [102, 201], [1, 101], [1, 2]));
+print(pr("lv", [10, 11], [0, 1]), "/", fr("lv", m, [10, 11], [0, 1]), "/", fr("ru", m, [1, 2], [5, 21]), "/", fr("en", m, [1, 1], [0, 1]));
+print(new Intl.NumberFormat("sl", m).formatRangeToParts(102, 201).map(p => p.type + ":" + p.value + ":" + p.source).join());"#;
+
+/// The unit and currency name of a range take the plural form of the range category (CLDR
+/// plural ranges, PluralRules.selectRange), also when it is the category of neither end: sl
+/// 102 (two) to 201 (one) is few ("metri", "ameriški dolarji"), and when both ends have the
+/// same form: sl 1 to 101 (one, one) is few, lv 10 to 11 (zero, zero) is other ("metri", not
+/// "metru"). Old code: the form of an end ("102–201 meter", "10–11 metru").
+#[test]
+fn range_forms_take_the_range_category() {
+    assert_eq!(
+        run_both(RANGE_FORMS),
+        lines(&[
+            "few | few | few / 102–201 metri | 1–101 metri | 5–101 metri | 3–4 metri / 102–201 ameriški dolarji | 1–101 ameriški dolarji | 1–2 ameriška dolarja",
+            "other | one / 10–11 metri | 0–1 metrs / 1–2 метра | 5–21 метр / ~1 meter | 0–1 meters",
+            "integer:102:startRange,literal:–:shared,integer:201:endRange,literal: :shared,unit:metri:shared",
+        ])
+    );
+}

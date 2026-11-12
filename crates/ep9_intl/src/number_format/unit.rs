@@ -80,11 +80,11 @@ impl UnitData {
         })
     }
 
-    /// The pattern of the plural category of `rounded` (the rounded value; `None` for NaN
-    /// and the infinities: "other").
-    fn pattern(&self, rounded: Option<&fixed_decimal::Decimal>) -> &str {
-        let c = match (&self.rules, rounded) {
-            (Some(rules), Some(d)) => rules.category_for(PluralOperands::from(d)),
+    /// The pattern of the plural category of the operands `plural` (of the rounded value, or
+    /// of the range category; `None` for NaN and the infinities: "other").
+    fn pattern(&self, plural: Option<PluralOperands>) -> &str {
+        let c = match (&self.rules, plural) {
+            (Some(rules), Some(o)) => rules.category_for(o),
             _ => PluralCategory::Other,
         };
         let i = CATEGORIES.iter().position(|x| *x == c).unwrap_or(5);
@@ -179,7 +179,10 @@ pub fn partition(
         return Ok(Parts::new());
     };
     let body = core::mem::take(&mut p.body);
-    let pattern = data.pattern(p.rounded.as_ref());
+    let pattern = data.pattern(
+        f.plural
+            .or_else(|| p.rounded.as_ref().map(PluralOperands::from)),
+    );
     let Some((before, after)) = pattern.split_once("{0}") else {
         // No number in the pattern: the pattern takes its place.
         let mut out = Parts::with_capacity(3);

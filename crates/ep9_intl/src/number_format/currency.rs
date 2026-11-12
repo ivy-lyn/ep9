@@ -31,7 +31,6 @@
 use std::borrow::Cow;
 use std::rc::Rc;
 
-use fixed_decimal::Decimal;
 use icu_experimental::dimension::currency::CurrencyType;
 use icu_experimental::dimension::provider::currency::essentials::CurrencyEssentialsV1;
 use icu_experimental::dimension::provider::currency::extended::CurrencyExtendedDataV1;
@@ -436,18 +435,15 @@ fn percent(f: Format<'_>, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrup
     Ok(out)
 }
 
-/// The pattern and the currency text of `names` for the rounded value `rounded` (its plural
-/// category; "other" for NaN and the infinities).
-fn name_pattern(names: &Names, code: &str, rounded: Option<&Decimal>) -> (String, String) {
+/// The pattern and the currency text of `names` for the plural operands `plural` (of the
+/// rounded value, or of the range category; "other" for NaN and the infinities).
+fn name_pattern(names: &Names, code: &str, plural: Option<PluralOperands>) -> (String, String) {
     let (patterns, texts) = (names.patterns.get(), names.names.as_ref().map(|n| n.get()));
-    match (&names.rules, rounded) {
-        (Some(rules), Some(d)) => {
-            let op = PluralOperands::from(d);
-            (
-                patterns.get(op, rules).interpolate_to_string(MARKS),
-                texts.map_or_else(|| code.to_string(), |t| t.get(op, rules).to_string()),
-            )
-        }
+    match (&names.rules, plural) {
+        (Some(rules), Some(op)) => (
+            patterns.get(op, rules).interpolate_to_string(MARKS),
+            texts.map_or_else(|| code.to_string(), |t| t.get(op, rules).to_string()),
+        ),
         _ => (
             patterns
                 .elements
@@ -484,7 +480,10 @@ fn currency(
     let accounting = CURRENCY_SIGNS.get(r.currency_sign as usize) == Some(&"accounting");
     let (pattern, text, explicit): (Cow<'_, str>, Cow<'_, str>, bool) = match &data.names {
         Some(names) => {
-            let (pattern, text) = name_pattern(names, &data.code, p.rounded.as_ref());
+            let plural = f
+                .plural
+                .or_else(|| p.rounded.as_ref().map(PluralOperands::from));
+            let (pattern, text) = name_pattern(names, &data.code, plural);
             (pattern.into(), text.into(), false)
         }
         None => {
