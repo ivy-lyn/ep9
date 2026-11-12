@@ -26,6 +26,7 @@
 //! | `a_view_receiver_takes_its_define_hook` | OrdinarySet with a view as the receiver (Reflect.set, `super[k] = v`): CreateDataProperty is the view's `[[DefineOwnProperty]]`, so "-0", an index out of range or on a detached view gives false and stores nothing; the named IC case stays SLOW (Codex TA-1 r1 finding 2) |
 //! | `integer_conversions_at_the_edges` | ToInt8 ... ToUint32 and ToUint8Clamp at NaN, ±0, ±∞, negative fractions, 2^31, 2^32, 2^53 and above, as node gives them (H36: no `fmod`, no FMA) |
 //! | `prevent_extensions_of_a_view_needs_a_fixed_length` | §10.4.5 [[PreventExtensions]] (TA3-PREVEXT): false and still extensible for a view that is not IsTypedArrayFixedLength, also out of bounds or detached; OrdinaryPreventExtensions for a fixed-length view (node v26.13.1) |
+//! | `an_array_iterator_reads_the_typed_array_length` | `%ArrayIteratorPrototype%.next` over a view (TypedArray TA-4 R3): TypedArrayLength, not a `length` property; a grow is seen; out of bounds or detached is a TypeError, then the iterator is done |
 
 use std::cell::Cell;
 use std::hint::black_box;
@@ -1373,5 +1374,67 @@ fn prevent_extensions_of_a_view_needs_a_fixed_length() {
         assert_eq!(ta::prevent_extensions(o), None);
         assert_eq!(property::try_prevent_extensions(cx, o), Ok(true));
         assert!(!property::is_extensible(o));
+    });
+}
+
+/// One `%ArrayIteratorPrototype%.next` call on the Array Iterator `it`: the Number value of the
+/// result, `None` when done, or the `name` of the thrown error.
+fn next_value(cx: &mut Cx, it: u64) -> Result<Option<f64>, String> {
+    let next = get(cx, it, "next");
+    match crate::call::call_function(cx, next, it, &[]) {
+        Ok(r) if val(get(cx, r, "done")).as_bool() == Some(true) => Ok(None),
+        Ok(r) => Ok(Some(num(get(cx, r, "value")))),
+        Err(_) => {
+            let e = cx.rt().take_pending();
+            Err(crate::string::to_rust_string(get(cx, e, "name")))
+        }
+    }
+}
+
+/// `%ArrayIteratorPrototype%.next` over a view (`sec-createarrayiterator` step 2.b; the
+/// `natives.rs` view arm, TypedArray TA-4 R3): the length is TypedArrayLength, never a
+/// `length` property (an own `length` 9 is not read); a grow of the buffer is seen; a view out
+/// of bounds or detached throws a TypeError, and the iterator is then done (the closure
+/// completed).
+#[test]
+fn an_array_iterator_reads_the_typed_array_length() {
+    each(|cx| {
+        let iterator = |cx: &mut Cx, o: u64, kind: i32| {
+            let rt = cx.rt();
+            let proto = rt.root(crate::runtime::Root::ArrayIteratorPrototype);
+            object::new_iterator_of_kind(rt, proto, o, kind)
+        };
+        // A length-tracking Int8 view with an own `length` 9.
+        let b = buffer(cx.rt(), 2, Some(4));
+        let auto = view(cx.rt(), 0, b, 0, None);
+        put(cx, auto, "length", int(9));
+        put(cx, auto, "0", int(5));
+        put(cx, auto, "1", int(-6));
+        let it = iterator(cx, auto, object::iter_kind::VALUES);
+        assert_eq!(next_value(cx, it), Ok(Some(5.0)));
+        ab::resize(cx.rt(), b, 3).unwrap();
+        assert_eq!(next_value(cx, it), Ok(Some(-6.0)));
+        assert_eq!(next_value(cx, it), Ok(Some(0.0)));
+        assert_eq!(next_value(cx, it), Ok(None), "the own length is not read");
+        // A fixed view out of bounds after a shrink.
+        let b2 = buffer(cx.rt(), 4, Some(8));
+        let fixed = view(cx.rt(), 0, b2, 0, Some(4));
+        let it2 = iterator(cx, fixed, object::iter_kind::KEYS);
+        assert_eq!(next_value(cx, it2), Ok(Some(0.0)));
+        ab::resize(cx.rt(), b2, 2).unwrap();
+        assert_eq!(next_value(cx, it2), Err("TypeError".into()));
+        assert_eq!(next_value(cx, it2), Ok(None), "done after the throw");
+        // A detached view.
+        let b3 = buffer(cx.rt(), 2, None);
+        let d = view(cx.rt(), 0, b3, 0, None);
+        let it3 = iterator(cx, d, object::iter_kind::ENTRIES);
+        ab::detach(cx.rt(), b3, UNDEFINED).unwrap();
+        assert_eq!(next_value(cx, it3), Err("TypeError".into()));
+        // An object that is no view still reads its `length` property.
+        let o = object::new_object(cx.rt(), NULL);
+        put(cx, o, "length", int(1));
+        let it4 = iterator(cx, o, object::iter_kind::KEYS);
+        assert_eq!(next_value(cx, it4), Ok(Some(0.0)));
+        assert_eq!(next_value(cx, it4), Ok(None));
     });
 }
