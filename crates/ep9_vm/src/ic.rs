@@ -2396,12 +2396,13 @@ fn load_with_x86(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -
     read_field(holder, rd_i32(c, hc::LOCATION))
 }
 
-/// The hit path of the `LdaGlobal` fast body: [`load_global`] on aarch64 and other targets,
-/// and on x86-64 with `ic-stats`.
+/// The hit path of the `LdaGlobal` and `LdaGlobalInsideTypeof` fast bodies: [`load_global`]
+/// on aarch64 and other targets, and on x86-64 with `ic-stats`.
 #[cfg(any(not(target_arch = "x86_64"), feature = "ic-stats"))]
 pub(crate) use self::load_global as load_global_fast;
 
-/// The hit path of the `LdaGlobal` fast body on x86-64 (M8-P1 X86-SHAPE2): [`load_global`] for
+/// The hit path of the `LdaGlobal` fast body on x86-64 (M8-P1 X86-SHAPE2; `LdaGlobalInsideTypeof`
+/// since M8-P3 LEVER-6): [`load_global`] for
 /// a monomorphic entry (a global object case or a lexical binding); `None` for every other
 /// entry. The polymorphic loop of [`global_site`] keeps 4 more values live, so x86-64
 /// `LdaGlobal` saved 4 registers on entry for every run. A polymorphic entry goes to the cold
