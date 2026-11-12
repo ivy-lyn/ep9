@@ -86,7 +86,7 @@ fix is public.
 `scripts/run.sh` seals each crash file with `openssl cms -encrypt -binary -aes256 -outform DER`
 to that certificate (RSA-4096, CN=ep9-fuzz-crash-recipient; no name or e-mail) as
 `artifacts/<target>.sealed/<kind>-<sha256>.p7m` (the SHA-256 of the plain file, the record's
-crash id), and deletes the plain file. A failed job uploads only those `.p7m` files (artifact
+crash id); the envelope gets that name by a rename after openssl ends with 0, and only then is the plain file deleted (a file that does not seal stays plain in `artifacts/<target>/`, run.sh prints `seal failed` with its hash, and the run fails). A failed job uploads only those `.p7m` files (artifact
 `fuzz-sealed-<target>`, kept 7 days). The output, the log rule, the summary and the record do
 not change: hashes only. The private key is not in the repo and not in CI; only the
 orchestrator holds it and opens a file off GitHub:
@@ -98,7 +98,7 @@ shasum -a 256 crash-<sha256>    # must be the record's crash id
 ```
 
 The self-test seals a stub crash and checks that the `.p7m` file is CMS enveloped data with
-AES-256 and holds no input bytes, that the plain file is gone, and that the lines, the summary
+AES-256 and holds no input bytes, that the plain file is gone, that a seal that fails (a recipient file that is not a cert) keeps the plain file out of the sealed dir and fails the run, and that the lines, the summary
 and the record equal those of the same run without the seal.
 
 The triage box runs the `infra/fuzz` image (built from a `git archive` of the crash's commit,

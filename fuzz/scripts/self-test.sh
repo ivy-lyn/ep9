@@ -8,7 +8,8 @@
 # writes crash files holding a secret program text (no fuzzer runs). Then, with a stub `cargo`,
 # a libFuzzer slow-unit file is not counted as a crash, and a run cut off before its summary
 # still gives its crash ids (run.sh crashes), and a sealed crash file (FUZZ_SEAL_TO) is CMS
-# with no input bytes and changes no line, summary or record. Then it builds frontend_compile with the
+# with no input bytes and changes no line, summary or record, and a crash file that does not
+# seal stays plain out of the sealed dir and fails the run. Then it builds frontend_compile with the
 # `fixture-crash` feature (the target panics on an input that starts with "EP9-FIXTURE-CRASH"
 # and prints the input), replays one fixture input with -runs=0 (no mutation), and checks that
 #   - run.sh exits 1 and reports exactly 1 crash file with the fixture's SHA-256,
@@ -349,6 +350,27 @@ seal_lines() { # the run.sh lines but the seal line, the FAILED line and the sec
 [ "$(seal_lines "$work/plain.txt")" = "$(seal_lines "$work/sealed.txt")" ] ||
   fail "the sealed run prints other lines than the plain run"
 echo "fuzz self-test: a sealed crash file is CMS (AES-256) with no input bytes; the plain file is gone; the same summary and record"
+
+# 3d. A seal that fails (Codex M8-P2 r2): openssl gets a recipient file that is not a cert, so
+# `openssl cms -encrypt` fails (as on a full disk). The run must fail with a "seal failed" line
+# that names the hash, keep the plain crash file in its artifact dir, and leave nothing in the
+# sealed dir (the only upload): no .p7m and no partial envelope.
+printf 'not a certificate\n' >"$work/not-a-cert.pem"
+seal_run sealfail "$work/not-a-cert.pem"
+rc=$?
+cat "$work/sealfail.txt"
+[ "$rc" -eq 1 ] || fail "the failed seal: run.sh exit $rc, expected 1"
+no_leak "the failed seal's output" "$work/sealfail.txt"
+grep -q "^  seal failed: crash sha256:$want " "$work/sealfail.txt" ||
+  fail "the failed seal: no 'seal failed' line with the hash"
+grep -q ': FAILED: seal failed for 1 of 1 crash file(s)' "$work/sealfail.txt" ||
+  fail "the failed seal: no 'FAILED: seal failed' line"
+kept="$here/../artifacts/frontend_compile/crash-0"
+cmp -s "$kept" "$work/in/fixture" || fail "the failed seal deleted the plain crash file"
+[ -z "$(find "$work/sealfail-sealed" -type f)" ] ||
+  fail "the failed seal left a file in the sealed dir: $(cd "$work/sealfail-sealed" && ls -A)"
+rm -f "$kept"
+echo "fuzz self-test: a failed seal keeps the plain file out of the sealed dir and fails the run"
 
 # 4. The fixture crash, its output and its record.
 FUZZ_FEATURES=fixture-crash bash "$here/run.sh" build frontend_compile >"$work/build.log" 2>&1 ||

@@ -132,7 +132,7 @@ jobs:
           FUZZ_SUMMARY: fuzz-summary.json
           FUZZ_SEAL_TO: fuzz/crash-recipient.pem
         run: bash fuzz/scripts/run.sh "$TARGET" "$SECONDS_IN" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET"
-      # The sealed crash files only (.p7m: CMS enveloped data; run.sh deleted the plain files).
+      # The sealed crash files only (.p7m: CMS enveloped data). run.sh deletes the plain file of each sealed one; a file that does not seal stays in fuzz/artifacts/<target>/, which no step uploads.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ failure() }}
         with:
