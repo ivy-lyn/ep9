@@ -2135,11 +2135,16 @@ pub(crate) fn try_has_index(cx: &mut Cx, o: u64, i: u64) -> Res<bool> {
     try_has_property(cx, o, key)
 }
 
-/// Get(O, ! ToString(𝔽(i))) (§7.3.2, OrdinaryGet) on the object `o`. No atom for an element
-/// or a missing index. GC point (a getter, a String wrapper's character, the key path).
+/// Get(O, ! ToString(𝔽(i))) (§7.3.2) on the object `o`. No atom for an element (of a view
+/// too) or a missing index. GC point (a getter, a wrapper's character, a BigInt, the key path).
 pub(crate) fn get_index(cx: &mut Cx, o: u64, i: u64) -> Res<u64> {
     debug_assert!(is_object(o));
     if i <= MAX_SAFE_INDEX {
+        // A view: the key `i` is canonical numeric, so §10.4.5.4 reads the element or
+        // undefined, with no prototype walk (the hook `typed_array::get` with no key).
+        if kind::is_view(o) {
+            return Ok(crate::typed_array::get_element(cx.rt(), o, i as f64));
+        }
         let mut buf = [0u8; 20];
         let text = index_digits(i, &mut buf);
         match find_index(cx.rt(), o, i, text) {
@@ -2160,9 +2165,15 @@ pub(crate) fn get_index(cx: &mut Cx, o: u64, i: u64) -> Res<u64> {
 
 /// `o.[[Set]](! ToString(𝔽(i)), v, o)` (§10.1.9 OrdinarySet) on the object `o`: `Ok(false)`
 /// when the assignment fails. An array element of a dense array is stored without a key
-/// (`array_store`, as a keyed store does); everything else takes the key path. GC point.
+/// (`array_store`, as a keyed store does), and so is an element of a view; everything else
+/// takes the key path. GC point.
 pub(crate) fn set_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<bool> {
     debug_assert!(is_object(o));
+    // A view with itself as the receiver: the key `i` is canonical numeric, so §10.4.5.5 is
+    // TypedArraySetElement, then true (the hook `typed_array::set` with no key).
+    if i <= MAX_SAFE_INDEX && kind::is_view(o) {
+        return crate::typed_array::set_element(cx, o, i as f64, v).map(|()| true);
+    }
     if is_array(o)
         && let Some(n) = array_index_u64(i)
         && array_store(cx.rt(), o, n, v)
