@@ -16,7 +16,7 @@
 //! | `shared_buffers_grow_and_never_detach` | grow, the RangeErrors and TypeErrors, views on a SAB |
 //! | `get_and_set_value_in_both_byte_orders` | each type, little and big endian, unaligned and shared; the range checks |
 //! | `copy_bytes_with_overlap` | CopyDataBlockBytes forward, backward, across buffers and shared |
-//! | `plain_shared_access_width_follows_is_typed_array` | TA-ORCH-13: on shared bytes a TypedArray element get and set and Get/SetValueInBuffer use one Relaxed atomic of the element width; a DataView get and set and a copy use one-byte Relaxed atomics; the bytes land right in each type, index and byte order |
+//! | `plain_shared_access_width_follows_is_typed_array` | TA-ORCH-13: on shared bytes a TypedArray element get and set and Get/SetValueInBuffer use one racy `ep9_platform::shared_mem` access of the element width (`load_racy`, `store_racy`; TA-4 R2, the final form of TA-SHARED-MIXED-WIDTH); a DataView get and set and a copy use one-byte racy accesses; the bytes land right in each type, index and byte order |
 //! | `atomics_operations` | load, store, the 6 read-modify-write ops and compare-exchange on each integer type |
 //! | `data_view_slots` | the DataView slots (slot 4: its own table entry), its range checks, auto length |
 //! | `a_failed_transfer_leaves_the_buffer` | ArrayBufferCopyAndDetach order: a failed grow of a moved store leaves the old buffer as it was |
@@ -648,10 +648,10 @@ fn take_widths() -> [u32; 4] {
 /// TA-ORCH-13 (Codex TA-2 r3; before it TA-ORCH-12): the width of a plain (Unordered,
 /// ECMA-262 §29) access to the bytes of a SharedArrayBuffer follows the isTypedArray argument
 /// of GetValueFromBuffer and SetValueInBuffer. isTypedArray false (a DataView get and set, each
-/// Table 71 type at bytes 0, 3 and 8, both byte orders): one Relaxed `AtomicU8` access per byte;
+/// Table 71 type at bytes 0, 3 and 8, both byte orders): one racy 1-byte access per byte;
 /// the set puts the right bytes in the block and the get gives the value back. isTypedArray true
 /// (a TypedArray element get and set; GetValueFromBuffer and SetValueInBuffer at an index that
-/// is a multiple of the size): one Relaxed atomic of the element width, so the element does not
+/// is a multiple of the size): one racy access of the element width, so the element does not
 /// tear (IsNoTearConfiguration, §25.1.3.12). An index that is no multiple of the size is no
 /// TypedArray element: bytes. CopyDataBlockBytes: one byte each way. A non-shared buffer takes
 /// the plain path (no count).

@@ -404,7 +404,7 @@ mod view {
     //! ```
     //!
     //! A view on a SharedArrayBuffer is cold (TA-ORCH-12, TA-ORCH-13): a plain access to shared
-    //! bytes is atomic (a TypedArray element: one Relaxed atomic of its width, `read_raw` with
+    //! bytes goes through `shared_mem` (an element: one racy access of its width, `read_raw` with
     //! `IsTypedArray::Yes`), and the spec path does it. An atomic arm here would make the hit
     //! code larger for every view; the miss costs one compare of the buffer's class, which
     //! the case read before too. So a hit reads and writes only non-shared bytes, with plain
