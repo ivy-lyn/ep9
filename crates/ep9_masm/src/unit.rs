@@ -845,13 +845,24 @@ fn proven_target(
 }
 
 /// True when the AArch64 word `w` may write the general register `r` (x27 or x28 in
-/// [`check_pads`]). It is sound by excess: a form that it does not know in detail counts as a
-/// write when `r` is in any register field of the word. Exact forms (Arm ARM, A64 encoding
-/// index): data processing (immediate and register) writes Rd; a load writes Rt (a pair Rt
-/// and Rt2) and a pre- or post-index form writes back its base; a store of `r` and a load into
-/// an FP or SIMD register are not writes; MRS and SYSL write Rt; of the FP and SIMD words, only
-/// the moves and conversions to a general register (`fmov`, `fcvt*`, `umov`, `smov`) write Rd.
-/// A call (`bl`, `blr`) writes x30 only (x27 and x28 are callee-saved).
+/// [`check_pads`]). It is sound by excess: a load or store form that it does not know in
+/// detail counts as a write when `r` is in any register field of the word, or is Rs+1, or is
+/// in Rt to Rt+7 for LD64B. Exact forms (Arm ARM, A64 encoding index): data processing
+/// (immediate and register) writes Rd; a load writes Rt (a pair Rt and Rt2) and a pre- or
+/// post-index form writes back its base; a store of `r` and a load into an FP or SIMD
+/// register are not writes; MRS and SYSL write Rt, and MRRS writes Rt and Rt+1; of the FP and
+/// SIMD words, only the moves and conversions to a general register (`fmov`, `fcvt*`, `umov`,
+/// `smov`) write Rd. A call (`bl`, `blr`) writes x30 only (x27 and x28 are callee-saved).
+///
+/// Three forms write a register that no field names: the compare-and-swap pairs (CASP, CASPA,
+/// CASPL, CASPAL, CASPT, CASPLT, and RCWCASP, RCWSCASP and their A, L and AL forms) write Rs
+/// and Rs+1, LD64B writes Rt to Rt+7, and MRRS writes Rt and Rt+1. These forms need an even
+/// register (an odd one is UNDEFINED), so on a valid word Rs+1 is equal to Rs|1. The check
+/// uses Rs+1 (and Rt+1): on an odd register it counts one more register, which is excess and
+/// never a miss, and the proof does not depend on the even-register rule. The other pair forms
+/// name both registers: LDXP, LDAXP, LDP, LDNP and LDPSW in Rt2; SWPP, LDCLRP, LDSETP and the
+/// RCW pair forms (RCWSWPP, RCWCLRP, RCWSETP) in the Rs field; ST64BV and ST64BV0 write the
+/// status register Rs. MSRR and SYSP only read their pair.
 fn writes_pinned(w: u32, r: u32) -> bool {
     let (rt, rn, rt2, rs) = (w & 31, (w >> 5) & 31, (w >> 10) & 31, (w >> 16) & 31);
     let op0 = (w >> 25) & 0xf;
@@ -880,12 +891,16 @@ fn writes_pinned(w: u32, r: u32) -> bool {
             gpr && rt == r
         } else {
             // Exclusives, atomics, acquire and release forms, structure loads and the rest.
-            [rt, rt2, rs, rn].contains(&r)
+            // The CASP and RCWCASP pairs also write Rs+1; LD64B writes Rt to Rt+7.
+            let ld64b = w & 0xffff_fc00 == 0xf83f_d000;
+            [rt, rt2, rs, rn].contains(&r) || rs + 1 == r || (ld64b && (rt..rt + 8).contains(&r))
         };
     }
-    // Branches, exception generation and system (101x): MRS and SYSL write Rt.
+    // Branches, exception generation and system (101x): MRS and SYSL write Rt; MRRS writes Rt
+    // and Rt+1.
     if op0 & 0b1110 == 0b1010 {
-        return w & 0xffe0_0000 == 0xd520_0000 && rt == r;
+        return (w & 0xffe0_0000 == 0xd520_0000 && rt == r)
+            || (w & 0xfff0_0000 == 0xd570_0000 && (rt == r || rt + 1 == r));
     }
     // FP and SIMD (x111).
     if op0 & 0b0111 == 0b0111 {
@@ -910,11 +925,12 @@ fn writes_pinned(w: u32, r: u32) -> bool {
 mod tests {
     use super::writes_pinned;
 
-    /// Each word with its text, encoded by `llvm-mc -triple=aarch64 -mattr=+lse,+rcpc`, and
-    /// whether it writes x27 or x28.
+    /// Each word with its text, encoded by `llvm-mc -triple=aarch64
+    /// -mattr=+lse,+rcpc,+ls64,+d128,+the,+lse128,+rcpc3,+lsui`, and whether it writes x27 or
+    /// x28.
     #[test]
     fn writes_pinned_knows_the_a64_write_forms() {
-        let writes: [(u32, &str); 45] = [
+        let writes: [(u32, &str); 60] = [
             (0xaa00_03fb, "mov x27, x0"),
             (0x9100_03fb, "mov x27, sp"),
             (0x9100_237b, "add x27, x27, #8"),
@@ -960,8 +976,25 @@ mod tests {
             (0xd37d_f01b, "lsl x27, x0, #3"),
             (0xcb00_03fb, "neg x27, x0"),
             (0xda80_141b, "cneg x27, x0, eq"),
+            // Writes that no register field names: Rs+1, Rt+1, Rt to Rt+7.
+            (0x483a_7c40, "casp x26, x27, x0, x1, [x2]"),
+            (0x487a_fc40, "caspal x26, x27, x0, x1, [x2]"),
+            (0x083a_7c40, "casp w26, w27, w0, w1, [x2]"),
+            (0x193a_0c40, "rcwcasp x26, x27, x0, x1, [x2]"),
+            (0x59fa_0c40, "rcwscaspal x26, x27, x0, x1, [x2]"),
+            (0x499a_7c40, "caspt x26, x27, x0, x1, [x2]"),
+            (0xf83f_d014, "ld64b x20, [x0]"),
+            (0xf83f_d016, "ld64b x22, [x0]"),
+            (0xd578_201a, "mrrs x26, x27, ttbr0_el1"),
+            // Pair and status writes that a register field names.
+            (0xc87f_6c1a, "ldxp x26, x27, [x0]"),
+            (0x6940_6c1a, "ldpsw x26, x27, [x0]"),
+            (0x193b_803a, "swpp x26, x27, [x1]"),
+            (0x193b_a03a, "rcwswpp x26, x27, [x1]"),
+            (0xd95b_183a, "ldiapp x26, x27, [x1]"),
+            (0xf83b_b020, "st64bv x27, x0, [x1]"),
         ];
-        let reads: [(u32, &str); 26] = [
+        let reads: [(u32, &str); 29] = [
             (0xf81f_0ffb, "str x27, [sp, #-16]!"),
             (0xf900_13fb, "str x27, [sp, #32]"),
             (0xa901_73fb, "stp x27, x28, [sp, #16]"),
@@ -988,6 +1021,9 @@ mod tests {
             (0xfa40_036b, "ccmp x27, x0, #11, eq"),
             (0xb900_001b, "str w27, [x0]"),
             (0x3900_001b, "strb w27, [x0]"),
+            (0xd558_201a, "msrr ttbr0_el1, x26, x27"),
+            (0xd548_201a, "sysp #0, c2, c0, #0, x26, x27"),
+            (0xf83f_9014, "st64b x20, [x0]"),
         ];
         for (w, what) in writes {
             assert!(writes_pinned(w, 27) || writes_pinned(w, 28), "{what}");

@@ -351,6 +351,8 @@ fn the_pad_check_needs_the_pinned_registers_unwritten() {
     const LDR_X27_X0: u32 = 0xf940_001b; // ldr x27, [x0]
     const MOV_X27_X0: u32 = 0xaa00_03fb; // mov x27, x0
     const MOV_X28_X0: u32 = 0xaa00_03fc; // mov x28, x0
+    const CASP_X26_X27: u32 = 0x483a_7c40; // casp x26, x27, x0, x1, [x2] (writes x26, x27)
+    const LD64B_X20: u32 = 0xf83f_d014; // ld64b x20, [x0] (writes x20 to x27)
     const LDP_X27_X28_POST: u32 = 0xa8c1_73fb; // ldp x27, x28, [sp], #16
     const LDR_X0_X27_POST: u32 = 0xf840_8760; // ldr x0, [x27], #8 (writes x27 back)
     const LDR_X16_X28_8: u32 = 0xf940_0790; // ldr x16, [x28, #8]
@@ -361,8 +363,8 @@ fn the_pad_check_needs_the_pinned_registers_unwritten() {
     let text = |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_le_bytes()).collect() };
     let not_proven = |at: u32| Finding::IndirectTargetNotProven { at };
 
-    // The ldr and the mov form of the probe: refused.
-    for w in [LDR_X27_X0, MOV_X27_X0] {
+    // The ldr and the mov form of the probe, and the pair and LD64B forms: refused.
+    for w in [LDR_X27_X0, MOV_X27_X0, CASP_X26_X27, LD64B_X20] {
         let t = text(&[BTI_C, w, a64::LDR_X16_X27, a64::BR_X16]);
         assert_eq!(check_pads(Arch::A64, &t), [not_proven(12)], "{w:#x}");
     }
