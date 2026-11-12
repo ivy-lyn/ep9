@@ -12,6 +12,7 @@
 //! |---|---|
 //! | `each_target_object_has_its_sections_and_no_text_relocation` | 5 targets: the section names of `section_names`, the text and the container unchanged, zero text relocations (H35 S5), 2 record relocations, one unwind relocation per FDE (COFF: 3 per entry), the record symbol; Mach-O: a local symbol at each FDE start |
 //! | `the_writer_refuses_what_has_no_object_form` | a bad symbol, no text, Windows on AArch64, a bad unwind section |
+//! | `the_coff_writer_refuses_over_65535_pdata_relocations` | 21,845 RUNTIME_FUNCTION entries (65,535 relocations) write; one more is ObjError::Unwind |
 //! | `check_linked_needs_the_same_text` | `check_linked` is `check` when the linked bytes are the text, else Bytecode |
 //! | `the_object_links_and_runs_on_the_host` | the 4 CI targets (host only): the static linker takes the object; both functions run in place; a panic unwinds through the frame of each |
 #![cfg(feature = "aot")]
@@ -134,20 +135,25 @@ fn code(arch: u8, abi: u8) -> (Vec<u8>, Vec<u8>) {
 /// A unit for `host` with the given target, its text and unwind section.
 fn unit_for(host: &HostInfo, arch: u8, abi: u8) -> (Vec<u8>, Vec<u8>) {
     let (text, unwind) = code(arch, abi);
+    (unit_with(host, arch, abi, &text, unwind), text)
+}
+
+/// A unit for `host` with the given target, text and unwind section.
+fn unit_with(host: &HostInfo, arch: u8, abi: u8, text: &[u8], unwind: Vec<u8>) -> Vec<u8> {
     let mut header = header_for(host, 0);
     header.target_arch = arch;
     header.target_abi = abi;
     let unit = TestUnit {
         header,
         sections: vec![
-            (SectionKind::Text, text.clone()),
+            (SectionKind::Text, text.to_vec()),
             (SectionKind::Bytecode, filler(21, 37)),
             (SectionKind::Source, b"f(cb);\n".to_vec()),
             (SectionKind::Unwind, unwind),
         ],
         extensions: Vec::new(),
     };
-    (unit.encode(), text)
+    unit.encode()
 }
 
 const TARGETS: [(u8, u8, ObjFormat); 5] = [
@@ -605,6 +611,28 @@ fn the_writer_refuses_what_has_no_object_form() {
         write_object(&win_past, "s"),
         Err(ObjError::Unwind(_))
     ));
+}
+
+/// JIT review M8-P3 F4, Codex M8-P3 r1 #2: a COFF section header counts its relocations in
+/// 16 bits, and `.pdata` has 3 per RUNTIME_FUNCTION entry. The old writer wrote the count as
+/// `u16` with no check: 21,846 entries (65,538 relocations) gave a header count of 2, so the
+/// linker left most `.pdata` RVAs as raw text offsets. The writer now refuses more than 65,535
+/// relocations (21,845 entries).
+#[test]
+fn the_coff_writer_refuses_over_65535_pdata_relocations() {
+    let host = HostInfo::current();
+    let (arch, abi) = (target_arch::X86_64, target_abi::WINDOWS);
+    let (text, one) = code(arch, abi);
+    for (entries, ok) in [(21_845, true), (21_846, false)] {
+        let unit = unit_with(&host, arch, abi, &text, one[..12].repeat(entries));
+        let o = write_object(&unit, "s");
+        if ok {
+            let relocs = read_coff(&o.unwrap()).sec(".pdata").relocs.len();
+            assert_eq!(relocs, 3 * entries, "{entries} entries");
+        } else {
+            assert!(matches!(o, Err(ObjError::Unwind(_))), "{entries} entries");
+        }
+    }
 }
 
 #[test]

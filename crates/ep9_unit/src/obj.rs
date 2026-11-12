@@ -338,11 +338,16 @@ fn eh_frame(src: &[u8], text_len: usize, form: EhForm) -> Result<EhFrame, ObjErr
 }
 
 /// The Windows unwind section of form 1: 12-byte RUNTIME_FUNCTION entries, each offset into
-/// the text (begin < end <= text length; the UNWIND_INFO offset inside the text).
+/// the text (begin < end <= text length; the UNWIND_INFO offset inside the text). A COFF
+/// section header counts its relocations in 16 bits and each entry needs 3, so at most 21,845
+/// entries (65,535 relocations; JIT review M8-P3 F4: no IMAGE_SCN_LNK_NRELOC_OVFL form).
 fn pdata_check(src: &[u8], text_len: usize) -> Result<(), ObjError> {
     let bad = ObjError::Unwind;
     if src.is_empty() || !src.len().is_multiple_of(12) {
         return Err(bad("not a list of 12-byte RUNTIME_FUNCTION entries"));
+    }
+    if src.len() / 4 > usize::from(u16::MAX) {
+        return Err(bad("over 65535 .pdata relocations"));
     }
     for e in src.as_chunks::<12>().0 {
         let w = |i: usize| u32::from_le_bytes(e[i..i + 4].try_into().expect("4 bytes")) as usize;
