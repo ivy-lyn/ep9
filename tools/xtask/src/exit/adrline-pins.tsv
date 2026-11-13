@@ -263,7 +263,7 @@ history	13-execution-modes.md	spikes/spike-c/src/vm_layout.rs:460-463	**The set 
 # the drift map would read them from that older commit, so each is pinned to its line at HEAD. The H16
 # F-R7 pin of facts_export.rs:86-100 is gone: the doc now cites 96-110 (its FIX value). H20:66 names
 # builtins.rs:1024 by its full path (the bare `:1024` was an older H20 token of abi/mod.rs).
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1113	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1126	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinDef \{	0
 pin	H22-isolates-and-realms.md	crates/ep9_vm/src/runtime.rs:184	crates/ep9_vm/src/runtime.rs	^pub\(crate\) struct Shared \{	0
 pin	13-execution-modes.md	crates/ep9_vm/src/ic.rs:606	crates/ep9_vm/src/ic.rs	if rd\_i32\(hcell\, hc\:\:KIND\) \!\= hk\:\:ADD	0
 # spec-int merge (spec-temporal on m1m6/p5, 2026-11-05): dated record and Change-log rows keep the line of the
@@ -404,10 +404,10 @@ pin	H13-snapshot-stable-indices.md	docs/adr/README.md:144	docs/adr/README.md	^\|
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/realm.rs:266	4 Data (M7-P0 amendment: the 2026-11-06 fill row, AOT0, the C-18 root-slot form)	0fd056e4	^pub\(crate\) fn switch\(
 # M7-P1 fixer r2b: the 4 H20:64-66 builtins.rs refs came in the merge 385e6560 (git log -S does not read a
 # merge), and 978 and 1058 are older H20 tokens of other lines: each is pinned to its line at HEAD.
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1338	crates/ep9_vm/src/builtins.rs	^pub struct PropDef \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1418	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1497	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
-pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1549	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1351	crates/ep9_vm/src/builtins.rs	^pub struct PropDef \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1431	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinModule \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1510	crates/ep9_vm/src/builtins.rs	^pub struct BuiltinTable \{	0
+pin	H20-builtin-abi.md	crates/ep9_vm/src/builtins.rs:1562	crates/ep9_vm/src/builtins.rs	^pub fn check_tables\(	0
 # M7-P3 A2-ENTRY (C-10): `mod native` and `Cx::runtime_table` are no longer behind `spike-native`;
 # these rows say where 18492a40 (tag m7-p2) put the lines they name.
 history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/lib.rs:102-103	| Failed deopt (2026-10-29) |	18492a40	^#\[cfg\(feature \= \"spike\-native\"\)\]$
@@ -482,3 +482,15 @@ history	H31-fuse-registry.md	crates/ep9_vm/src/builtins.rs:2030	| 2026-11-12 | f
 # TypedArray TA-4 R2: the H23 M7-P4 fixer r1 ADRLINE row (2026-11-09, line 222) says the line 44 cite
 # was tools/test262/src/exec.rs:974 after the fixer r2 row; that number is history (989 at TA-4 R2).
 history	H23-limits-and-failure-policy.md	tools/test262/src/exec.rs:974	M7-P4 ADRLINE (plan v12 §7.5	0773ffb2	^        let run = catch\_unwind\(AssertUnwindSafe\(\|\| \{$
+# TA sync m8-p3 (ADRLINE after the merge of tag m8-p3 and the V13-D6 renumber): the row 4 Data
+# rows of the TA sync 3 record sets in H13, H20 and H25 read the table.rs block pins and the layout9
+# ObjectClass test at the TA sync 3 head; the INTL W3 pin (2 lines) and the renumber changed those
+# lines. Each token keeps the line of the commit that wrote the row (eb81c2a6).
+history	H13-snapshot-stable-indices.md	crates/ep9_builtins/tests/table.rs:108-111	| 4 Data (TA sync 3 amendment: the 2026-11-13 fill row, IntrinsicId 121-153, slots 88-120 and blocks 38-43)	eb81c2a6	assert\_eq\!\(ep9\_builtins::typed\_array::BLOCK\, 40\)\;
+history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/tests/layout9.rs:185	| 4 Data (TA sync 3 amendment: the 2026-11-13 fill row, IntrinsicId 121-153, slots 88-120 and blocks 38-43)	eb81c2a6	^        \(35\, 36\)$
+history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/tests/layout9.rs:189-190	| 4 Data (TA sync 3 amendment: the 2026-11-13 fill row, IntrinsicId 121-153, slots 88-120 and blocks 38-43)	eb81c2a6	assert\_eq\!\(ObjectClass::from\_id\(36\)\, Some\(ObjectClass::DataView\)\)\;
+history	H20-builtin-abi.md	crates/ep9_builtins/tests/table.rs:108-111	| 4 Data (TA sync 3 amendment: the 2026-11-13 fill (API addition) row, ObjectClass 35-36, IntrinsicId 121-153 and blocks 38-43)	eb81c2a6	assert\_eq\!\(ep9\_builtins::typed\_array::BLOCK\, 40\)\;
+history	H20-builtin-abi.md	crates/ep9_vm/src/tests/layout9.rs:185	| 4 Data (TA sync 3 amendment: the 2026-11-13 fill (API addition) row, ObjectClass 35-36, IntrinsicId 121-153 and blocks 38-43)	eb81c2a6	^        \(35\, 36\)$
+history	H20-builtin-abi.md	crates/ep9_vm/src/tests/layout9.rs:189-190	| 4 Data (TA sync 3 amendment: the 2026-11-13 fill (API addition) row, ObjectClass 35-36, IntrinsicId 121-153 and blocks 38-43)	eb81c2a6	assert\_eq\!\(ObjectClass::from\_id\(36\)\, Some\(ObjectClass::DataView\)\)\;
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/tests/layout9.rs:185	| 4 Data (TA sync 3 amendment: the 2026-11-13 clarify row, the DataView ObjectClass 36)	eb81c2a6	^        \(35\, 36\)$
+history	H25-sandbox-readiness.md	crates/ep9_vm/src/tests/layout9.rs:189-190	| 4 Data (TA sync 3 amendment: the 2026-11-13 clarify row, the DataView ObjectClass 36)	eb81c2a6	assert\_eq\!\(ObjectClass::from\_id\(36\)\, Some\(ObjectClass::DataView\)\)\;
