@@ -343,6 +343,11 @@ pub enum IntrinsicId {
     IntlDisplayNames,
     /// `%Intl.DisplayNames.prototype%` (ECMA-402 §12.3, an ordinary object; made by `ep9_intl` display_names.rs).
     IntlDisplayNamesPrototype,
+    // ---- INTL W3 (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Intl.RelativeTimeFormat%` (ECMA-402 §18.1; made by `ep9_intl` relative_time_format.rs, block 38).
+    IntlRelativeTimeFormat,
+    /// `%Intl.RelativeTimeFormat.prototype%` (ECMA-402 §18.3, an ordinary object; made by `ep9_intl` relative_time_format.rs).
+    IntlRelativeTimeFormatPrototype,
     // ---- TypedArray TA-2 TA-BUFFERS (§25.1-§25.3; H20 part 2, H13 "index ids (append-only)") ----
     /// `%ArrayBuffer%` (§25.1.4; made by `ep9_builtins` array_buffer.rs, block 38).
     ArrayBuffer,
@@ -554,6 +559,8 @@ impl IntrinsicId {
         IntrinsicId::IntlSegmentIteratorPrototype,
         IntrinsicId::IntlDisplayNames,
         IntrinsicId::IntlDisplayNamesPrototype,
+        IntrinsicId::IntlRelativeTimeFormat,
+        IntrinsicId::IntlRelativeTimeFormatPrototype,
         IntrinsicId::ArrayBuffer,
         IntrinsicId::ArrayBufferPrototype,
         IntrinsicId::SharedArrayBuffer,
@@ -714,6 +721,8 @@ impl IntrinsicId {
             IntrinsicId::IntlSegmentIteratorPrototype => "%IntlSegmentIteratorPrototype%",
             IntrinsicId::IntlDisplayNames => "%Intl.DisplayNames%",
             IntrinsicId::IntlDisplayNamesPrototype => "%Intl.DisplayNames.prototype%",
+            IntrinsicId::IntlRelativeTimeFormat => "%Intl.RelativeTimeFormat%",
+            IntrinsicId::IntlRelativeTimeFormatPrototype => "%Intl.RelativeTimeFormat.prototype%",
             IntrinsicId::ArrayBuffer => "%ArrayBuffer%",
             IntrinsicId::ArrayBufferPrototype => "%ArrayBuffer.prototype%",
             IntrinsicId::SharedArrayBuffer => "%SharedArrayBuffer%",
@@ -875,6 +884,8 @@ impl IntrinsicId {
             | IntrinsicId::IntlSegmentIteratorPrototype
             | IntrinsicId::IntlDisplayNames
             | IntrinsicId::IntlDisplayNamesPrototype
+            | IntrinsicId::IntlRelativeTimeFormat
+            | IntrinsicId::IntlRelativeTimeFormatPrototype
             | IntrinsicId::ArrayBuffer
             | IntrinsicId::ArrayBufferPrototype
             | IntrinsicId::SharedArrayBuffer
@@ -1003,6 +1014,8 @@ impl IntrinsicId {
             IntrinsicId::IntlSegmentIteratorPrototype => Some(85),
             IntrinsicId::IntlDisplayNames => Some(86),
             IntrinsicId::IntlDisplayNamesPrototype => Some(87),
+            IntrinsicId::IntlRelativeTimeFormat => Some(88),
+            IntrinsicId::IntlRelativeTimeFormatPrototype => Some(89),
             IntrinsicId::ArrayBuffer => Some(88),
             IntrinsicId::ArrayBufferPrototype => Some(89),
             IntrinsicId::SharedArrayBuffer => Some(90),

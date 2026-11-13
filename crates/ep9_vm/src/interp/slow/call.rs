@@ -172,7 +172,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             return Ok(r);
         }
         if !runs_bytecode(fi) {
-            return construct_native_cold(cx, fp, s, callee, new_target, &args); // D25
+            return construct_native_cold(cx, fp, s, callee, new_target, &args); // D25; 7 words max (MC-w37-5)
         }
         // GC point, before `this` exists: the callee and the arguments are in caller
         // registers (a bound callee's target and bound arguments are reachable from it),

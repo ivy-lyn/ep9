@@ -2513,3 +2513,252 @@ fn unit_loader_a_padded_text_maps_with_bti_where_the_target_has_it() {
     assert_eq!(unit_loader::text_bti(uc), Some(false));
     g_walk_gives_42(&mut iso);
 }
+
+// The frame stub of `call0_bytes`, linked into this test binary's own executable pages with
+// its unwind entries in the binary's own tables (the assembler makes them from the CFI or SEH
+// directives): what the static linker does with the text of a `.o` unit (H35 S1; route
+// MC-w34-5). A data symbol names it, so no linker thunk stands between the name and the bytes.
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_test,\"ax\",%progbits",
+    ".p2align 4",
+    ".globl ep9_linked_test_text",
+    ".hidden ep9_linked_test_text",
+    "ep9_linked_test_text:",
+    LINKED_A64_BODY!(),
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+core::arch::global_asm!(
+    ".section __TEXT,__text,regular,pure_instructions",
+    ".p2align 4",
+    ".globl _ep9_linked_test_text",
+    ".private_extern _ep9_linked_test_text",
+    "_ep9_linked_test_text:",
+    LINKED_A64_BODY!(),
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android", target_vendor = "apple")
+))]
+macro_rules! LINKED_A64_BODY {
+    () => {
+        concat!(
+            ".cfi_startproc\n",
+            "stp x29, x30, [sp, #-16]!\n",
+            ".cfi_def_cfa_offset 16\n",
+            ".cfi_offset w30, -8\n",
+            ".cfi_offset w29, -16\n",
+            "mov x29, sp\n",
+            ".cfi_def_cfa w29, 16\n",
+            "ldr x16, [x0, #{table}]\n",
+            "ldr x16, [x16, #{entry}]\n",
+            "mov w2, #0\n",
+            "mov x3, xzr\n",
+            "blr x16\n",
+            "ldp x29, x30, [sp], #16\n",
+            ".cfi_def_cfa wsp, 0\n",
+            ".cfi_restore w30\n",
+            ".cfi_restore w29\n",
+            "ret\n",
+            ".cfi_endproc\n",
+        )
+    };
+}
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android", target_vendor = "apple")
+))]
+use LINKED_A64_BODY;
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_test,\"ax\",@progbits",
+    ".p2align 4",
+    ".globl ep9_linked_test_text",
+    ".hidden ep9_linked_test_text",
+    "ep9_linked_test_text:",
+    ".cfi_startproc",
+    "push rbp",
+    ".cfi_def_cfa_offset 16",
+    ".cfi_offset rbp, -16",
+    "mov rbp, rsp",
+    ".cfi_def_cfa_register rbp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    ".cfi_def_cfa rsp, 8",
+    "ret",
+    ".cfi_endproc",
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "x86_64", windows))]
+core::arch::global_asm!(
+    ".section .text$ep9lt,\"xr\"",
+    ".p2align 4",
+    ".globl ep9_linked_test_text",
+    ".def ep9_linked_test_text",
+    ".scl 2",
+    ".type 32",
+    ".endef",
+    "ep9_linked_test_text:",
+    ".seh_proc ep9_linked_test_text",
+    "push rbp",
+    ".seh_pushreg rbp",
+    ".seh_endprologue",
+    "mov rbp, rsp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    "ret",
+    ".seh_endproc",
+    ".text",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+unsafe extern "C" {
+    /// The first byte of the linked frame stub (above).
+    static ep9_linked_test_text: u8;
+}
+
+/// The linked frame stub: `call0_bytes().0.len()` bytes in this binary's text.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn linked_stub() -> &'static [u8] {
+    let len = call0_bytes().0.len();
+    // SAFETY: the global_asm above places the stub's bytes, `len` of them, at the symbol, in
+    // the binary's read-execute text, never written.
+    unsafe { core::slice::from_raw_parts(&raw const ep9_linked_test_text, len) }
+}
+
+/// Route MC-w34-5 (the `.o` unit form, H35 S1 and H35-Q3): a registered linked text runs in
+/// place. The frame stub is linked into this binary (as the static linker links the text of a
+/// `.o` unit) with its unwind entries in the binary's own tables; after static registration
+/// (`ep9_platform::linked::register`), an installing load with that text and with no unwind
+/// data maps nothing and registers nothing (the code address is the linked text, outside the
+/// process code range), installs `g`, and `call_native` runs it; the system unwinder walks from
+/// `walk` through the linked frame into the Rust caller. The same bytes copied (not
+/// registered) take the blob path: without unwind data they install nothing ("no-unwind").
+#[test]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn unit_loader_a_registered_linked_text_runs_in_place() {
+    use ep9_platform::linked::{LinkedUnit, linked_text, register};
+    use ep9_platform::unit_text::{Form, UnitText};
+    let text = linked_stub();
+    assert_eq!(
+        text,
+        &call0_bytes().0[..],
+        "the linked stub is the frame stub"
+    );
+    // Not registered yet: not a linked text.
+    assert!(linked_text(text).is_none() && UnitText::linked(text).is_none());
+    let unit: &'static [u8] = Box::leak(vec![0x55u8; 64].into_boxed_slice());
+    let rec: &'static LinkedUnit = Box::leak(Box::new(LinkedUnit::new(unit, text)));
+    // SAFETY: `text` is in this binary's text, never written, and the binary's unwind tables
+    // cover it (the directives above); `unit` lives for the process.
+    unsafe { register(rec) }.unwrap();
+    assert_eq!(rec.text().as_ptr(), text.as_ptr());
+    assert_eq!(linked_text(text).map(<[u8]>::as_ptr), Some(text.as_ptr()));
+    // Only the exact range is the linked text.
+    assert!(linked_text(&text[1..]).is_none() && linked_text(&text[..4]).is_none());
+    assert_eq!(UnitText::linked(text).unwrap().form(), Form::Linked);
+
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: the linked text is the frame stub (it runs the bytecode of `g`), and the binary's
+    // tables describe it, so no unwind data is passed.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            text,
+            &[],
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
+    assert_eq!(code.start, text.as_ptr() as usize, "the code runs in place");
+    let range = CodeRange::process().unwrap();
+    assert!(!range.contains(code.start));
+    let g = iso.global_raw("g").unwrap();
+    let w = iso.global_raw("walk").unwrap();
+    WALKED.with(|x| x.borrow_mut().take());
+    let v = call_through_entry(&mut iso, g, &[w]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+    let ips = WALKED.with(|x| x.borrow_mut().take()).expect("walk ran");
+    let ret = code.start + call0_bytes().1;
+    let at = ips.iter().position(|&ip| ip == ret).unwrap_or_else(|| {
+        panic!("the walk misses the linked frame (return address {ret:#x}): {ips:x?}")
+    });
+    assert!(
+        ips.len() - at >= 4,
+        "the walk stops at the linked frame: {ips:x?}"
+    );
+    drop(iso);
+
+    // The same bytes, copied: the blob path, which needs unwind data.
+    let copy = text.to_vec();
+    let iso = defs_isolate(ExecOptions::jitless());
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: as above; with no unwind data the blob path installs nothing.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &copy,
+            &[],
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::NoUnwind), r.count(Reason::Installed)),
+        (1, 0),
+        "{:?}",
+        r.rows()
+    );
+}

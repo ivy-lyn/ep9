@@ -186,7 +186,7 @@ fn string_tree(cps: &[u32]) -> Tree {
 
 /// The ranges of a non-`v` class item, as V8's parser adds them (`ParseClassRanges`,
 /// `TryParseCharacterClassEscape`).
-fn add_class_item(item: ClassItem, flags: Flags, ranges: &mut Vec<CharacterRange>) {
+pub(crate) fn add_class_item(item: ClassItem, flags: Flags, ranges: &mut Vec<CharacterRange>) {
     match item {
         ClassItem::Range(from, to) => ranges.push(CharacterRange::range(from, to)),
         ClassItem::Standard(set) => {
@@ -292,6 +292,20 @@ pub fn class_set(tree: &Tree, flags: Flags) -> Option<StringSet> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The elements the subtraction visits on this thread (the test of its growth).
+    pub(crate) static SUBTRACTION_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_work(n: usize) {
+    SUBTRACTION_WORK.with(|w| w.set(w.get() + n));
+}
+
+#[cfg(not(test))]
+const fn count_work(_: usize) {}
+
 /// V8 `ComputeExpression` (the nesting is at most `MAX_NESTING` levels).
 fn expression_value(e: &ClassSetExpression, flags: Flags) -> StringSet {
     let mut operands = e
@@ -316,10 +330,20 @@ fn expression_value(e: &ClassSetExpression, flags: Flags) -> StringSet {
             }
         }
         ClassSetOperation::Subtraction => {
+            // A - B - C == A - (B | C): one subtraction of the union of the right operands,
+            // and each string of an operand removed by its key. The work grows with the
+            // operand sizes, not with their product (V8 rescans the set per operand).
+            let mut remove = Vec::new();
             for op in operands {
-                result.ranges = charset::subtract(&result.ranges, &op.ranges);
-                result.strings.retain(|k, _| !op.strings.contains_key(k));
+                count_work(op.ranges.len() + op.strings.len());
+                remove.extend(op.ranges);
+                for k in op.strings.keys() {
+                    result.strings.remove(k);
+                }
             }
+            charset::canonicalize(&mut remove);
+            count_work(result.ranges.len() + remove.len());
+            result.ranges = charset::subtract(&result.ranges, &remove);
         }
     }
     if e.negated {

@@ -710,6 +710,8 @@ ep9_vm::IntrinsicId :: variant IntlNumberFormat
 ep9_vm::IntrinsicId :: variant IntlNumberFormatPrototype
 ep9_vm::IntrinsicId :: variant IntlPluralRules
 ep9_vm::IntrinsicId :: variant IntlPluralRulesPrototype
+ep9_vm::IntrinsicId :: variant IntlRelativeTimeFormat
+ep9_vm::IntrinsicId :: variant IntlRelativeTimeFormatPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmentIteratorPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmenter
 ep9_vm::IntrinsicId :: variant IntlSegmenterPrototype
@@ -1004,6 +1006,7 @@ ep9_vm::ObjectClass :: variant IntlListFormat
 ep9_vm::ObjectClass :: variant IntlLocale
 ep9_vm::ObjectClass :: variant IntlNumberFormat
 ep9_vm::ObjectClass :: variant IntlPluralRules
+ep9_vm::ObjectClass :: variant IntlRelativeTimeFormat
 ep9_vm::ObjectClass :: variant IntlSegmentIterator
 ep9_vm::ObjectClass :: variant IntlSegmenter
 ep9_vm::ObjectClass :: variant IntlSegments

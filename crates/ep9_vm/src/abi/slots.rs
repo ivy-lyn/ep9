@@ -138,6 +138,10 @@ pub enum ObjectClass {
     /// An Intl.DisplayNames instance (ECMA-402 §12, INTL W2): slot 0 `[[Locale]]` (a String); the
     /// other slots are named in `ep9_intl` display_names.rs. No ICU4X object is in a slot.
     IntlDisplayNames,
+    /// An Intl.RelativeTimeFormat instance (ECMA-402 §18, INTL W3): slot 0 `[[Locale]]` (a
+    /// String); the other slots are named in `ep9_intl` relative_time_format.rs. No ICU4X object
+    /// is in a slot.
+    IntlRelativeTimeFormat,
     /// A SharedArrayBuffer instance (§25.2; TypedArray TA-0 TA-DECL, design TA-D3): the slot
     /// form of [`ObjectClass::ArrayBuffer`] (`docs/plan/notes/typedarray-design.md` §2.2); its
     /// bytes are a shared block off the heap, never detached. Made by the `Cx` methods of
@@ -188,6 +192,7 @@ impl ObjectClass {
         ObjectClass::IntlSegments,
         ObjectClass::IntlSegmentIterator,
         ObjectClass::IntlDisplayNames,
+        ObjectClass::IntlRelativeTimeFormat,
         ObjectClass::SharedArrayBuffer,
         ObjectClass::DataView,
     ];
@@ -247,6 +252,7 @@ impl ObjectClass {
             ObjectClass::IntlSegments => "Segments",
             ObjectClass::IntlSegmentIterator => "Segment Iterator",
             ObjectClass::IntlDisplayNames => "Intl.DisplayNames",
+            ObjectClass::IntlRelativeTimeFormat => "Intl.RelativeTimeFormat",
             ObjectClass::SharedArrayBuffer => "SharedArrayBuffer",
             ObjectClass::DataView => "DataView",
         }

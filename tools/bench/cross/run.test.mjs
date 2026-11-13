@@ -4,7 +4,8 @@
 // Octane tests skip when third_party/bench-v8v7 or third_party/bench-octane is not synced.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -31,14 +32,16 @@ import {
   spawnRun,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
-import { blockerOf, FRESH_PATHS, generateKernel, ICU4X_PATHS, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, REGRESS_PATHS, splitVersion, TREE_PATHS, treeState, TRIPLES, withProbe } from "./kernels.mjs";
+import { blockerOf, check as kernelsCheck, FRESH_PATHS, generateKernel, ICU4X_PATHS, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, REGRESS_PATHS, splitVersion, TREE_PATHS, treeState, TRIPLES, withProbe } from "./kernels.mjs";
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
 import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
-// The M2 gate reader and the TS workload (GATES10), and the G7 peak RSS reader (BENCH10): CI's
-// step runs this file only, so it loads those tests too.
+// The M2 gate reader and the TS workload (GATES10), the G7 peak RSS reader (BENCH10), and the
+// start-up order file and budget row (STARTUP-LAYOUT; a TOOLS3 need): CI's step runs this file
+// only, so it loads those tests too.
 import "./m2gate.test.mjs";
 import "./mem.test.mjs";
+import "../startup/startup.test.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, "../../..");
@@ -1276,4 +1279,43 @@ test("CLI: each sample has the CPU and steal fields; on Linux they are numbers, 
     assert.equal(res.M.cpu, null);
     assert.match(md, /CPU time and steal: not measured \(Linux \/proc only\)\./);
   }
+});
+
+// KERNELS-BIN-SNAPSHOT (route of M8-P1 Codex r2): a second writer (a rebuild of target/release/ep9)
+// replaces the checked executable during a run. Every kernel row, the --version lines and the
+// hash must still come from the executable that was there at the start: kernels.mjs copies it
+// once, before the first probe, and runs only the copy.
+test("kernels: one copy of the executable serves every run, --version and the hash (KERNELS-BIN-SNAPSHOT)", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kernels-snap-"));
+  const env = process.env.FAKE_NODE;
+  t.after(() => {
+    if (env === undefined) delete process.env.FAKE_NODE;
+    else process.env.FAKE_NODE = env;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.FAKE_NODE = process.execPath;
+  const bin = path.join(dir, "ep9");
+  copyFileSync(path.join(DIR, "testdata/fake-kernels-ep9.sh"), bin);
+  chmodSync(bin, 0o755);
+  const original = readFileSync(bin);
+  // The other build: another version and build line, and every kernel run fails.
+  const other = path.join(dir, "ep9.new");
+  writeFileSync(other, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "fake-ep9 9.9"; echo "features none; preset jitless"; exit 0; fi\necho "Richards 2"\nexit 0\n');
+  chmodSync(other, 0o755);
+  let replaced = false;
+  const log = () => {
+    // After the first kernel: the linker's form (write a new file, rename it over the old one).
+    if (!replaced) renameSync(other, bin);
+    replaced = true;
+  };
+  const res = kernelsCheck(kernelsArgs(["--check", bin, "--harness", "stub"]), { log });
+  assert.ok(replaced);
+  assert.notDeepEqual(readFileSync(bin), original, "the test replaced the executable");
+  assert.deepEqual(res.summary, { total: 15, ok: 15, failing: [], failing_not_named: [], all_ok: true });
+  assert.equal(res.ep9.bin, "ep9");
+  assert.equal(res.ep9.version, "fake-ep9 0.0");
+  assert.equal(res.ep9.engine_build, "features jit; preset jit");
+  assert.equal(res.ep9.sha256, createHash("sha256").update(original).digest("hex"));
+  // The copy is gone after the run: only the test's executable is left.
+  assert.deepEqual(readdirSync(dir).sort(), ["ep9"]);
 });

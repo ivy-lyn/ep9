@@ -263,3 +263,114 @@ fn a_termination_stops_the_parts_loop() {
         Some((true, Some("before".to_string()), Some("again".to_string())))
     );
 }
+
+const CURRENCY: &str = r#"const fmt = (l, o, ...xs) => xs.map(x => new Intl.NumberFormat(l, o).format(x)).join(" | ");
+const parts = (l, o, x) => new Intl.NumberFormat(l, o).formatToParts(x).map(q => q.type + ":" + q.value).join(",");
+const usd = {style: "currency", currency: "USD"};
+const acc = {style: "currency", currency: "USD", currencySign: "accounting"};
+print(fmt("en-US", acc, -987, -0.0001, -0, 0, 987), fmt("en-US", {...acc, signDisplay: "always"}, -987, 0, 987), fmt("en-US", {...acc, signDisplay: "negative"}, -0.0001, -987));
+print(fmt("ko-KR", acc, -987, 987), fmt("de-DE", acc, -987, 987), fmt("ja-JP", {...acc, signDisplay: "exceptZero"}, -0, -987, 987));
+print(fmt("en", usd, -1234.5, NaN, -Infinity), fmt("en", acc, -Infinity), fmt("en", {...usd, currencyDisplay: "code"}, -1), fmt("en", {...usd, currencyDisplay: "narrowSymbol"}, 1));
+print(fmt("ko", usd, 1), fmt("ko", {...usd, currencyDisplay: "narrowSymbol"}, 1), fmt("fr", usd, 1), fmt("en", {style: "currency", currency: "XYZ"}, 1));
+print(fmt("en", {...usd, currencyDisplay: "name"}, 1, -1, 1234.5), fmt("en", {style: "currency", currency: "XYZ", currencyDisplay: "name"}, 1));
+print(fmt("ru", {style: "currency", currency: "RUB", currencyDisplay: "name"}, 1, 2, 5), fmt("ja", {...usd, currencyDisplay: "name"}, 1));
+print(fmt("en", {style: "currency", currency: "JPY"}, 1234.5), fmt("en", {style: "currency", currency: "KWD"}, 1.23456), fmt("de", {style: "currency", currency: "EUR"}, 1234.5));
+print(fmt("nl", {style: "currency", currency: "EUR"}, -1), fmt("de-CH", {style: "currency", currency: "CHF"}, -1), fmt("en", {...usd, notation: "compact"}, -12345), fmt("de", {style: "currency", currency: "EUR", notation: "compact"}, 1234567));
+print(["JPY", "KWD", "USD", "HUF", "CLF", "ABC"].map(c => new Intl.NumberFormat("en", {style: "currency", currency: c}).resolvedOptions().maximumFractionDigits).join());
+print(parts("ko-KR", acc, -987));
+print(parts("de-DE", acc, -987));
+print(parts("en", {...usd, currencyDisplay: "name"}, -1));
+print(parts("nl", {style: "currency", currency: "EUR"}, -1));
+print(parts("he", {style: "currency", currency: "ILS"}, -1).replace(/[‎‏]/g, c => "<" + c.charCodeAt(0).toString(16) + ">"));
+"#;
+
+/// INTL W3 NF-CURRENCY: the style "currency" (ECMA-402 §16.5.1 CurrencyDigits, §16.5.3,
+/// §16.5.4): `currencySign` "accounting" with each `signDisplay` (the negative pattern of the
+/// data, "($987.00)", and the sign before the pattern where the data has none, "-987,00 $"),
+/// `currencyDisplay` symbol, narrowSymbol, code (the "alpha next to number" space) and name
+/// (by the plural category of the rounded value; the ISO code where the data has no name),
+/// an unknown code, NaN and the infinities, compact notation, the CLDR currency digits
+/// (JPY 0, KWD 3, HUF 0, CLF 4), a "-" in a negative pattern of the data (nl, de-CH, he), and
+/// the currency, literal and minusSign parts. Old code (the W3 skeleton stub): the decimal
+/// style with 2 fraction digits ("-987.00", no currency).
+#[test]
+fn currency_gives_the_node_lines() {
+    assert_eq!(
+        run_both(CURRENCY),
+        lines(&[
+            "($987.00) | ($0.00) | ($0.00) | $0.00 | $987.00 ($987.00) | +$0.00 | +$987.00 $0.00 | ($987.00)",
+            "(US$987.00) | US$987.00 -987,00\u{a0}$ | 987,00\u{a0}$ $0.00 | ($987.00) | +$987.00",
+            "-$1,234.50 | $NaN | -$∞ ($∞) -USD\u{a0}1.00 $1.00",
+            "US$1.00 $1.00 1,00\u{a0}$US XYZ\u{a0}1.00",
+            "1.00 US dollars | -1.00 US dollars | 1,234.50 US dollars 1.00 XYZ",
+            "1,00 российского рубля | 2,00 российского рубля | 5,00 российского рубля 1.00米ドル",
+            "¥1,235 KWD\u{a0}1.235 1.234,50\u{a0}€",
+            "€\u{a0}-1,00 CHF-1.00 -$12K 1,2\u{a0}Mio.\u{a0}€",
+            "0,3,2,0,4,2",
+            "literal:(,currency:US$,integer:987,decimal:.,fraction:00,literal:)",
+            "minusSign:-,integer:987,decimal:,,fraction:00,literal:\u{a0},currency:$",
+            "minusSign:-,integer:1,decimal:.,fraction:00,literal: ,currency:US dollars",
+            "currency:€,literal:\u{a0},minusSign:-,integer:1,decimal:,,fraction:00",
+            "literal:<200f><200e>,minusSign:-,integer:1,decimal:.,fraction:00,literal:\u{a0}<200f>,currency:₪",
+        ])
+    );
+}
+
+const PERCENT: &str = r#"const fmt = (l, o, ...xs) => xs.map(x => new Intl.NumberFormat(l, o).format(x)).join(" | ");
+const parts = (l, o, x) => new Intl.NumberFormat(l, o).formatToParts(x).map(q => q.type + ":" + q.value).join(",");
+const pct = {style: "percent"};
+print(fmt("en", pct, 0.2, 0.011, -1.23, -0, 1234.5678), fmt("en", {...pct, signDisplay: "always"}, 0.5, 0), fmt("en", {...pct, maximumFractionDigits: 2}, 0.12345));
+print(fmt("de", pct, -0.5), fmt("tr", pct, -0.5), fmt("fr", pct, 0.5), fmt("en", pct, "0.125", 5n, NaN, Infinity));
+print(parts("en-US", pct, -123));
+print(parts("de", pct, -0.5));
+print(parts("tr", pct, -0.5));
+print(parts("ar-u-nu-latn", pct, -0.5).replace(/[‎‏]/g, c => "<" + c.charCodeAt(0).toString(16) + ">"));
+const big = new Intl.NumberFormat("en", {...pct, useGrouping: false}).format(10n ** 32766n);
+print(big.length, big.slice(0, 3), big.slice(-3), new Intl.NumberFormat("en", {...pct, useGrouping: false}).format(-(10n ** 40000n)).length);
+"#;
+
+/// INTL W3 NF-CURRENCY: the style "percent" (§16.5.3: x × 100 first; the percent pattern of
+/// the locale with the sign before it, or in its place where the data puts it: tr "-%50"),
+/// the percentSign and literal parts (a space and the bidi marks of the pattern are
+/// literals), and a BigInt whose highest digit x × 100 moves past the i16 magnitudes of
+/// fixed_decimal (10n ** 32766n: 32,767 digits; a Decimal would overflow to zero). Old code:
+/// the decimal style ("0.2", no percent sign).
+#[test]
+fn percent_gives_the_node_lines() {
+    assert_eq!(
+        run_both(PERCENT),
+        lines(&[
+            "20% | 1% | -123% | -0% | 123,457% +50% | +0% 12.35%",
+            "-50\u{a0}% -%50 50\u{a0}% 13% | 500% | NaN% | ∞%",
+            "minusSign:-,integer:12,group:,,integer:300,percentSign:%",
+            "minusSign:-,integer:50,literal:\u{a0},percentSign:%",
+            "minusSign:-,percentSign:%,integer:50",
+            "literal:<200e>,minusSign:-,integer:50,literal:<200e>,percentSign:%,literal:<200e>",
+            "32770 100 00% 40005",
+        ])
+    );
+}
+
+const PERCENT_CARRY: &str = r#"const nf = new Intl.NumberFormat("en", {style: "percent", maximumSignificantDigits: 1, useGrouping: false});
+for (const k of [32765, 32766, 32767]) {
+  const v = 10n ** BigInt(k) - 1n, want = "1" + "0".repeat(k + 2) + "%";
+  print(k, nf.format(v).length, nf.format(v) === want, nf.format(-v) === "-" + want, nf.formatRange(v, 10n ** BigInt(k)) === "~" + want);
+}"#;
+
+/// The style "percent" with a rounding carry at the i16 limit of fixed_decimal: the BigInt
+/// 10n ** 32766n - 1n (32,766 nines) times 100 has its highest digit at magnitude 32,767
+/// (i16::MAX), and one significant digit carries it to 32,768. x × 100 is a WideDecimal from
+/// that magnitude on, so the carry is exact ("1" and 32,768 zeros). The all-nines BigInts one
+/// digit shorter and one digit longer, the negative values and the range ("~", both ends
+/// round to the same text) too. Old code: "0%" (the Decimal overflow gives zero).
+#[test]
+fn percent_rounding_carry_at_the_i16_limit() {
+    assert_eq!(
+        run_both(PERCENT_CARRY),
+        lines(&[
+            "32765 32769 true true true",
+            "32766 32770 true true true",
+            "32767 32771 true true true",
+        ])
+    );
+}

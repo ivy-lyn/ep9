@@ -324,6 +324,14 @@ pub enum Finding {
         /// The instruction offset.
         at: u32,
     },
+    /// A unit with landing pads with an AArch64 `br` or `blr` (or a PAC form) whose register
+    /// value is not proven to be a landing pad or code outside the text (see [`check_pads`]):
+    /// it is not set in the same straight-line run by a load through x27 or x28 or by an
+    /// `adr` (route PADS-PROVENANCE).
+    IndirectTargetNotProven {
+        /// The instruction offset.
+        at: u32,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -375,6 +383,9 @@ impl fmt::Display for Finding {
             Finding::NoLandingPad { at } => write!(f, "+{at:#x}: entry without bti c"),
             Finding::IndirectJumpRegister { at } => {
                 write!(f, "+{at:#x}: indirect jump not through x16 or x17")
+            }
+            Finding::IndirectTargetNotProven { at } => {
+                write!(f, "+{at:#x}: indirect branch target not proven")
             }
         }
     }
@@ -668,13 +679,28 @@ const A64_BTI_JC: u32 = 0xd503_24df;
 /// |---|---|---|
 /// | the function entry (offset 0) is `bti c` or `bti jc`: the target of `blr` (a call) and of `br x16`/`br x17` (a tail call) from other code (else [`Finding::NoLandingPad`]) | yes | - |
 /// | each indirect jump (`br`, `braa`, `brab`, `braaz`, `brabz`) goes through x16 or x17, so its target needs only `bti c` (a jump through another register needs `bti j`; else [`Finding::IndirectJumpRegister`]) | yes | - |
-/// | each `adr` with a target in the text, into any register, makes an indirect entry (a `br x16`/`br x17` or a `blr` through the register or a copy of it): the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
+/// | each `adr` with a target in the text, into any register, makes an indirect entry: the word there is `bti c` or `bti jc` (else [`Finding::NoLandingPad`] at the target; a target outside the text is a [`check_text`] finding) | yes | - |
+/// | each `br` and `blr` (and their PAC forms) takes its register from an allowed form, set in the same straight-line run before it (else [`Finding::IndirectTargetNotProven`]; route PADS-PROVENANCE): a 64-bit load through x27 or x28 (a link cell, a stub cell or a RuntimeTable entry: code outside the text, whose own entry rule holds there), only when no word of the text may write that register (the pinning premise, below), a 64-bit load through a register that such a load set in its own run (one step: a table that the isolate names; not an `adr` base, which reads text bytes), or an `adr` into the branch register itself (the rule above checks its target) | yes | - |
 ///
-/// `blr` and `ret` may use any register (the spike-b unit probe calls through x1), so the
-/// check reads the target where it is made, at the `adr`, for every register. `adrp` and a
-/// direct call are [`check_text`] findings, so in unit text only an `adr` gives a text
-/// address. x86-64 has no pad form here yet (CET IBT `endbr64` is not built): the check
-/// gives no finding.
+/// The run of a branch goes back from it to its definition over words that write neither the
+/// register nor the flow of control: loads and pairs into other registers (a pair from the
+/// stack, `ldp x29, x30`, pops a frame), stores, `add`/`sub` (immediate), `mov` (wide
+/// immediate or register) and `nop` into other registers. A run stops at the function entry,
+/// at the target of a direct branch in the text and at a landing pad (another way in), and at
+/// any other word (a call, a branch, a write of the register). So a text address made any
+/// other way is refused: arithmetic on an `adr` result, x30 after a `blr` (a return address),
+/// a load from the stack (a saved x30) and a literal load (text bytes). `ret` is not a BTI
+/// branch and may use any register. x86-64 has no pad form here yet (CET IBT `endbr64` is not
+/// built): the check gives no finding.
+///
+/// The pinning premise (JIT review M8-P3 F3): a load through x27 or x28 reads engine memory
+/// only while x27 holds the unit's RW copy and x28 the `Cx`. The check reads every word of the
+/// text, and a write of x27 (x28) anywhere, also in another run or after the branch, takes
+/// the proof away from every load through x27 (x28). The H35-Q9 unit-data entry
+/// (`ldr x27, [x28, #ud]`, `ldr x27, [x27, #8 * slot]`) and the restore of x27 before an exit
+/// write x27, so a text with them gets no proof through x27 now: the allowed write forms come
+/// with the production wiring (route UNIT-PADS-WIRING). The x27/x28 premise is per function
+/// text; across the functions of a unit it is the job of the wiring route (UNIT-PADS-WIRING).
 pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
     let mut out = Vec::new();
     if arch != Arch::A64 {
@@ -683,16 +709,25 @@ pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
     if text.len() < 4 || !matches!(word(text, 0), A64_BTI_C | A64_BTI_JC) {
         out.push(Finding::NoLandingPad { at: 0 });
     }
+    let starts = run_starts(text);
+    let words = (0..text.len() / 4).map(|i| word(text, i * 4));
+    let pinned = [27, 28].map(|r| !words.clone().any(|w| writes_pinned(w, r)));
     for at in (0..text.len() / 4 * 4).step_by(4) {
         let w = word(text, at);
-        // Unconditional branch (register), opc 0000 (BR, BRAAZ, BRABZ) or 1000 (BRAA, BRAB),
-        // op2 = 11111.
-        let br = w & 0xfe1f_0000 == 0xd61f_0000 && matches!((w >> 21) & 0xf, 0 | 8);
-        if br && !matches!((w >> 5) & 31, 16 | 17) {
+        // Unconditional branch (register), op2 = 11111: opc 0000 (BR, BRAAZ, BRABZ), 0001
+        // (BLR, BLRAAZ, BLRABZ), 1000 (BRAA, BRAB), 1001 (BLRAA, BLRAB). RET (0010) is not a
+        // BTI branch.
+        let opc = (w >> 21) & 0xf;
+        let branch = w & 0xfe1f_0000 == 0xd61f_0000 && matches!(opc, 0 | 1 | 8 | 9);
+        let reg = (w >> 5) & 31;
+        if branch && matches!(opc, 0 | 8) && !matches!(reg, 16 | 17) {
             out.push(Finding::IndirectJumpRegister { at: at as u32 });
         }
-        // `adr Xn, L` then `br x16` or `blr Xn` (or a copy of Xn): L is entered by an indirect
-        // branch (JIT review M8-P2 B2; Codex M8-P2 r2: `adr x0, L; blr x0`).
+        if branch && !proven_target(text, &starts, pinned, at, reg, 1, true) {
+            out.push(Finding::IndirectTargetNotProven { at: at as u32 });
+        }
+        // `adr Xn, L` then `br x16` or `blr Xn`: L is entered by an indirect branch (JIT
+        // review M8-P2 B2; Codex M8-P2 r2: `adr x0, L; blr x0`).
         if is_adr(w) {
             let target = at as i64 + sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21);
             if (0..text.len() as i64).contains(&target) {
@@ -708,4 +743,294 @@ pub fn check_pads(arch: Arch, text: &[u8]) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// The words of `text` (by word index) where a straight-line run starts in [`check_pads`]:
+/// the entry, each target of a direct branch in the text and each BTI landing pad.
+fn run_starts(text: &[u8]) -> Vec<bool> {
+    let n = text.len() / 4;
+    let mut starts = vec![false; n];
+    if n > 0 {
+        starts[0] = true;
+    }
+    for i in 0..n {
+        let w = word(text, i * 4);
+        // BTI (any target kind): HINT #32, #34, #36, #38.
+        if w & 0xffff_ff3f == 0xd503_241f {
+            starts[i] = true;
+        }
+        let distance = if is_b_or_bl(w) {
+            Some(sext(w & 0x03ff_ffff, 26) * 4)
+        } else if is_b_cond(w) || is_cbz(w) {
+            Some(sext((w >> 5) & 0x7_ffff, 19) * 4)
+        } else if is_tbz(w) {
+            Some(sext((w >> 5) & 0x3fff, 14) * 4)
+        } else if is_cb_cc(w) {
+            Some(sext((w >> 5) & 0x1ff, 9) * 4)
+        } else {
+            None
+        };
+        if let Some(d) = distance {
+            let t = (i * 4) as i64 + d;
+            if (0..(n * 4) as i64).contains(&t) {
+                starts[t as usize / 4] = true;
+            }
+        }
+    }
+    starts
+}
+
+/// True when the value of register `reg` at the AArch64 word `at` is proven by an allowed form
+/// in the straight-line run before `at` (the table of [`check_pads`]). `chain` is how many
+/// loads through a register that is itself proven may still follow (1 at a branch). `adr_ok`
+/// is true only for the branch register: an `adr` base of a load is a text address, so the
+/// load reads text bytes (JIT review M8-P3 F2). `pinned` is true for x27 (x28) when no word
+/// of the text may write it.
+fn proven_target(
+    text: &[u8],
+    starts: &[bool],
+    pinned: [bool; 2],
+    at: usize,
+    reg: u32,
+    chain: u32,
+    adr_ok: bool,
+) -> bool {
+    let mut q = at;
+    loop {
+        if starts[q / 4] || q < 4 {
+            return false;
+        }
+        let p = q - 4;
+        let w = word(text, p);
+        let rd = w & 31;
+        if is_adr(w) && rd == reg {
+            let target = p as i64 + sext((((w >> 5) & 0x7_ffff) << 2) | ((w >> 29) & 3), 21);
+            return adr_ok && (0..text.len() as i64).contains(&target);
+        }
+        // LDR (immediate), 64-bit, unsigned offset.
+        if w & 0xffc0_0000 == 0xf940_0000 {
+            if rd != reg {
+                q = p;
+                continue;
+            }
+            let base = (w >> 5) & 31;
+            return (base == 27 && pinned[0])
+                || (base == 28 && pinned[1])
+                || (chain > 0
+                    && base != 31
+                    && proven_target(text, starts, pinned, p, base, chain - 1, false));
+        }
+        let neutral = match w & 0xffc0_0000 {
+            // LDP, 64-bit: post-index, pre-index, signed offset.
+            0xa8c0_0000 | 0xa9c0_0000 | 0xa940_0000 => {
+                let (t2, base) = ((w >> 10) & 31, (w >> 5) & 31);
+                rd != reg && t2 != reg && base != reg
+            }
+            // STP, 64-bit (the same forms); STR (immediate), 64-bit, unsigned offset.
+            0xa880_0000 | 0xa980_0000 => (w >> 5) & 31 != reg,
+            0xa900_0000 | 0xf900_0000 => true,
+            _ => {
+                // ADD, ADDS, SUB, SUBS (immediate); MOVN, MOVZ, MOVK; ORR (shifted register)
+                // with Rd != the register (Rd 31 is sp or xzr); NOP.
+                let add_imm = w & 0x1f80_0000 == 0x1100_0000;
+                let mov_wide = w & 0x1f80_0000 == 0x1280_0000 && (w >> 29) & 3 != 1;
+                let orr = w & 0x7f20_0000 == 0x2a00_0000;
+                ((add_imm || mov_wide || orr) && rd != reg) || w == 0xd503_201f
+            }
+        };
+        if !neutral {
+            return false;
+        }
+        q = p;
+    }
+}
+
+/// True when the AArch64 word `w` may write the general register `r` (x27 or x28 in
+/// [`check_pads`]). It is sound by excess: a load or store form that it does not know in
+/// detail counts as a write when `r` is in any register field of the word, or is Rs+1, or is
+/// in Rt to Rt+7 for LD64B. Exact forms (Arm ARM, A64 encoding index): data processing
+/// (immediate and register) writes Rd; a load writes Rt (a pair Rt and Rt2) and a pre- or
+/// post-index form writes back its base; a store of `r` and a load into an FP or SIMD
+/// register are not writes; MRS and SYSL write Rt, and MRRS writes Rt and Rt+1; of the FP and
+/// SIMD words, only the moves and conversions to a general register (`fmov`, `fcvt*`, `umov`,
+/// `smov`) write Rd. A call (`bl`, `blr`) writes x30 only (x27 and x28 are callee-saved).
+///
+/// Three forms write a register that no field names: the compare-and-swap pairs (CASP, CASPA,
+/// CASPL, CASPAL, CASPT, CASPLT, and RCWCASP, RCWSCASP and their A, L and AL forms) write Rs
+/// and Rs+1, LD64B writes Rt to Rt+7, and MRRS writes Rt and Rt+1. These forms need an even
+/// register (an odd one is UNDEFINED), so on a valid word Rs+1 is equal to Rs|1. The check
+/// uses Rs+1 (and Rt+1): on an odd register it counts one more register, which is excess and
+/// never a miss, and the proof does not depend on the even-register rule. The other pair forms
+/// name both registers: LDXP, LDAXP, LDP, LDNP and LDPSW in Rt2; SWPP, LDCLRP, LDSETP and the
+/// RCW pair forms (RCWSWPP, RCWCLRP, RCWSETP) in the Rs field; ST64BV and ST64BV0 write the
+/// status register Rs. MSRR and SYSP only read their pair.
+fn writes_pinned(w: u32, r: u32) -> bool {
+    let (rt, rn, rt2, rs) = (w & 31, (w >> 5) & 31, (w >> 10) & 31, (w >> 16) & 31);
+    let op0 = (w >> 25) & 0xf;
+    // Data processing, immediate (100x) and register (x101).
+    if op0 & 0b1110 == 0b1000 || op0 & 0b0111 == 0b0101 {
+        return rt == r;
+    }
+    // Loads and stores (x1x0).
+    if op0 & 0b0101 == 0b0100 {
+        let gpr = w & (1 << 26) == 0;
+        let load = (w >> 22) & 3 != 0;
+        return if w & 0x3b00_0000 == 0x3900_0000 {
+            // LDR/STR (immediate, unsigned offset): no writeback.
+            gpr && load && rt == r
+        } else if w & 0x3b20_0000 == 0x3800_0000 {
+            // LDUR/STUR, LDTR/STTR, and the post-index (01) and pre-index (11) forms.
+            (gpr && load && rt == r) || ((w >> 10) & 1 == 1 && rn == r)
+        } else if w & 0x3b20_0c00 == 0x3820_0800 {
+            // LDR/STR (register offset): no writeback.
+            gpr && load && rt == r
+        } else if w & 0x3a00_0000 == 0x2800_0000 {
+            // LDP/STP, LDNP/STNP: L (bit 22) loads Rt and Rt2; index 01 and 11 write back.
+            (gpr && (w >> 22) & 1 == 1 && (rt == r || rt2 == r)) || ((w >> 23) & 1 == 1 && rn == r)
+        } else if w & 0x3b00_0000 == 0x1800_0000 {
+            // LDR (literal).
+            gpr && rt == r
+        } else {
+            // Exclusives, atomics, acquire and release forms, structure loads and the rest.
+            // The CASP and RCWCASP pairs also write Rs+1; LD64B writes Rt to Rt+7.
+            let ld64b = w & 0xffff_fc00 == 0xf83f_d000;
+            [rt, rt2, rs, rn].contains(&r) || rs + 1 == r || (ld64b && (rt..rt + 8).contains(&r))
+        };
+    }
+    // Branches, exception generation and system (101x): MRS and SYSL write Rt; MRRS writes Rt
+    // and Rt+1.
+    if op0 & 0b1110 == 0b1010 {
+        return (w & 0xffe0_0000 == 0xd520_0000 && rt == r)
+            || (w & 0xfff0_0000 == 0xd570_0000 && (rt == r || rt + 1 == r));
+    }
+    // FP and SIMD (x111).
+    if op0 & 0b0111 == 0b0111 {
+        let opcode = (w >> 16) & 7;
+        return rt == r
+            && if w & 0x5f20_fc00 == 0x1e20_0000 {
+                // FP and integer conversion: all but SCVTF, UCVTF and FMOV to an FP register.
+                !matches!(opcode, 2 | 3 | 7)
+            } else if w & 0x5f20_0000 == 0x1e00_0000 {
+                // FP and fixed-point conversion: FCVTZS, FCVTZU.
+                !matches!(opcode, 2 | 3)
+            } else {
+                // SMOV, UMOV.
+                w & 0xbfe0_ec00 == 0x0e00_2c00
+            };
+    }
+    // SME, SVE and the unallocated groups (00xx): any Rd.
+    rt == r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::writes_pinned;
+
+    /// Each word with its text, encoded by `llvm-mc -triple=aarch64
+    /// -mattr=+lse,+rcpc,+ls64,+d128,+the,+lse128,+rcpc3,+lsui`, and whether it writes x27 or
+    /// x28.
+    #[test]
+    fn writes_pinned_knows_the_a64_write_forms() {
+        let writes: [(u32, &str); 60] = [
+            (0xaa00_03fb, "mov x27, x0"),
+            (0x9100_03fb, "mov x27, sp"),
+            (0x9100_237b, "add x27, x27, #8"),
+            (0xf940_001b, "ldr x27, [x0]"),
+            (0xf940_0b9b, "ldr x27, [x28, #16]"),
+            (0xb940_041b, "ldr w27, [x0, #4]"),
+            (0xb980_001b, "ldrsw x27, [x0]"),
+            (0x3940_001b, "ldrb w27, [x0]"),
+            (0xf940_13fb, "ldr x27, [sp, #32]"),
+            (0xf85f_801b, "ldur x27, [x0, #-8]"),
+            (0xf840_8760, "ldr x0, [x27], #8"),
+            (0xf840_8f60, "ldr x0, [x27, #8]!"),
+            (0xf800_8f60, "str x0, [x27, #8]!"),
+            (0xf801_0760, "str x0, [x27], #16"),
+            (0xf861_781b, "ldr x27, [x0, x1, lsl #3]"),
+            (0xa941_6ffa, "ldp x26, x27, [sp, #16]"),
+            (0xa8c1_73fb, "ldp x27, x28, [sp], #16"),
+            (0xa8c1_0760, "ldp x0, x1, [x27], #16"),
+            (0xa9bf_0760, "stp x0, x1, [x27, #-16]!"),
+            (0x5800_005b, "ldr x27, #8"),
+            (0xd53b_d05b, "mrs x27, tpidr_el0"),
+            (0x0e0c_3c1b, "umov w27, v0.s[1]"),
+            (0x4e06_2c1b, "smov x27, v0.h[1]"),
+            (0x9e66_001b, "fmov x27, d0"),
+            (0x9e78_001b, "fcvtzs x27, d0"),
+            (0x9e58_f41b, "fcvtzs x27, d0, #3"),
+            (0x9a81_001b, "csel x27, x0, x1, eq"),
+            (0x9b01_081b, "madd x27, x0, x1, x2"),
+            (0xd280_003b, "mov x27, #1"),
+            (0xf2a0_003b, "movk x27, #1, lsl #16"),
+            (0x1000_005b, "adr x27, #8"),
+            (0xb000_001b, "adrp x27, #4096"),
+            (0xc85f_7c1b, "ldxr x27, [x0]"),
+            (0xc81b_7c20, "stxr w27, x0, [x1]"),
+            (0xc85f_fc1b, "ldaxr x27, [x0]"),
+            (0xc8bb_7c20, "cas x27, x0, [x1]"),
+            (0xf820_803b, "swp x0, x27, [x1]"),
+            (0xf820_003b, "ldadd x0, x27, [x1]"),
+            (0xc8df_fc1b, "ldar x27, [x0]"),
+            (0xf8bf_c01b, "ldapr x27, [x0]"),
+            (0x4cdf_7360, "ld1 {v0.16b}, [x27], #16"),
+            (0xd343_181b, "ubfx x27, x0, #3, #4"),
+            (0xd37d_f01b, "lsl x27, x0, #3"),
+            (0xcb00_03fb, "neg x27, x0"),
+            (0xda80_141b, "cneg x27, x0, eq"),
+            // Writes that no register field names: Rs+1, Rt+1, Rt to Rt+7.
+            (0x483a_7c40, "casp x26, x27, x0, x1, [x2]"),
+            (0x487a_fc40, "caspal x26, x27, x0, x1, [x2]"),
+            (0x083a_7c40, "casp w26, w27, w0, w1, [x2]"),
+            (0x193a_0c40, "rcwcasp x26, x27, x0, x1, [x2]"),
+            (0x59fa_0c40, "rcwscaspal x26, x27, x0, x1, [x2]"),
+            (0x499a_7c40, "caspt x26, x27, x0, x1, [x2]"),
+            (0xf83f_d014, "ld64b x20, [x0]"),
+            (0xf83f_d016, "ld64b x22, [x0]"),
+            (0xd578_201a, "mrrs x26, x27, ttbr0_el1"),
+            // Pair and status writes that a register field names.
+            (0xc87f_6c1a, "ldxp x26, x27, [x0]"),
+            (0x6940_6c1a, "ldpsw x26, x27, [x0]"),
+            (0x193b_803a, "swpp x26, x27, [x1]"),
+            (0x193b_a03a, "rcwswpp x26, x27, [x1]"),
+            (0xd95b_183a, "ldiapp x26, x27, [x1]"),
+            (0xf83b_b020, "st64bv x27, x0, [x1]"),
+        ];
+        let reads: [(u32, &str); 29] = [
+            (0xf81f_0ffb, "str x27, [sp, #-16]!"),
+            (0xf900_13fb, "str x27, [sp, #32]"),
+            (0xa901_73fb, "stp x27, x28, [sp, #16]"),
+            (0xf940_0770, "ldr x16, [x27, #8]"),
+            (0xf940_0390, "ldr x16, [x28]"),
+            (0xa941_0760, "ldp x0, x1, [x27, #16]"),
+            (0xf861_7b60, "ldr x0, [x27, x1, lsl #3]"),
+            (0xf85f_8360, "ldur x0, [x27, #-8]"),
+            (0x9100_0760, "add x0, x27, #1"),
+            (0x8b1b_0020, "add x0, x1, x27"),
+            (0xb400_005b, "cbz x27, #8"),
+            (0x3618_005b, "tbz w27, #3, #8"),
+            (0xeb00_037f, "cmp x27, x0"),
+            (0xfd40_001b, "ldr d27, [x0]"),
+            (0x3dc0_041c, "ldr q28, [x0, #16]"),
+            (0x1e61_281b, "fadd d27, d0, d1"),
+            (0x9e67_001b, "fmov d27, x0"),
+            (0x9e62_001b, "scvtf d27, x0"),
+            (0x4e0c_1c1b, "mov v27.s[1], w0"),
+            (0x4e04_0c1b, "dup v27.4s, w0"),
+            (0xd63f_0360, "blr x27"),
+            (0xd61f_0200, "br x16"),
+            (0xd51b_d05b, "msr tpidr_el0, x27"),
+            (0xfa40_036b, "ccmp x27, x0, #11, eq"),
+            (0xb900_001b, "str w27, [x0]"),
+            (0x3900_001b, "strb w27, [x0]"),
+            (0xd558_201a, "msrr ttbr0_el1, x26, x27"),
+            (0xd548_201a, "sysp #0, c2, c0, #0, x26, x27"),
+            (0xf83f_9014, "st64b x20, [x0]"),
+        ];
+        for (w, what) in writes {
+            assert!(writes_pinned(w, 27) || writes_pinned(w, 28), "{what}");
+        }
+        for (w, what) in reads {
+            assert!(!writes_pinned(w, 27) && !writes_pinned(w, 28), "{what}");
+        }
+    }
 }

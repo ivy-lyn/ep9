@@ -169,6 +169,8 @@ intrinsic 117  %IntlSegmentsPrototype%
 intrinsic 118  %IntlSegmentIteratorPrototype%
 intrinsic 119  %Intl.DisplayNames%
 intrinsic 120  %Intl.DisplayNames.prototype%
+intrinsic 121  %Intl.RelativeTimeFormat%
+intrinsic 122  %Intl.RelativeTimeFormat.prototype%
 intrinsic 121  %ArrayBuffer%
 intrinsic 122  %ArrayBuffer.prototype%
 intrinsic 123  %SharedArrayBuffer%

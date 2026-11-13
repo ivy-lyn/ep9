@@ -131,7 +131,7 @@ fn every_header_field_mutation_gives_its_listed_outcome() {
         assert_eq!(verdict(&base, &host), Verdict::Load, "{name}");
         for f in &HEADER_FIELDS {
             let range = f.offset..f.offset + f.size;
-            for new in new_values(&base[range.clone()], &mut rng) {
+            for new in values_for(name, &base[range.clone()], &mut rng) {
                 let mut m = base.clone();
                 m[range.clone()].copy_from_slice(&new);
                 // Without a recomputed hash: always a load error.
@@ -195,7 +195,7 @@ fn a_fact_schema_mismatch_drops_the_hints_whatever_else_differs() {
                 continue;
             }
             let range = f.offset..f.offset + f.size;
-            for new in new_values(&base[range.clone()], &mut rng) {
+            for new in values_for(name, &base[range.clone()], &mut rng) {
                 let mut m = base.clone();
                 m[range.clone()].copy_from_slice(&new);
                 rehash(&mut m);
@@ -230,7 +230,7 @@ fn every_entry_mutation_is_a_load_error_or_another_canonical_unit() {
             let entry = SECTION_TABLE_OFFSET + i * SECTION_ENTRY_SIZE;
             for f in &ENTRY_FIELDS {
                 let range = entry + f.offset..entry + f.offset + f.size;
-                for new in new_values(&base[range.clone()], &mut rng) {
+                for new in values_for(name, &base[range.clone()], &mut rng) {
                     let mut m = base.clone();
                     m[range.clone()].copy_from_slice(&new);
                     assert_eq!(
@@ -613,24 +613,29 @@ fn the_v2_header_mutation_corpus_ends_in_the_listed_outcomes() {
     let base = u.encode();
     assert_eq!(verdict(&base, &host), Verdict::Load);
     let mut rng = Rng::new(0xa2);
-    let (mut cases, mut wrong) = (0usize, Vec::new());
+    let mut work = Vec::new();
     for f in &HEADER_FIELDS {
         if f.name == "content_hash" {
             continue;
         }
         let range = f.offset..f.offset + f.size;
         for new in new_values(&base[range.clone()], &mut rng) {
-            let mut m = base.clone();
-            m[range.clone()].copy_from_slice(&new);
-            rehash(&mut m);
-            cases += 1;
-            let got = check(&m, &host);
-            let want = expected(f, &new, &host);
-            if got != want {
-                wrong.push(format!("{} = {new:02x?}: {got:?}, want {want:?}", f.name));
-            }
+            work.push((f, new));
         }
     }
+    // Each case hashes the 64 KiB unit twice: the cases run on every CPU (UNIT-TEST-TIME).
+    let wrong: Vec<String> = par_map(&work, |(f, new)| {
+        let mut m = base.clone();
+        m[f.offset..f.offset + f.size].copy_from_slice(new);
+        rehash(&mut m);
+        let got = check(&m, &host);
+        let want = expected(f, new, &host);
+        (got != want).then(|| format!("{} = {new:02x?}: {got:?}, want {want:?}", f.name))
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    let cases = work.len();
     println!(
         "v2 header mutation corpus: {cases} cases, {} in their S3 outcome",
         cases - wrong.len()
@@ -689,4 +694,28 @@ fn container_v3_puts_the_text_at_a_64_kib_boundary() {
         u.header.compat_flags = 1;
         assert_eq!(verdict(&u.encode(), &host), Verdict::Load);
     }
+}
+
+/// The new values of a field of the unit `name` for the three mutation tests above (route
+/// UNIT-TEST-TIME): [`new_values`] on the small unit; on the native unit, the single-bit
+/// flips, all zeros and all ones only. Since container v3 the native unit is 64 KiB and more
+/// (the text at a 64 KiB boundary), so each of its cases hashes 64 KiB two or three times
+/// (about 3 ms each in a debug build). The field rules do not read the sections, and the
+/// native-contract rules are per bit, so the random values add nothing on the native unit
+/// that the small unit and the v2 corpus (all of [`new_values`] on a native unit) do not
+/// cover. The small unit takes its values first, so its cases do not change.
+fn values_for(name: &str, old: &[u8], rng: &mut Rng) -> Vec<Vec<u8>> {
+    if name == "small" {
+        return new_values(old, rng);
+    }
+    let mut out = Vec::new();
+    for i in 0..old.len() * 8 {
+        let mut v = old.to_vec();
+        v[i / 8] ^= 1 << (i % 8);
+        out.push(v);
+    }
+    out.push(vec![0; old.len()]);
+    out.push(vec![0xff; old.len()]);
+    out.retain(|v| v != old);
+    out
 }

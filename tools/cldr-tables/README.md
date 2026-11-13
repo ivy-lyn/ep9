@@ -15,10 +15,20 @@ cargo run           -> crates/ep9_intl/src/cldr/gen/
                       locales.rs  the availableLocales "full" ids (ep9_intl available.rs)
                       hour_cycles.rs  the timeData preferred hour cycles (locale_info.rs)
                       aliases.rs  the bcp47 -u- and -t- value aliases (tag.rs)
+                      t2.rs       T2: the unit patterns (plural forms, per-unit pattern) of
+                                  the 45 sanctioned units and the CLDR "X-per-Y" units of
+                                  two of them, and the "per" pattern, per CLDR locale and
+                                  width (number_format/unit.rs)
 cargo run -- --check  writes nothing; exit 1 if a generated file differs (CI form)
 cargo test          the tables against the ICU4X compiled data of the same CLDR release,
                     the CLDR version against the ICU4X data README, the check, determinism
 ```
+
+T2 replaces the ICU4X units data for Intl.NumberFormat style "unit": that data has only 5
+unit categories (area, duration, length, mass, volume). The test `t2_equals_icu4x` compares
+the "other" pattern of each unit that the ICU4X data has; the `ep9_intl` test
+`cldr::tests::t2_equals_icu4x_in_every_plural_category` compares every plural form (it needs
+`icu_plurals`, which this crate does not list).
 
 Commands (from the repository root):
 

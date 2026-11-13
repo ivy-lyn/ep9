@@ -13,3 +13,4 @@ the commit placeholder with its HEAD.
 | `exec.json` | `ep9-test262 exec --json` (a cut CI artifact) | ep9-test262 exec |
 | `fuzz-fuzzilli.json` | the Fuzzilli batch | ep9-fuzz/v1 |
 | `p-gates.md` | `docs/measurements/<date>-p-gates.md` | a table with Gate and Result columns |
+| `pathb-below.json`, `pathb-above.json`, `pathb-none.json` (one per host-cell form of V13-D37: `FAIL-SIDE (no gate host): AGREE below`, `MARGINAL (no gate host): AGREE above`, `MARGINAL: NO AGREEMENT`) | the Path B compare of the 2 box runs (`pathb-below.json` is the month-7 Path B compare of 2026-11-11, cut to the run checks and the `item <n>:` cells, with `platform` added; in `pathb-above.json` the TS cells are made-up readings above 1.0; in `pathb-none.json` also box 2 of the jit v8-v7 cell straddles 1.0) | ep9-pathb-compare/v1 |

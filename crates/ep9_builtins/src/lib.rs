@@ -18,8 +18,8 @@
 //!          28        29
 //!          ep9_intl::MODULES: intl, locale, collator, plural_rules, number_format,
 //!                             30    31      32        33            34
-//!                             list_format, segmenter, display_names,
-//!                             35           36         37
+//!                             list_format, segmenter, display_names, relative_time_format,
+//!                             35           36         37             38
 //!          array_buffer, data_view, typed_array, typed_array_proto, base64, atomics]
 //!          38            39         40           41                 42      43
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
@@ -109,6 +109,8 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_intl::list_format::MODULE,
     ep9_intl::segmenter::MODULE,
     ep9_intl::display_names::MODULE,
+    // INTL W3 (the RTF skeleton; RTF fills it): the lazy group "Intl".
+    ep9_intl::relative_time_format::MODULE,
     // TypedArray TA-2 TA-BUFFERS: ArrayBuffer, SharedArrayBuffer, DataView; the lazy group of
     // the keys `ArrayBuffer`, `SharedArrayBuffer` and `DataView` (TA-D14).
     array_buffer::MODULE,

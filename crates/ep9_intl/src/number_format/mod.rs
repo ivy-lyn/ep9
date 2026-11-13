@@ -6,28 +6,35 @@
 //! Intl.NumberFormat {w, c}     %Intl.NumberFormat%  prototype {}, supportedLocalesOf
 //! Intl.NumberFormat.prototype  %Intl.NumberFormat.prototype%  constructor {w, c},
 //!                                resolvedOptions, formatToParts, get format,
+//!                                formatRange, formatRangeToParts,
 //!                                [@@toStringTag] "Intl.NumberFormat" {c}
 //! slots (ObjectClass::IntlNumberFormat): 0 [[Locale]], 1 the packed options, 2 the packed
 //!   digit options, 3 [[RoundingIncrement]], 4 [[NumberingSystem]], 5 [[Currency]],
 //!   6 [[Unit]], 7 [[BoundFormat]]
-//! format(x) ─ ToIntlMathematicalValue ─ FormatNumeric ─ decimal::partition (ICU4X data
-//!   through crate::cache at the first format; no ICU4X object in a slot, INTL-I1-D7)
+//! format(x) ─ ToIntlMathematicalValue ─ FormatNumeric ─ partition_numeric ─ scientific,
+//!   currency, unit or decimal ::partition (ICU4X data through crate::cache at the first
+//!   format; no ICU4X object in a slot, INTL-I1-D7)
 //! ```
 //!
 //! INTL W2 NF-CORE: the constructor with every option of §16.1 (the style options too, so
 //! `resolvedOptions` is complete), `supportedLocalesOf`, `format`, `formatToParts` and
-//! `resolvedOptions`; the decimal style in standard and compact notation. W3 fills the rest
-//! of FormatNumeric through [`partition_numeric`]: the styles percent and currency
-//! (NF-CURRENCY, with [`currency_digits`]), unit (NF-UNIT), the notations scientific and
-//! engineering (NF-SCIRANGE); until then they format as the decimal style. `formatRange` and
-//! `formatRangeToParts` (NF-SCIRANGE) are not defined yet (ids append-only, after 4).
+//! `resolvedOptions`; the decimal style in standard and compact notation ([`decimal`]).
+//! INTL W3 added the rest of FormatNumeric through [`partition_numeric`], one file each: the
+//! styles percent and currency ([`currency`], NF-CURRENCY, with [`currency_digits`]), unit
+//! ([`unit`](mod@unit), NF-UNIT), the notations scientific and engineering ([`scientific`],
+//! NF-SCIRANGE). `formatRange` and `formatRangeToParts` (34.5, 34.6; NF-SCIRANGE) format
+//! through [`range`].
 //! `Number.prototype.toLocaleString` and `BigInt.prototype.toLocaleString` call
 //! [`to_locale_string`].
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-number_format.txt`.
 
+pub mod currency;
 pub mod decimal;
+pub mod range;
+pub mod scientific;
+pub mod unit;
 
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
@@ -36,6 +43,8 @@ use ep9_vm::{
 };
 
 use std::rc::Rc;
+
+use icu_plurals::PluralOperands;
 
 use crate::available;
 use crate::cache::{self, Service};
@@ -84,6 +93,8 @@ mod def {
     pub const GET_FORMAT: u16 = 2;
     pub const FORMAT_TO_PARTS: u16 = 3;
     pub const RESOLVED_OPTIONS: u16 = 4;
+    pub const FORMAT_RANGE: u16 = 5;
+    pub const FORMAT_RANGE_TO_PARTS: u16 = 6;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -93,6 +104,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::getter("format", get_format),                // 2 (16.3.3)
     BuiltinDef::method("formatToParts", 1, format_to_parts), // 3 (16.3.6)
     BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (16.3.2)
+    BuiltinDef::method("formatRange", 2, format_range),      // 5 (16.3.4)
+    BuiltinDef::method("formatRangeToParts", 2, format_range_to_parts), // 6 (16.3.5)
 ];
 
 /// The intrinsics this module makes.
@@ -133,9 +146,15 @@ pub const PROPS: &[ObjectProps] = &[
                 IntrinsicId::IntlNumberFormat,
                 PropAttrs::METHOD,
             ),
-            // The key order of V8 (node): resolvedOptions, formatToParts, format.
+            // The key order of V8 (node): resolvedOptions, formatToParts, formatRange,
+            // formatRangeToParts, format.
             PropDef::method(PropKey::Str("resolvedOptions"), def::RESOLVED_OPTIONS),
             PropDef::method(PropKey::Str("formatToParts"), def::FORMAT_TO_PARTS),
+            PropDef::method(PropKey::Str("formatRange"), def::FORMAT_RANGE),
+            PropDef::method(
+                PropKey::Str("formatRangeToParts"),
+                def::FORMAT_RANGE_TO_PARTS,
+            ),
             // get Intl.NumberFormat.prototype.format ({c}, 16.3.3).
             PropDef::accessor(PropKey::Str("format"), Some(def::GET_FORMAT), None),
             // Intl.NumberFormat.prototype [ @@toStringTag ] ({c}, 16.3.7).
@@ -294,8 +313,14 @@ impl Resolved {
             digits: self.digits,
             compact: (NOTATIONS[self.notation as usize] == "compact")
                 .then_some(self.compact_display == 1),
+            exponent: match NOTATIONS[self.notation as usize] {
+                "scientific" => Some(decimal::Exponent::Scientific),
+                "engineering" => Some(decimal::Exponent::Engineering),
+                _ => None,
+            },
             grouping: self.grouping,
             sign_display: self.sign_display,
+            plural: None,
         }
     }
 }
@@ -398,15 +423,13 @@ fn is_well_formed_unit_identifier(u: &str) -> bool {
     }
 }
 
-/// CurrencyDigits ( currency ) (16.5.1). Stub: 2 for every currency until W3 NF-CURRENCY
-/// fills it with the ISO 4217 minor units.
-pub fn currency_digits(_currency: &str) -> u8 {
-    2
-}
+/// CurrencyDigits ( currency ) (16.5.1): the CLDR minor unit digits ([`currency`]).
+pub use currency::currency_digits;
 
 /// `localeData.[[<locale>]].[[nu]]` (§16.2.3): the default numbering system of the locale
 /// first, then every numbering system with a simple digit mapping (ECMA-402 Table 14).
-fn nu_data(data_locale: &str) -> resolve::KeyData {
+/// Intl.RelativeTimeFormat has the same `[[nu]]` data (§18.2.3).
+pub(crate) fn nu_data(data_locale: &str) -> resolve::KeyData {
     let first = decimal::default_numbering_system(data_locale);
     let mut v = vec![first.clone()];
     v.extend(
@@ -530,6 +553,44 @@ pub fn initialize<'s>(
     })
 }
 
+/// The internal slots of the `[[NumberFormat]]` of an Intl.RelativeTimeFormat (18.1.1:
+/// ! Construct(%Intl.NumberFormat%, « locale, nfOptions »), nfOptions = { numberingSystem }):
+/// the decimal style in standard notation with every default, for the `[[Locale]]` `locale`
+/// (its only Unicode extension key is "nu") and `numbering_system`. The construction reads
+/// only a null-prototype object that it made, so it is not observable, and ResolveLocale gives
+/// `locale` back: the same available locales, and a "nu" keyword in `locale` is kept only
+/// when it equals `numbering_system`.
+pub(crate) fn decimal_defaults(locale: &str, numbering_system: &str) -> Resolved {
+    Resolved {
+        locale: locale.to_string(),
+        numbering_system: numbering_system.to_string(),
+        style: index_of(&STYLES, &"decimal"),
+        currency: None,
+        currency_display: index_of(&CURRENCY_DISPLAYS, &"symbol"),
+        currency_sign: index_of(&CURRENCY_SIGNS, &"standard"),
+        unit: None,
+        unit_display: index_of(&UNIT_DISPLAYS, &"short"),
+        // SetNumberFormatDigitOptions(nf, nfOptions, 0, 3, "standard") (16.1.2): no digit
+        // option, so the fraction digits 0-3 rounded "halfExpand".
+        digits: DigitOptions {
+            minimum_integer_digits: 1,
+            minimum_fraction_digits: 0,
+            maximum_fraction_digits: 3,
+            minimum_significant_digits: 1,
+            maximum_significant_digits: 21,
+            rounding_increment: 1,
+            rounding_mode: RoundingMode::HalfExpand,
+            rounding_type: RoundingType::FractionDigits,
+            computed_rounding_priority: "auto",
+            strip_if_integer: false,
+        },
+        notation: index_of(&NOTATIONS, &"standard"),
+        compact_display: index_of(&COMPACT_DISPLAYS, &"short"),
+        grouping: Grouping::Auto,
+        sign_display: SignDisplay::Auto,
+    }
+}
+
 /// The result of SetNumberFormatUnitOptions.
 struct UnitOptions {
     style: u32,
@@ -620,22 +681,34 @@ fn set_number_format_unit_options<'s>(
 
 /// PartitionNumberPattern ( numberFormat, x ) (16.5.3): the parts of `x` formatted with `r`.
 ///
-/// The decimal style in standard and compact notation is NF-CORE's. The W3 builders fill the
-/// other branches here: NF-CURRENCY the styles "percent" and "currency", NF-UNIT the style
-/// "unit", NF-SCIRANGE the notations "scientific" and "engineering". Until then those
-/// format as the decimal style in standard notation (a stub path, not a spec result).
+/// One file per branch: the notations "scientific" and "engineering" in every style
+/// ([`scientific`], NF-SCIRANGE), the styles "percent" and "currency" ([`currency`],
+/// NF-CURRENCY), the style "unit" ([`unit`](mod@unit), NF-UNIT), else the decimal style in
+/// standard and compact notation ([`decimal`], NF-CORE).
 ///
 /// The passes over the digits count in `work` ([`decimal`] polls).
 pub fn partition_numeric(r: &Resolved, x: &IntlMv, work: &mut Work) -> Result<Parts, Interrupted> {
+    partition_numeric_as(r, x, None, work)
+}
+
+/// [`partition_numeric`] with the unit or currency name pattern of the plural operands
+/// `plural` (`None`: of the rounded value of `x`): the range category of a number range
+/// ([`range`]).
+fn partition_numeric_as(
+    r: &Resolved,
+    x: &IntlMv,
+    plural: Option<PluralOperands>,
+    work: &mut Work,
+) -> Result<Parts, Interrupted> {
     let data_locale = tag::remove_unicode_extension(&r.locale);
     let mut f = r.format(&data_locale);
-    let standard_decimal = STYLES[r.style as usize] == "decimal"
-        && matches!(NOTATIONS[r.notation as usize], "standard" | "compact");
-    if !standard_decimal {
-        // W3 stub path (see above).
-        f.compact = None;
+    f.plural = plural;
+    match (STYLES[r.style as usize], NOTATIONS[r.notation as usize]) {
+        (_, "scientific" | "engineering") => scientific::partition(r, f, x, work),
+        ("percent" | "currency", _) => currency::partition(r, f, x, work),
+        ("unit", _) => unit::partition(r, f, x, work),
+        _ => decimal::partition(&f, x, work),
     }
-    decimal::partition(&f, x, work)
 }
 
 /// FormatNumeric ( numberFormat, x ) (16.5.5). The passes over the digits poll the
@@ -784,6 +857,78 @@ fn format_to_parts<'s>(
         cx.create_data_property_or_throw(o, "type", t)?;
         let v = cx.new_string(value)?;
         cx.create_data_property_or_throw(o, "value", v)?;
+        cx.create_data_property_index_or_throw(array, i as u64, o)?;
+    }
+    Ok(array.into())
+}
+
+/// The steps of Intl.NumberFormat.prototype.formatRange and formatRangeToParts before
+/// FormatNumericRange(ToParts): the resolved options of the this value and the two Intl
+/// mathematical values, and the parts of PartitionNumberRangePattern (16.5.19).
+fn range_parts<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+) -> JsResult<range::RangeParts> {
+    // 1-2. Let nf be the this value; ? RequireInternalSlot(nf, [[InitializedNumberFormat]]).
+    let r = read(cx, this)?;
+    // 3. If start is undefined or end is undefined, throw a TypeError exception.
+    let (start, end) = (args.get(0), args.get(1));
+    if start.is_undefined() || end.is_undefined() {
+        return Err(cx.throw_type_error("start and end must not be undefined"));
+    }
+    // 4. Let x be ? ToIntlMathematicalValue(start).
+    let x = decimal::to_intl_mv(cx, start)?;
+    // 5. Let y be ? ToIntlMathematicalValue(end).
+    let y = decimal::to_intl_mv(cx, end)?;
+    // 6. FormatNumericRange(ToParts) (16.5.22, 16.5.23) -> PartitionNumberRangePattern:
+    //    1. If x is NaN or y is NaN, throw a RangeError exception.
+    if matches!(x, IntlMv::NaN) || matches!(y, IntlMv::NaN) {
+        return Err(cx.throw_range_error("start and end must not be NaN"));
+    }
+    polled(cx, |w| range::partition(&r, &x, &y, w))
+}
+
+/// Intl.NumberFormat.prototype.formatRange ( start, end ) (16.3.4).
+fn format_range<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let parts = range_parts(cx, this, args)?;
+    // FormatNumericRange (16.5.22): the concatenation of the [[Value]] fields.
+    let s = polled(cx, |w| {
+        let mut out = String::new();
+        for (_, v, _) in &parts {
+            out.push_str(v);
+            w.add(v.len())?;
+        }
+        Ok(out)
+    })?;
+    Ok(cx.new_string(&s)?.into())
+}
+
+/// Intl.NumberFormat.prototype.formatRangeToParts ( start, end ) (16.3.5).
+fn format_range_to_parts<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let parts = range_parts(cx, this, args)?;
+    // FormatNumericRangeToParts (16.5.23): an Array of { type, value, source } in order. One
+    // budget unit per part (H23: a pass of a builtin loop).
+    let array = cx.new_array();
+    for (i, (t, value, source)) in parts.iter().enumerate() {
+        cx.poll_interrupt()?;
+        let o = cx.new_object();
+        let t = cx.new_string(t.name())?;
+        cx.create_data_property_or_throw(o, "type", t)?;
+        let v = cx.new_string(value)?;
+        cx.create_data_property_or_throw(o, "value", v)?;
+        let s = cx.new_string(source.name())?;
+        cx.create_data_property_or_throw(o, "source", s)?;
         cx.create_data_property_index_or_throw(array, i as u64, o)?;
     }
     Ok(array.into())

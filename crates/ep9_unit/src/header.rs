@@ -2,7 +2,7 @@
 //! 8-byte aligned. A section table follows it, then the sections.
 //!
 //! ```text
-//!   0 magic "\x89EP9UN\r\n"      8 container_version u32 (3)    12 header_size u32 (256)
+//!   0 magic "\x89EP9UN\r\n"      8 container_version u32 (4)    12 header_size u32 (256)
 //!  16 total_size u64            24 section_count u32           28 section_table_offset u32 (256)
 //!     -- 32-byte frozen prefix: the same place and meaning in every container version --
 //!  32 hash_alg u8 (1 = SHA-256)  33 header_flags u8 (bit 0 signed)  34 reserved [6] = 0
@@ -32,7 +32,7 @@ use crate::codes::{Contract, SectionKind, Versions};
 pub const MAGIC: [u8; 8] = [0x89, b'E', b'P', b'9', b'U', b'N', 0x0D, 0x0A];
 /// Container version. Any change to [`crate::layout_text`] bumps it (`tests/header.rs`
 /// enforces this).
-pub const CONTAINER_VERSION: u32 = 3;
+pub const CONTAINER_VERSION: u32 = 4;
 /// Header size in bytes.
 pub const HEADER_SIZE: usize = 256;
 /// Size of the frozen prefix: magic, container version, header size, total size and the
@@ -179,11 +179,11 @@ pub mod entry_flags {
 /// Header compat flag bits (offset 140; container v2). A bit this engine does not know is
 /// ignored: a writer sets one for an optional feature that an older engine may skip.
 pub mod compat_flags {
-    /// Bit 0 (container v3, MC-w23-15): the text has landing pads. Every indirect entry of the
-    /// text (each function entry) starts with a landing pad (AArch64 `bti c`) and every
-    /// indirect jump goes through x16 or x17, so a loader may map the text with BTI
-    /// (`PROT_BTI`). Without the bit a loader maps the text without BTI. An engine that does not
-    /// know the bit maps without BTI, which is safe.
+    /// Bit 0 (container v3, MC-w23-15): the text has landing pads: each function entry and each
+    /// `adr` target is `bti c` or `bti jc`, each `br` goes through x16 or x17, and the target
+    /// of each `br` and `blr` is proven to be such a pad or code outside the text (`ep9_masm`
+    /// `check_pads`, PADS-PROVENANCE), so a loader may map the text with BTI (`PROT_BTI`).
+    /// Without the bit, or in an engine that does not know it, the text maps without BTI: safe.
     pub const HAS_PADS: u32 = 1;
     /// Every defined bit.
     pub const DEFINED: u32 = HAS_PADS;

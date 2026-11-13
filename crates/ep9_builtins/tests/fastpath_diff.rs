@@ -500,6 +500,34 @@ const CASES: &[Case] = &[
              var o = { f: f }; print(Reflect.apply(f, o, [1]), Reflect.apply(f, o, [1, 2, 3]), Reflect.apply(f, undefined, []), f.length);",
         ),
     },
+    // M8-P3 LEVER-6: the x86-64 call path sets the accumulator to undefined at its start, so
+    // each cold exit passes undefined (a non-function, a host function, a class constructor,
+    // a primitive receiver of a sloppy function): the call forms with 0, 1, 2 and a list of
+    // arguments, each after an accumulator value.
+    Case {
+        path: "t0-call",
+        name: "the cold exits of the call handlers after an accumulator value",
+        src: "function sl(a, b) { return [typeof this, a, b].join(); }\n\
+              function st(a) { 'use strict'; return [typeof this, a].join(); }\n\
+              class K {} var o = { sl: sl, st: st, mx: Math.max, k: K, n: 7 }, r = [];\n\
+              for (var i = 0; i < 12; i++) {\n\
+                var t = 'x' + i; r.push(o.sl(), o.sl(t), o.sl(t, i), o.mx(i, 3), sl(), sl(i), sl(i, t), st(t));\n\
+                r.push(sl.call(5), st.call(5, i), Math.max(), o.mx(1, 2, i, t.length));\n\
+                try { o.k(); } catch (e) { r.push(e.name); } try { o.n(t); } catch (e) { r.push(e.name); }\n\
+              }\n\
+              print(r.join('|'));",
+        spec: Some(
+            "function sl(a, b) { return [typeof this, a, b].join(); }\n\
+             function st(a) { 'use strict'; return [typeof this, a].join(); }\n\
+             class K {} var o = { sl: sl, st: st, mx: Math.max, k: K, n: 7 }, r = [], R = Reflect;\n\
+             for (var i = 0; i < 12; i++) {\n\
+               var t = 'x' + i; r.push(R.apply(sl, o, []), R.apply(sl, o, [t]), R.apply(sl, o, [t, i]), R.apply(Math.max, o, [i, 3]), R.apply(sl, undefined, []), R.apply(sl, undefined, [i]), R.apply(sl, undefined, [i, t]), R.apply(st, undefined, [t]));\n\
+               r.push(R.apply(sl, 5, []), R.apply(st, 5, [i]), R.apply(Math.max, Math, []), R.apply(Math.max, o, [1, 2, i, t.length]));\n\
+               try { R.apply(K, o, []); } catch (e) { r.push(e.name); } try { R.apply(o.n, o, [t]); } catch (e) { r.push(e.name); }\n\
+             }\n\
+             print(r.join('|'));",
+        ),
+    },
     // ---- construct-site: the spec form first constructs other functions at each site, 20
     // times (after the threshold calls the caller has its vector), so the site is megamorphic
     // and every construct takes the cold path ----
@@ -891,6 +919,32 @@ const CASES: &[Case] = &[
                print(b, Object.prototype.toString.call(a), c, a === G.Temporal);\n\
                function w(v) { R.set(G, 'Temporal', v); } for (var i = 0; i < 20; i++) w(i);\n\
                print(g(), t());\n\
+             })();",
+        ),
+    },
+    // M8-P3 LEVER-6: `typeof g` at a polymorphic global site (the x86-64 fast body of
+    // `LdaGlobalInsideTypeof` leaves it to its cold body, which hits there), a lexical binding
+    // and a name that is not there.
+    Case {
+        path: "ic-global",
+        name: "typeof of a global at a polymorphic site, a let binding and a missing name",
+        src: "var g = 'v'; let L = 1;\n\
+              (function () {\n\
+                function t() { return typeof g + typeof L + typeof q; }\n\
+                var G = globalThis, r = [];\n\
+                for (var i = 0; i < 12; i++) { r.push(t()); G['p' + (i % 4)] = i; }\n\
+                G.q = 0; r.push(t()); delete G.q; r.push(t()); g = 2; r.push(t());\n\
+                print(r.join());\n\
+              })();",
+        spec: Some(
+            "var g = 'v'; let L = 1;\n\
+             (function () {\n\
+               var R = Reflect, G = globalThis;\n\
+               function t() { return typeof R.get(G, 'g') + typeof L + typeof R.get(G, 'q'); }\n\
+               var r = [];\n\
+               for (var i = 0; i < 12; i++) { r.push(t()); G['p' + (i % 4)] = i; }\n\
+               G.q = 0; r.push(t()); delete G.q; r.push(t()); g = 2; r.push(t());\n\
+               print(r.join());\n\
              })();",
         ),
     },

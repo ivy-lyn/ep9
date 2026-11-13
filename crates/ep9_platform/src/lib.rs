@@ -13,15 +13,17 @@
 //! | `unwind` | `.eh_frame` and Win64 UNWIND_INFO encoders; registration; native stack walk | libgcc / libunwind / RtlAddGrowableFunctionTable | `unwind` (`jit` implies it) |
 //! | [`shared_mem`] | shared-memory access outside the Rust model: per width 1, 2, 4, 8 a racy load and store, SeqCst load, store, exchange, compare-exchange and fetch ops, and a racy copy (TypedArray TA-4, V13-D8) | `asm!` on aarch64 and x86-64; Rust atomics under `cfg(miri)` | always |
 //! | [`waiters`] | the process waiter list of `Atomics.wait`, `waitAsync` and `notify`, keyed by (block serial, byte index), and the per-isolate [`waiters::Agent`] (inbox, `[[CanBlock]]`) | `Mutex`, `Condvar` | always |
-//! | [`unit_text`] | [`unit_text::UnitText`]: unit text in a code-range chunk, written once, then RX (A2, M7-P4); with `jit` or a `MAP_JIT` range through a `jit` write window, else commit RW, copy, icache flush, protect RX | mprotect / VirtualProtect | always |
+//! | [`unit_text`] | [`unit_text::UnitText`]: unit text in a code-range chunk, written once, then RX (A2, M7-P4); with `jit` or a `MAP_JIT` range through a `jit` write window, else commit RW, copy, icache flush, protect RX; or a linked text in place ([`unit_text::UnitText::linked`]) | mprotect / VirtualProtect | always |
+//! | [`linked`] | static registration of a linked `.o` unit (H35 S1, H35-Q3; M8-P3): [`linked::LinkedUnit`], the record the `ep9_unit` writer emits; [`linked::register`]; [`linked::linked_text`] | the static linker | always |
 //!
 //! Unit tests build `jit` and `unwind` without the features, so `cargo test --workspace` runs
 //! their tests.
 //!
-//! Not built yet: signals and SEH handlers; `.o` units (H35: the static-link unit form).
+//! Not built yet: signals and SEH handlers.
 
 #[cfg(any(feature = "jit", test))]
 pub mod jit;
+pub mod linked;
 pub mod shared_mem;
 pub mod spill;
 pub mod stack;

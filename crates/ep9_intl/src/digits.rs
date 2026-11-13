@@ -179,6 +179,20 @@ impl RoundingMode {
             .map(|i| Self::ALL[i])
     }
 
+    /// The mode that rounds -x to the negative of x rounded with `self`: ceil and floor swap,
+    /// halfCeil and halfFloor swap, the other modes do not read the sign. So
+    /// GetUnsignedRoundingMode (§16.5.16) gives the same unsigned mode for (`self`, x) and
+    /// (the result, -x).
+    pub(crate) fn for_negated(self) -> RoundingMode {
+        match self {
+            RoundingMode::Ceil => RoundingMode::Floor,
+            RoundingMode::Floor => RoundingMode::Ceil,
+            RoundingMode::HalfCeil => RoundingMode::HalfFloor,
+            RoundingMode::HalfFloor => RoundingMode::HalfCeil,
+            other => other,
+        }
+    }
+
     /// GetUnsignedRoundingMode ( roundingMode, sign ) (§16.5.16) for a value with the sign
     /// `negative`.
     fn unsigned(self, negative: bool) -> UnsignedRoundingMode {
