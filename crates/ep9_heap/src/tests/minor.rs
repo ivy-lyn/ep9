@@ -1167,3 +1167,86 @@ fn the_budget_after_a_gc_is_the_old_bytes() {
     heap.verify().expect("verifier");
     heap.drop_global(g);
 }
+
+/// The S1 budget cap (`MAX_S1_BUDGET`, Codex r1 on LEVER-7, M8-P4), the bounded-memory form:
+/// about 76 MiB of rooted old bytes, above the cap (72 MiB) and below twice it, then young
+/// cells that all die. Each budget GC is minor and comes after the cap (within a page), not
+/// after the old bytes, so the heap before a minor GC holds at most the old bytes + 72 MiB.
+/// Without the cap (5084c6c3 to 61418822) the first minor GC comes after the old bytes (about
+/// 76 MiB), and the test fails. Old bytes up to 72 MiB keep the LEVER-7 budget (the test
+/// above); `the_s1_budget_rule` checks all three bands of the rule.
+#[test]
+#[cfg_attr(miri, ignore = "76 MiB of old cells")]
+fn the_s1_budget_stops_at_the_cap() {
+    // `MAX_S1_BUDGET` as a literal, so the test also builds on a tree without the const.
+    const CAP: u64 = 72 << 20;
+    // An initial budget below the cap: the budget after a GC can only be the cap here.
+    let heap = gen_heap(false, |c| c.initial_budget = 64 << 20);
+    // 76 rooted nodes of about 1 MiB (LOS cells). A major GC every 38 nodes keeps the budget
+    // GCs out (no minor GC, so the nursery policy for high survival never starts).
+    let root = new_node(&heap, 0, 76);
+    let g = heap.new_global(root.to_value());
+    for i in 0..76u32 {
+        if i % 38 == 0 {
+            major(&heap);
+        }
+        let big = new_node(&heap, i + 1, 131_000);
+        store(&heap, root, i as usize, big.to_value());
+    }
+    major(&heap);
+    let live = heap.stats().last_marked_bytes as u64;
+    assert!(
+        live > CAP + 2 * PAGE_SIZE as u64 && live < 2 * CAP,
+        "{live} live bytes"
+    );
+    // Young nodes of 4,016 B that all die: the old bytes stay `live`, below the major limit
+    // (2 * live). 20,000 of them: about 80 MB, one window of the cap (more costs memory: the
+    // sweep after a minor GC is lazy or concurrent, so the next window takes fresh pages).
+    let gcs = budget_gcs(&heap, 20_000, |i| {
+        new_node(&heap, 1_000 + i, 500);
+    });
+    assert!(!gcs.is_empty(), "{gcs:?}");
+    for (k, &(minor, bytes)) in gcs.iter().enumerate() {
+        assert!(minor, "GC {k} is major: {gcs:?}");
+        assert!(
+            bytes > CAP - PAGE_SIZE as u64 && bytes <= CAP + PAGE_SIZE as u64,
+            "GC {k}: {bytes} bytes before it, cap {CAP}, {live} old bytes: {gcs:?}"
+        );
+    }
+    heap.verify().expect("verifier");
+    heap.drop_global(g);
+}
+
+/// `s1_budget` (LEVER-7 and its cap), all three bands with no heap: old bytes up to
+/// `MAX_S1_BUDGET` give the old bytes; 72-144 MiB give the cap; from 144 MiB on, half the old
+/// bytes (the rule before LEVER-7). The budget is never below the initial budget and, above
+/// it, never more than `max(MAX_S1_BUDGET, old bytes / 2)`.
+#[test]
+fn the_s1_budget_rule() {
+    use crate::heap::{MAX_S1_BUDGET, s1_budget};
+    const MIB: usize = 1 << 20;
+    assert_eq!(MAX_S1_BUDGET, 72 * MIB);
+    // Band 1: the old bytes (the initial budget is the floor).
+    assert_eq!(s1_budget(8 * MIB, 2 * MIB), 8 * MIB);
+    assert_eq!(s1_budget(8 * MIB, 40 * MIB), 40 * MIB);
+    assert_eq!(s1_budget(8 * MIB, 72 * MIB), 72 * MIB);
+    // Band 2: the cap.
+    assert_eq!(s1_budget(8 * MIB, 72 * MIB + 1), 72 * MIB);
+    assert_eq!(s1_budget(8 * MIB, 80 * MIB), 72 * MIB);
+    assert_eq!(s1_budget(8 * MIB, 144 * MIB), 72 * MIB);
+    // Band 3: half the old bytes.
+    assert_eq!(s1_budget(8 * MIB, 144 * MIB + 2), 72 * MIB + 1);
+    assert_eq!(s1_budget(8 * MIB, 1024 * MIB), 512 * MIB);
+    // An initial budget above the rule wins.
+    assert_eq!(s1_budget(100 * MIB, 80 * MIB), 100 * MIB);
+    // The bound, on a sweep of old sizes (1 MiB to 1 GiB, odd steps).
+    for old in (MIB..=1024 * MIB).step_by(MIB + 4_099) {
+        let b = s1_budget(PAGE_SIZE, old);
+        assert!(b <= MAX_S1_BUDGET.max(old / 2), "old {old}: budget {b}");
+        if old <= MAX_S1_BUDGET {
+            assert_eq!(b, old, "old {old}");
+        } else {
+            assert!(b >= old / 2 && b >= MAX_S1_BUDGET, "old {old}: budget {b}");
+        }
+    }
+}

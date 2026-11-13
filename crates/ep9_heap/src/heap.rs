@@ -46,9 +46,9 @@
 //!     logs -> sweep: frees the unmarked (dead young) cells, keeps every mark (survivors
 //!     become old)
 //!   sweep: frees the unmarked cells and keeps the mark bits of the others (old = marked)
-//!   policy: a minor GC when the allocation budget is spent (budget = max(initial budget,
-//!     old bytes / 2)); a major GC once the old bytes pass twice the last major GC's live
-//!     bytes (est.), after a minor GC with high survival (Inner::after_gc), or on no memory
+//!   policy: a minor GC when the allocation budget is spent (budget = s1_budget: the old bytes
+//!     up to 72 MiB, at least half of them); a major GC once the old bytes pass twice the last
+//!     major GC's live bytes (est.), after a minor GC with high survival (after_gc), or no memory
 //!
 //! verify_after_gc (GC-stress turns it on): the verify costs no second trace of the heap
 //!   mark:  a checked mark (trace.rs) checks every edge, weak slot, word0 shape, kind, size
@@ -112,7 +112,7 @@ pub struct HeapConfig {
     /// default): no callback.
     pub near_limit: Option<fn(committed: usize, limit: usize) -> usize>,
     /// Bytes allocated before the first GC. Later budgets are `max(this, live bytes)` (S0) or
-    /// `max(this, old bytes)` (S1, `Inner::after_gc`), so the heap may double between GCs.
+    /// `max(this, min(old bytes, 72 MiB), old bytes / 2)` (S1, `s1_budget`).
     pub initial_budget: usize,
     /// GC-stress: collect before every Nth allocation. 0 = off, 1 = every allocation. A
     /// value above 0 also turns on the process-wide E2 check
@@ -1469,8 +1469,8 @@ impl Inner {
             self.major_limit = initial.max(marked_bytes).saturating_mul(2);
         }
         self.next_major = self.old_bytes > self.major_limit;
-        // A minor GC sweeps every page and traces logged old hosts again: budget = old bytes.
-        self.budget = initial.max(self.old_bytes);
+        // A minor GC sweeps every page and traces logged old hosts again: about the old bytes.
+        self.budget = s1_budget(initial, self.old_bytes);
         // The nursery policy (S2a part 2). A minor GC that kept most young bytes
         // freed little: its trace mostly promoted cells that the next major GC traces again.
         // So the GCs skip the minor GCs: the next budget GC is major, once the heap holds 5/2
@@ -2557,6 +2557,24 @@ fn next_free_run(page: Page, line: &mut usize) -> Option<(usize, usize)> {
     // SAFETY: lines start..l lie inside the line-mark array of this committed page.
     unsafe { page.line_marks().add(start).write_bytes(1, l - start) };
     Some((page.addr() + start * LINE_SIZE, page.addr() + l * LINE_SIZE))
+}
+
+/// The cap of the S1 budget where it is more than half the old bytes (`s1_budget`; LEVER-7,
+/// M8-P4, Codex r1). Before a minor GC the heap holds the old bytes plus the budget, and the
+/// dead young bytes count until the sweep. A budget of all the old bytes (LEVER-7 alone) makes
+/// that peak twice the old bytes, not 3/2 of them (the rule before LEVER-7), with no bound:
+/// with `max_heap_bytes` unset (the default) only the OS stops it, and a Linux commit with
+/// MAP_NORESERVE does not fail. With the cap the peak is at most 36 MiB above the old rule
+/// (at 72 MiB of old bytes), and from 144 MiB of old bytes on the budget is half the old bytes
+/// again. 72 MiB is the largest young generation of V8's non-moving minor GC (MinorMS). Every
+/// budget GC of octane-typescript asks for less (65 MiB at most), so it keeps the LEVER-7 gain.
+pub(crate) const MAX_S1_BUDGET: usize = 72 << 20;
+
+/// The S1 budget after a GC (`Inner::after_gc`): `max(initial, min(old bytes,
+/// MAX_S1_BUDGET), old bytes / 2)`. A minor GC sweeps every page and traces the logged old
+/// hosts again, so a larger budget runs fewer of them (LEVER-7: about the old bytes).
+pub(crate) fn s1_budget(initial: usize, old_bytes: usize) -> usize {
+    old_bytes.min(MAX_S1_BUDGET).max(old_bytes / 2).max(initial)
 }
 
 /// Per-thread count of pages that an S1 sweep did not walk (no dead cell), for the tests only.
