@@ -2,3 +2,7 @@
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
 0x4e00   39.0         constructor  0       "DateTimeFormat"  (%Intl.DateTimeFormat%)
+0x4e01   39.1         method       1       "supportedLocalesOf"  (%Intl.DateTimeFormat%.supportedLocalesOf w-c)
+0x4e02   39.2         getter       0       "format"  (%Intl.DateTimeFormat.prototype%.format --c)
+0x4e03   39.3         method       1       "formatToParts"  (%Intl.DateTimeFormat.prototype%.formatToParts w-c)
+0x4e04   39.4         method       0       "resolvedOptions"  (%Intl.DateTimeFormat.prototype%.resolvedOptions w-c)

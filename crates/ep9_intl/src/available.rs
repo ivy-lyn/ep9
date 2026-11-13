@@ -183,6 +183,27 @@ pub fn time_zones() -> &'static [&'static str] {
     ep9_temporal::tzdb::zone_ids()
 }
 
+/// GetAvailableNamedTimeZoneIdentifier ( timeZoneIdentifier ) (ECMA-262 §21.4.1.22): for an
+/// available named zone (any case), its `[[Identifier]]` (the IANA id as the tz data spells
+/// it, case-normalized: "asia/calcutta" -> "Asia/Calcutta", "utc" -> "UTC"; a link stays a
+/// link) and its `[[PrimaryIdentifier]]` ("Asia/Kolkata"; "UTC" for the UTC links). `None`
+/// for a name the Temporal tz data does not have (ECMA-402 §11 timeZone: a RangeError).
+/// The case-normalized id comes from the ICU4X IANA data; an id that it does not have takes
+/// the primary id's spelling if they match without case, else the primary id.
+pub fn named_time_zone(id: &str) -> Option<(String, &'static str)> {
+    use icu_time::TimeZone;
+    use icu_time::zone::iana::IanaParserExtended;
+    let primary = ep9_temporal::tzdb::canonical_zone(id)?;
+    let parsed = IanaParserExtended::new().parse(id);
+    let identifier =
+        if parsed.time_zone != TimeZone::UNKNOWN && parsed.normalized.eq_ignore_ascii_case(id) {
+            parsed.normalized.to_string()
+        } else {
+            primary.to_string()
+        };
+    Some((identifier, primary))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
