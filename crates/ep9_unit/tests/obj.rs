@@ -13,6 +13,8 @@
 //! | `each_target_object_has_its_sections_and_no_text_relocation` | 5 targets: the section names of `section_names`, the text and the container unchanged, zero text relocations (H35 S5), 2 record relocations, one unwind relocation per FDE (COFF: 3 per entry), the record symbol; Mach-O: a local symbol at each FDE start |
 //! | `the_writer_refuses_what_has_no_object_form` | a bad symbol, no text, Windows on AArch64, a bad unwind section |
 //! | `the_writer_refuses_short_unwind_records` | ELF and Mach-O: an FDE of length 4 or 12 and a CIE of length 4 are ObjError::Unwind, not a panic |
+//! | `the_writer_bounds_the_cie_leb128_fields` | the 4 unix targets: a CIE LEB128 field with payload bits past 64 or over 10 bytes is ObjError::Unwind; the maximum 10-byte values and the usual CIE write, the CIE unchanged but for its encoding byte (Codex M8-P3 r2 #1) |
+//! | `the_cie_leb128_fields_match_a_reference_decoder` | AArch64 ELF: the 3 CIE LEB128 fields as 1 to 12 bytes (288 cases): no panic; a CIE writes only when a 128-bit reference decoder reads the field in 64 bits |
 //! | `the_coff_writer_refuses_over_65535_pdata_relocations` | 21,845 RUNTIME_FUNCTION entries (65,535 relocations) write; one more is ObjError::Unwind |
 //! | `check_linked_needs_the_same_text` | `check_linked` is `check` when the linked bytes are the text, else Bytecode |
 //! | `the_object_links_and_runs_on_the_host` | the 4 CI targets (host only): the static linker takes the object; both functions run in place; a panic unwinds through the frame of each |
@@ -75,24 +77,36 @@ fn record(out: &mut Vec<u8>, body: &[u8]) {
     out.resize(out.len() + len - body.len(), 0);
 }
 
-/// The unix unwind section of form 1 (module doc of `ep9_vm` `unit_loader.rs`): one CIE, one
-/// FDE over `0..len` and one over `SECOND..SECOND + len` of the text, the zero terminator.
-fn eh_unwind(arch: u8, len: usize) -> Vec<u8> {
-    let (cie_tail, fde_insns): (&[u8], &[u8]) = if arch == target_arch::AARCH64 {
-        // code align 4, data align -8, return address x30; CFA = sp.
+/// The CIE fields after "zR\0" and the FDE instructions of a target.
+fn cie_and_fde(arch: u8) -> (&'static [u8], &'static [u8]) {
+    if arch == target_arch::AARCH64 {
+        // code align 4, data align -8, return address x30, augmentation length 1, FDE
+        // encoding 0 (absptr); CFA = sp.
         // After stp: CFA = sp + 16, x30 at CFA - 8, x29 at CFA - 16.
         (
             &[4, 0x78, 30, 1, 0, 0x0c, 31, 0],
             &[0, 0x41, 0x0e, 16, 0x9e, 1, 0x9d, 2],
         )
     } else {
-        // code align 1, data align -8, return address 16; CFA = rsp + 8, ra at CFA - 8.
+        // code align 1, data align -8, return address 16, augmentation length 1, FDE encoding
+        // 0 (absptr); CFA = rsp + 8, ra at CFA - 8.
         // After push rbp: CFA = rsp + 16, rbp at CFA - 16; after mov: CFA = rbp + 16.
         (
             &[1, 0x78, 16, 1, 0, 0x0c, 7, 8, 0x90, 1],
             &[0, 0x41, 0x0e, 16, 0x86, 2, 0x43, 0x0d, 6],
         )
-    };
+    }
+}
+
+/// The unix unwind section of form 1 (module doc of `ep9_vm` `unit_loader.rs`): one CIE, one
+/// FDE over `0..len` and one over `SECOND..SECOND + len` of the text, the zero terminator.
+fn eh_unwind(arch: u8, len: usize) -> Vec<u8> {
+    eh_unwind_with(arch, len, cie_and_fde(arch).0)
+}
+
+/// [`eh_unwind`] with `cie_tail` as the CIE fields after "zR\0".
+fn eh_unwind_with(arch: u8, len: usize, cie_tail: &[u8]) -> Vec<u8> {
+    let fde_insns = cie_and_fde(arch).1;
     let mut out = Vec::new();
     let mut cie = vec![0, 0, 0, 0, 1, b'z', b'R', 0];
     cie.extend_from_slice(cie_tail);
@@ -638,6 +652,189 @@ fn the_writer_refuses_short_unwind_records() {
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The LEB128 fields of a CIE (Codex M8-P3 r2 #1).
+
+/// The CIE LEB128 fields: (name, index in the CIE fields of `cie_and_fde`, signed).
+const CIE_LEBS: [(&str, usize, bool); 3] = [
+    ("code alignment", 0, false),
+    ("data alignment", 1, true),
+    ("augmentation length", 3, false),
+];
+
+/// The CIE fields of `arch` with the LEB128 field at `index` written as `bytes`.
+fn cie_tail_with(arch: u8, index: usize, bytes: &[u8]) -> Vec<u8> {
+    let mut t = cie_and_fde(arch).0.to_vec();
+    t.splice(index..=index, bytes.iter().copied());
+    t
+}
+
+/// The reference decoder of the test: the value of a LEB128 field in 128 bits, `None` when it
+/// does not fit 64 bits (`u64`, or `i64` when `signed`) or has more than 10 bytes (the most
+/// that 64 bits need: the writer's limit).
+fn leb_reference(bytes: &[u8], signed: bool) -> Option<i128> {
+    if bytes.len() > 10 {
+        return None;
+    }
+    let mut v = 0i128;
+    for (i, b) in bytes.iter().enumerate() {
+        v |= i128::from(b & 0x7f) << (7 * i);
+    }
+    let bits = 7 * bytes.len();
+    if signed && bytes.last().is_some_and(|b| b & 0x40 != 0) {
+        v -= 1i128 << bits;
+    }
+    let fits = if signed {
+        (i128::from(i64::MIN)..=i128::from(i64::MAX)).contains(&v)
+    } else {
+        (0..=i128::from(u64::MAX)).contains(&v)
+    };
+    fits.then_some(v)
+}
+
+/// Writes the object of a unit whose CIE fields are `cie_tail`; on success, checks that the
+/// object's CIE is the unit's CIE with only the FDE encoding byte changed (at `enc`, the
+/// offset of the encoding byte in the CIE record).
+fn write_with_cie(
+    host: &HostInfo,
+    (arch, abi, format): (u8, u8, ObjFormat),
+    cie_tail: &[u8],
+    enc: usize,
+) -> std::thread::Result<Result<(), ObjError>> {
+    let (text, _) = code(arch, abi);
+    let len = if arch == target_arch::AARCH64 {
+        4 * A64_FN.len()
+    } else {
+        X64_SYSV_TEXT.len()
+    };
+    let unwind = eh_unwind_with(arch, len, cie_tail);
+    let unit = unit_with(host, arch, abi, &text, unwind.clone());
+    std::panic::catch_unwind(|| write_object(&unit, "s")).map(|r| {
+        r.map(|o| {
+            let cie_len = 4 + u32_at(&unwind, 0) as usize;
+            let mut want = unwind[..cie_len].to_vec();
+            want[enc] = if format == ObjFormat::Elf { 0x1b } else { 0x10 };
+            let obj = read(format, &o);
+            let eh = &obj.sec(section_names(format)[3]).data;
+            assert_eq!(eh[..cie_len], want, "arch {arch}, abi {abi}: the CIE");
+        })
+    })
+}
+
+/// Codex M8-P3 r2 #1: the CIE LEB128 reader of `eh_frame` kept no width bound. It dropped the
+/// payload bits past bit 63, so an augmentation length of `81 80 80 80 80 80 80 80 80 02`
+/// (2^64 + 1) read as 1 and the CIE went into the object; it read any number of continuation
+/// bytes (11 bytes for 0); and its `shift += 7` overflowed an `i32` after about 307 M
+/// continuation bytes (a panic in overflow-checked builds). It also read the data alignment
+/// (a signed LEB128) as unsigned. The reader now refuses payload bits past 64 and more than 10
+/// bytes (ObjError::Unwind), and reads the data alignment with the sign rules. The 4 unix
+/// targets: the over-width final byte and the 11-byte value of each field are ObjError::Unwind;
+/// the maximum 10-byte values (u64::MAX, i64::MIN, i64::MAX, a padded 1) and the usual CIE
+/// write, with the CIE unchanged but for its FDE encoding byte.
+#[test]
+fn the_writer_bounds_the_cie_leb128_fields() {
+    let host = HostInfo::current();
+    let nine = |b: u8| vec![b; 9];
+    let with = |head: Vec<u8>, last: &[u8]| [head, last.to_vec()].concat();
+    // (field, bytes, valid)
+    let cases: Vec<(usize, Vec<u8>, bool)> = vec![
+        // The over-width final byte (the tenth byte holds bit 63 only).
+        (3, with(with(vec![0x81], &[0x80; 8]), &[2]), false),
+        (0, with(nine(0x80), &[2]), false),
+        (0, with(nine(0xff), &[0x7f]), false),
+        (1, with(nine(0x80), &[1]), false),
+        (1, with(nine(0xff), &[0x7e]), false),
+        // The 11-byte continuation (the value 0 and the value 1).
+        (0, with(vec![0x80; 10], &[0]), false),
+        (1, with(vec![0x80; 10], &[0]), false),
+        (3, with(with(vec![0x81], &[0x80; 9]), &[0]), false),
+        // The maximum valid 10-byte values.
+        (0, with(nine(0xff), &[1]), true),
+        (1, with(nine(0x80), &[0x7f]), true),
+        (1, with(nine(0xff), &[0]), true),
+        (1, with(nine(0xff), &[0x7f]), true),
+        (3, with(with(vec![0x81], &[0x80; 8]), &[0]), true),
+    ];
+    let mut bad = Vec::new();
+    for target in TARGETS.into_iter().filter(|t| t.2 != ObjFormat::Coff) {
+        let arch = target.0;
+        // The usual CIE (no change): the encoding byte is at 16.
+        let o = write_with_cie(&host, target, cie_and_fde(arch).0, 16);
+        if !matches!(o, Ok(Ok(()))) {
+            bad.push(format!(
+                "arch {arch}, abi {}: the usual CIE: {o:?}",
+                target.1
+            ));
+        }
+        for (index, bytes, valid) in &cases {
+            assert_eq!(
+                leb_reference(bytes, *index == 1).is_some_and(|v| *index != 3 || v == 1),
+                *valid,
+                "{bytes:02x?}"
+            );
+            let enc = 16 + bytes.len() - 1;
+            let o = write_with_cie(&host, target, &cie_tail_with(arch, *index, bytes), enc);
+            let ok = if *valid {
+                matches!(o, Ok(Ok(())))
+            } else {
+                matches!(o, Ok(Err(ObjError::Unwind(_))))
+            };
+            if !ok {
+                let what = format!("arch {arch}, abi {}, field {index}", target.1);
+                bad.push(format!("{what}: {bytes:02x?}: {o:?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The length probe of the JIT reviewer (M8-P3, review_obj_lengths), on the 3 CIE LEB128
+/// fields: each field as 1 to 12 bytes (the first byte 0x81, the next continuation bytes all
+/// 0x80, or from 9 bytes also all 0xff; the last byte one of 6), on AArch64 ELF (the CIE parse
+/// is the same for each target). No case panics, and the writer takes a CIE only when the
+/// reference decoder reads the field in 64 bits (the augmentation length: only the value 1).
+#[test]
+fn the_cie_leb128_fields_match_a_reference_decoder() {
+    let host = HostInfo::current();
+    let lasts = [0x00, 0x01, 0x02, 0x3f, 0x40, 0x7f];
+    let mut bad = Vec::new();
+    let mut n = 0;
+    for target in [TARGETS[1]] {
+        for (name, index, signed) in CIE_LEBS {
+            for count in 1..=12usize {
+                let fills: &[u8] = if count > 8 { &[0x80, 0xff] } else { &[0x80] };
+                for &fill in fills {
+                    for last in lasts {
+                        let mut bytes = Vec::new();
+                        if count > 1 {
+                            bytes.push(0x81);
+                            bytes.resize(count - 1, fill);
+                        }
+                        bytes.push(last);
+                        let want =
+                            leb_reference(&bytes, signed).is_some_and(|v| index != 3 || v == 1);
+                        // Each field is before the encoding byte (16 in the usual CIE).
+                        let enc = 16 + bytes.len() - 1;
+                        let tail = cie_tail_with(target.0, index, &bytes);
+                        let o = write_with_cie(&host, target, &tail, enc);
+                        n += 1;
+                        let ok = match o {
+                            Ok(Ok(())) => want,
+                            Ok(Err(ObjError::Unwind(_))) => !want,
+                            _ => false,
+                        };
+                        if !ok {
+                            bad.push(format!("{target:?} {name}: {bytes:02x?}: {o:?}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(n, 3 * (8 * 6 + 4 * 2 * 6), "cases");
+    assert!(bad.is_empty(), "{} of {n}: {bad:#?}", bad.len());
 }
 
 /// JIT review M8-P3 F4, Codex M8-P3 r1 #2: a COFF section header counts its relocations in

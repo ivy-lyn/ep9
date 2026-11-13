@@ -228,20 +228,50 @@ enum EhForm {
     Pcrel8,
 }
 
+/// Reads an unsigned LEB128 value of 64 bits at `*at`. `None` when the bytes end early, when
+/// a payload bit is past bit 63 (the tenth byte holds bit 63 only), or when the value has more
+/// than 10 bytes (Codex M8-P3 r2 #1: the old reader dropped those bits, so
+/// `81 80 80 80 80 80 80 80 80 02` read as 1, and its shift counter overflowed after about
+/// 307 M continuation bytes).
 fn uleb(b: &[u8], at: &mut usize) -> Option<u64> {
     let mut v = 0u64;
-    let mut shift = 0;
-    loop {
+    for shift in (0..64).step_by(7) {
         let byte = *b.get(*at)?;
         *at += 1;
-        if shift < 64 {
-            v |= u64::from(byte & 0x7f) << shift;
+        let low = byte & 0x7f;
+        if shift == 63 && low > 1 {
+            return None;
         }
-        shift += 7;
+        v |= u64::from(low) << shift;
         if byte & 0x80 == 0 {
             return Some(v);
         }
     }
+    None
+}
+
+/// Reads a signed LEB128 value of 64 bits at `*at`, with the [`uleb`] limits. The tenth byte
+/// holds bit 63 and the sign: its payload is 0x00 (bit 63 clear) or 0x7f (bit 63 set, the
+/// other bits copies of it).
+fn sleb(b: &[u8], at: &mut usize) -> Option<i64> {
+    let mut v = 0i64;
+    for shift in (0..64).step_by(7) {
+        let byte = *b.get(*at)?;
+        *at += 1;
+        let low = byte & 0x7f;
+        if shift == 63 && low != 0 && low != 0x7f {
+            return None;
+        }
+        // At shift 63 only bit 0 of `low` stays (bit 63); the bits past it go out.
+        v |= i64::from(low) << shift;
+        if byte & 0x80 == 0 {
+            if shift + 7 < 64 && low & 0x40 != 0 {
+                v |= -1i64 << (shift + 7);
+            }
+            return Some(v);
+        }
+    }
+    None
 }
 
 fn u32_at(b: &[u8], at: usize) -> Option<u32> {
@@ -279,15 +309,16 @@ fn eh_frame(src: &[u8], text_len: usize, form: EhForm) -> Result<EhFrame, ObjErr
         let rec = &src[at..end];
         let id = u32_at(rec, 4).ok_or(bad("a record ends early"))?;
         if id == 0 {
-            // CIE: version 1, "zR", code and data alignment, return register (u8), augmentation
-            // length 1, the FDE encoding (absptr).
+            // CIE: version 1, "zR", code alignment (ULEB128) and data alignment (SLEB128), return
+            // register (u8), augmentation length 1, the FDE encoding (absptr). A LEB128 field
+            // that ends early or does not fit 64 bits is an error.
             let mut p = 8;
             if rec.get(p) != Some(&1) || rec.get(p + 1..p + 4) != Some(b"zR\0") {
                 return Err(bad("a CIE that is not version 1 with \"zR\""));
             }
             p += 4;
-            uleb(rec, &mut p).ok_or(bad("a CIE ends early"))?;
-            uleb(rec, &mut p).ok_or(bad("a CIE ends early"))?;
+            uleb(rec, &mut p).ok_or(bad("a CIE code alignment that is not a 64-bit ULEB128"))?;
+            sleb(rec, &mut p).ok_or(bad("a CIE data alignment that is not a 64-bit SLEB128"))?;
             p += 1;
             if uleb(rec, &mut p) != Some(1) || rec.get(p) != Some(&0) {
                 return Err(bad("a CIE whose FDE encoding is not absptr"));
@@ -819,4 +850,51 @@ fn coff(p: &Parts<'_>, pdata: &[u8]) -> Vec<u8> {
     }
     out[..hdr.len()].copy_from_slice(&hdr);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sleb, uleb};
+
+    /// Reads all of `b` as one value: `None` when the read fails or stops before the end.
+    fn whole<T>(b: &[u8], f: fn(&[u8], &mut usize) -> Option<T>) -> Option<T> {
+        let mut at = 0;
+        f(b, &mut at).filter(|_| at == b.len())
+    }
+
+    /// Codex M8-P3 r2 #1: the values at the 64-bit limits, the over-width tenth byte and the
+    /// 11-byte form. The old `uleb` read `81 80 .. 80 02` as 1 and the 11-byte zero as 0.
+    #[test]
+    fn leb128_reads_are_bounded_to_64_bits() {
+        let ten = |fill: u8, last: u8| [vec![fill; 9], vec![last]].concat();
+        assert_eq!(whole(&[0x02], uleb), Some(2));
+        assert_eq!(whole(&[0xe5, 0x8e, 0x26], uleb), Some(624_485));
+        assert_eq!(whole(&ten(0xff, 0x01), uleb), Some(u64::MAX));
+        assert_eq!(whole(&ten(0x80, 0x01), uleb), Some(1 << 63));
+        assert_eq!(whole(&[0x81, 0x80, 0x00], uleb), Some(1));
+        let mut over = vec![0x81];
+        over.extend_from_slice(&[0x80; 8]);
+        over.push(0x02);
+        assert_eq!(whole(&over, uleb), None);
+        assert_eq!(whole(&ten(0xff, 0x7f), uleb), None);
+        assert_eq!(whole(&[vec![0x80; 10], vec![0]].concat(), uleb), None);
+        assert_eq!(whole(&[0x80, 0x80], uleb), None);
+
+        assert_eq!(whole(&[0x78], sleb), Some(-8));
+        assert_eq!(whole(&[0x3f], sleb), Some(63));
+        assert_eq!(whole(&[0x40], sleb), Some(-64));
+        assert_eq!(whole(&[0xff, 0x7e], sleb), Some(-129));
+        assert_eq!(whole(&[0xc0, 0xbb, 0x78], sleb), Some(-123_456));
+        assert_eq!(whole(&ten(0x80, 0x7f), sleb), Some(i64::MIN));
+        assert_eq!(whole(&ten(0xff, 0x00), sleb), Some(i64::MAX));
+        assert_eq!(whole(&ten(0xff, 0x7f), sleb), Some(-1));
+        assert_eq!(
+            whole(&[vec![0x80; 8], vec![0x40]].concat(), sleb),
+            Some(-(1 << 62))
+        );
+        assert_eq!(whole(&ten(0x80, 0x01), sleb), None);
+        assert_eq!(whole(&ten(0xff, 0x7e), sleb), None);
+        assert_eq!(whole(&[vec![0xff; 10], vec![0x7f]].concat(), sleb), None);
+        assert_eq!(whole(&[0xff], sleb), None);
+    }
 }
