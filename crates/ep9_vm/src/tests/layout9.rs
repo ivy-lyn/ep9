@@ -162,11 +162,11 @@ fn elements_kinds_7_and_8() {
     elements::check(a).unwrap();
 }
 
-/// H20 part 2: ObjectClass 35 SharedArrayBuffer and 36 DataView (TA-D3), after the INTL W2
+/// H20 part 2: ObjectClass 36 SharedArrayBuffer and 37 DataView (TA-D3), after the INTL W3
 /// classes; ArrayBuffer keeps id 5. The build check below fails if a class is missing from
 /// `ObjectClass::ALL` or out of its id order.
 #[test]
-fn object_classes_35_and_36() {
+fn object_classes_36_and_37() {
     const _: () = {
         let all = ObjectClass::ALL;
         assert!(all.len() == ObjectClass::DataView as usize + 1);
@@ -182,10 +182,10 @@ fn object_classes_35_and_36() {
             ObjectClass::SharedArrayBuffer.id(),
             ObjectClass::DataView.id()
         ),
-        (35, 36)
+        (36, 37)
     );
     assert_eq!(ObjectClass::SharedArrayBuffer.name(), "SharedArrayBuffer");
     assert_eq!(ObjectClass::DataView.name(), "DataView");
-    assert_eq!(ObjectClass::from_id(36), Some(ObjectClass::DataView));
-    assert_eq!(ObjectClass::from_id(37), None);
+    assert_eq!(ObjectClass::from_id(37), Some(ObjectClass::DataView));
+    assert_eq!(ObjectClass::from_id(38), None);
 }

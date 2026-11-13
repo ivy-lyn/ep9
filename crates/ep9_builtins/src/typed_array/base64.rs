@@ -1,7 +1,7 @@
 //! The base64 and hex methods of `Uint8Array` (ES2026: `sec-uint8array.frombase64`,
 //! `sec-uint8array.fromhex`, `sec-uint8array.prototype.tobase64`,
 //! `sec-uint8array.prototype.setfrombase64`, `sec-uint8array.prototype.tohex`,
-//! `sec-uint8array.prototype.setfromhex`): module `base64`, block 42. Owner of the tables:
+//! `sec-uint8array.prototype.setfromhex`): module `base64`, block 43. Owner of the tables:
 //! TypedArray TA-4 R1; owner of the function bodies: TypedArray TA-4 R5 B64. The module joins
 //! the lazy group of `array_buffer` (TA-D14): each table entry targets `%Uint8Array%` or
 //! `%Uint8Array.prototype%`.
@@ -30,7 +30,7 @@
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-base64.txt`. The ids follow node v26's key order. A missing definition is
-//! appended at the end (42.6 and on), never inserted.
+//! appended at the end (43.6 and on), never inserted.
 
 use ep9_vm::abi::JsObject;
 use ep9_vm::{
@@ -42,7 +42,7 @@ use super::ctor::allocate;
 use crate::string::{MAX_LENGTH, units};
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 42;
+pub const BLOCK: u8 = 43;
 
 /// The builtin functions, in id order (append-only).
 pub const DEFS: &[BuiltinDef] = &[

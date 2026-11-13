@@ -1,7 +1,7 @@
-//! TypedArray objects (§23.2, `sec-typedarray-objects`): module `typed_array`, block 40. Owner
+//! TypedArray objects (§23.2, `sec-typedarray-objects`): module `typed_array`, block 41. Owner
 //! of this file: TypedArray TA-3 TA-CTORS R1 (design `docs/plan/notes/typedarray-design.md`
 //! §8.2). Makes `%TypedArray%`, `%TypedArray.prototype%` and the 12 TypedArray constructors
-//! with their prototypes (`IntrinsicId` 127-152), in the order of spec Table 71. The 12 global
+//! with their prototypes (`IntrinsicId` 129-154), in the order of spec Table 71. The 12 global
 //! keys are in the lazy group of `array_buffer` (TA-D14; `ep9_vm` builtins.rs `LAZY_GROUPS`).
 //! The `[[Prototype]]` of each constructor is `%TypedArray%` (§23.2.6): the VM's link list
 //! sets it when the group installs (`ep9_vm` builtins.rs `PROTO_LINKS`), as no table entry
@@ -12,11 +12,11 @@
 //! ctor.rs     (R2) %TypedArray%, the 12 constructors, get @@species, the getters buffer,
 //!                  byteLength, byteOffset and length (decision O3), the abstract operations
 //! from_of.rs  (R3) %TypedArray%.from and %TypedArray%.of
-//! proto.rs    (TA-4 R1) module typed_array_proto, block 41: the other
+//! proto.rs    (TA-4 R1) module typed_array_proto, block 42: the other
 //!                  %TypedArray.prototype% methods, @@toStringTag and @@iterator; their
 //!                  bodies are in proto_iter.rs (TA-4 R3), proto_copy.rs and species.rs
 //!                  (TA-4 R4)
-//! base64.rs   (TA-4 R1 tables, R5 bodies) module base64, block 42: the base64 and hex
+//! base64.rs   (TA-4 R1 tables, R5 bodies) module base64, block 43: the base64 and hex
 //!                  methods of Uint8Array and Uint8Array.prototype
 //! ```
 //!
@@ -31,7 +31,7 @@ use ep9_vm::{
 
 mod ctor;
 mod from_of;
-// TypedArray TA-4: blocks 41 (proto) and 42 (base64).
+// TypedArray TA-4: blocks 42 (proto) and 43 (base64).
 pub mod base64;
 pub mod proto;
 mod proto_copy;
@@ -39,7 +39,7 @@ mod proto_iter;
 mod species;
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 40;
+pub const BLOCK: u8 = 41;
 
 mod def {
     pub const TYPED_ARRAY: u16 = 0;

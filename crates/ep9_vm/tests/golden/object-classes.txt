@@ -37,5 +37,5 @@
   33  Segment Iterator
   34  Intl.DisplayNames
   35  Intl.RelativeTimeFormat
-  35  SharedArrayBuffer
-  36  DataView
+  36  SharedArrayBuffer
+  37  DataView

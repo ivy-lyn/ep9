@@ -1,7 +1,7 @@
-//! ArrayBuffer and SharedArrayBuffer (§25.1, §25.2): module `array_buffer`, block 38. Owner:
+//! ArrayBuffer and SharedArrayBuffer (§25.1, §25.2): module `array_buffer`, block 39. Owner:
 //! TypedArray TA-2 TA-BUFFERS (design `docs/plan/notes/typedarray-design.md` §8.2). Makes
 //! `%ArrayBuffer%`, `%ArrayBuffer.prototype%`, `%SharedArrayBuffer%` and
-//! `%SharedArrayBuffer.prototype%` (`IntrinsicId` 121-124). With `data_view` (block 39) they
+//! `%SharedArrayBuffer.prototype%` (`IntrinsicId` 123-126). With `data_view` (block 40) they
 //! are one lazy group of the global keys `ArrayBuffer`, `SharedArrayBuffer` and `DataView`
 //! (TA-D14; `ep9_vm` builtins.rs `LAZY_GROUPS`): realm init gives the keys their places, and
 //! the first use installs the group.
@@ -30,7 +30,7 @@ use ep9_vm::{
 };
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 38;
+pub const BLOCK: u8 = 39;
 
 mod def {
     pub const ARRAY_BUFFER: u16 = 0;

@@ -21,7 +21,7 @@
 //!                             list_format, segmenter, display_names, relative_time_format,
 //!                             35           36         37             38
 //!          array_buffer, data_view, typed_array, typed_array_proto, base64, atomics]
-//!          38            39         40           41                 42      43
+//!          39            40         41           42                 43      44
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -54,12 +54,12 @@ pub mod bigint;
 pub mod iterator;
 // M7-P3 SPEC-ERM: block 29.
 pub mod disposable;
-// TypedArray TA-2 TA-BUFFERS: blocks 38 and 39.
+// TypedArray TA-2 TA-BUFFERS: blocks 39 and 40.
 pub mod array_buffer;
 pub mod data_view;
-// TypedArray TA-3 TA-CTORS: block 40; TA-4: its modules proto (block 41) and base64 (42).
+// TypedArray TA-3 TA-CTORS: block 41; TA-4: its modules proto (block 42) and base64 (43).
 pub mod typed_array;
-// TypedArray TA-4 TA-ATOMICS: block 43.
+// TypedArray TA-4 TA-ATOMICS: block 44.
 pub mod atomics;
 
 use ep9_vm::{BuiltinModule, BuiltinTable};

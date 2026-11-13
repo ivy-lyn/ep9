@@ -349,95 +349,95 @@ pub enum IntrinsicId {
     /// `%Intl.RelativeTimeFormat.prototype%` (ECMA-402 §18.3, an ordinary object; made by `ep9_intl` relative_time_format.rs).
     IntlRelativeTimeFormatPrototype,
     // ---- TypedArray TA-2 TA-BUFFERS (§25.1-§25.3; H20 part 2, H13 "index ids (append-only)") ----
-    /// `%ArrayBuffer%` (§25.1.4; made by `ep9_builtins` array_buffer.rs, block 38).
+    /// `%ArrayBuffer%` (§25.1.4; made by `ep9_builtins` array_buffer.rs, block 39).
     ArrayBuffer,
     /// `%ArrayBuffer.prototype%` (§25.1.6, an ordinary object; made by `ep9_builtins`
     /// array_buffer.rs).
     ArrayBufferPrototype,
-    /// `%SharedArrayBuffer%` (§25.2.3; made by `ep9_builtins` array_buffer.rs, block 38).
+    /// `%SharedArrayBuffer%` (§25.2.3; made by `ep9_builtins` array_buffer.rs, block 39).
     SharedArrayBuffer,
     /// `%SharedArrayBuffer.prototype%` (§25.2.5, an ordinary object; made by `ep9_builtins`
     /// array_buffer.rs).
     SharedArrayBufferPrototype,
-    /// `%DataView%` (§25.3.2; made by `ep9_builtins` data_view.rs, block 39).
+    /// `%DataView%` (§25.3.2; made by `ep9_builtins` data_view.rs, block 40).
     DataView,
     /// `%DataView.prototype%` (§25.3.4, an ordinary object; made by `ep9_builtins`
     /// data_view.rs).
     DataViewPrototype,
     // ---- TypedArray TA-3 TA-CTORS (§23.2; H20 part 2, H13 "index ids (append-only)") ----
     /// `%TypedArray%` (§23.2.1, `sec-%typedarray%-intrinsic-object`; made by `ep9_builtins`
-    /// typed_array, block 40).
+    /// typed_array, block 41).
     TypedArray,
     /// `%TypedArray.prototype%` (§23.2.3, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     TypedArrayPrototype,
-    /// `%Int8Array%` (§23.2.5, Table 71 row 0; made by `ep9_builtins` typed_array, block 40).
+    /// `%Int8Array%` (§23.2.5, Table 71 row 0; made by `ep9_builtins` typed_array, block 41).
     Int8Array,
     /// `%Int8Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Int8ArrayPrototype,
-    /// `%Uint8Array%` (§23.2.5, Table 71 row 1; made by `ep9_builtins` typed_array, block 40).
+    /// `%Uint8Array%` (§23.2.5, Table 71 row 1; made by `ep9_builtins` typed_array, block 41).
     Uint8Array,
     /// `%Uint8Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Uint8ArrayPrototype,
-    /// `%Uint8ClampedArray%` (§23.2.5, Table 71 row 2; made by `ep9_builtins` typed_array, block 40).
+    /// `%Uint8ClampedArray%` (§23.2.5, Table 71 row 2; made by `ep9_builtins` typed_array, block 41).
     Uint8ClampedArray,
     /// `%Uint8ClampedArray.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Uint8ClampedArrayPrototype,
-    /// `%Int16Array%` (§23.2.5, Table 71 row 3; made by `ep9_builtins` typed_array, block 40).
+    /// `%Int16Array%` (§23.2.5, Table 71 row 3; made by `ep9_builtins` typed_array, block 41).
     Int16Array,
     /// `%Int16Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Int16ArrayPrototype,
-    /// `%Uint16Array%` (§23.2.5, Table 71 row 4; made by `ep9_builtins` typed_array, block 40).
+    /// `%Uint16Array%` (§23.2.5, Table 71 row 4; made by `ep9_builtins` typed_array, block 41).
     Uint16Array,
     /// `%Uint16Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Uint16ArrayPrototype,
-    /// `%Int32Array%` (§23.2.5, Table 71 row 5; made by `ep9_builtins` typed_array, block 40).
+    /// `%Int32Array%` (§23.2.5, Table 71 row 5; made by `ep9_builtins` typed_array, block 41).
     Int32Array,
     /// `%Int32Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Int32ArrayPrototype,
-    /// `%Uint32Array%` (§23.2.5, Table 71 row 6; made by `ep9_builtins` typed_array, block 40).
+    /// `%Uint32Array%` (§23.2.5, Table 71 row 6; made by `ep9_builtins` typed_array, block 41).
     Uint32Array,
     /// `%Uint32Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Uint32ArrayPrototype,
-    /// `%BigInt64Array%` (§23.2.5, Table 71 row 7; made by `ep9_builtins` typed_array, block 40).
+    /// `%BigInt64Array%` (§23.2.5, Table 71 row 7; made by `ep9_builtins` typed_array, block 41).
     BigInt64Array,
     /// `%BigInt64Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     BigInt64ArrayPrototype,
-    /// `%BigUint64Array%` (§23.2.5, Table 71 row 8; made by `ep9_builtins` typed_array, block 40).
+    /// `%BigUint64Array%` (§23.2.5, Table 71 row 8; made by `ep9_builtins` typed_array, block 41).
     BigUint64Array,
     /// `%BigUint64Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     BigUint64ArrayPrototype,
-    /// `%Float16Array%` (§23.2.5, Table 71 row 9; made by `ep9_builtins` typed_array, block 40).
+    /// `%Float16Array%` (§23.2.5, Table 71 row 9; made by `ep9_builtins` typed_array, block 41).
     Float16Array,
     /// `%Float16Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Float16ArrayPrototype,
-    /// `%Float32Array%` (§23.2.5, Table 71 row 10; made by `ep9_builtins` typed_array, block 40).
+    /// `%Float32Array%` (§23.2.5, Table 71 row 10; made by `ep9_builtins` typed_array, block 41).
     Float32Array,
     /// `%Float32Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Float32ArrayPrototype,
-    /// `%Float64Array%` (§23.2.5, Table 71 row 11; made by `ep9_builtins` typed_array, block 40).
+    /// `%Float64Array%` (§23.2.5, Table 71 row 11; made by `ep9_builtins` typed_array, block 41).
     Float64Array,
     /// `%Float64Array.prototype%` (§23.2.7, an ordinary object; made by `ep9_builtins`
     /// typed_array).
     Float64ArrayPrototype,
-    /// `%Atomics%` (§25.4, an ordinary object; made by `ep9_builtins` atomics, block 43).
+    /// `%Atomics%` (§25.4, an ordinary object; made by `ep9_builtins` atomics, block 44).
     Atomics,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 154] = [
+    pub const ALL: [IntrinsicId; 156] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -1016,39 +1016,39 @@ impl IntrinsicId {
             IntrinsicId::IntlDisplayNamesPrototype => Some(87),
             IntrinsicId::IntlRelativeTimeFormat => Some(88),
             IntrinsicId::IntlRelativeTimeFormatPrototype => Some(89),
-            IntrinsicId::ArrayBuffer => Some(88),
-            IntrinsicId::ArrayBufferPrototype => Some(89),
-            IntrinsicId::SharedArrayBuffer => Some(90),
-            IntrinsicId::SharedArrayBufferPrototype => Some(91),
-            IntrinsicId::DataView => Some(92),
-            IntrinsicId::DataViewPrototype => Some(93),
-            IntrinsicId::TypedArray => Some(94),
-            IntrinsicId::TypedArrayPrototype => Some(95),
-            IntrinsicId::Int8Array => Some(96),
-            IntrinsicId::Int8ArrayPrototype => Some(97),
-            IntrinsicId::Uint8Array => Some(98),
-            IntrinsicId::Uint8ArrayPrototype => Some(99),
-            IntrinsicId::Uint8ClampedArray => Some(100),
-            IntrinsicId::Uint8ClampedArrayPrototype => Some(101),
-            IntrinsicId::Int16Array => Some(102),
-            IntrinsicId::Int16ArrayPrototype => Some(103),
-            IntrinsicId::Uint16Array => Some(104),
-            IntrinsicId::Uint16ArrayPrototype => Some(105),
-            IntrinsicId::Int32Array => Some(106),
-            IntrinsicId::Int32ArrayPrototype => Some(107),
-            IntrinsicId::Uint32Array => Some(108),
-            IntrinsicId::Uint32ArrayPrototype => Some(109),
-            IntrinsicId::BigInt64Array => Some(110),
-            IntrinsicId::BigInt64ArrayPrototype => Some(111),
-            IntrinsicId::BigUint64Array => Some(112),
-            IntrinsicId::BigUint64ArrayPrototype => Some(113),
-            IntrinsicId::Float16Array => Some(114),
-            IntrinsicId::Float16ArrayPrototype => Some(115),
-            IntrinsicId::Float32Array => Some(116),
-            IntrinsicId::Float32ArrayPrototype => Some(117),
-            IntrinsicId::Float64Array => Some(118),
-            IntrinsicId::Float64ArrayPrototype => Some(119),
-            IntrinsicId::Atomics => Some(120),
+            IntrinsicId::ArrayBuffer => Some(90),
+            IntrinsicId::ArrayBufferPrototype => Some(91),
+            IntrinsicId::SharedArrayBuffer => Some(92),
+            IntrinsicId::SharedArrayBufferPrototype => Some(93),
+            IntrinsicId::DataView => Some(94),
+            IntrinsicId::DataViewPrototype => Some(95),
+            IntrinsicId::TypedArray => Some(96),
+            IntrinsicId::TypedArrayPrototype => Some(97),
+            IntrinsicId::Int8Array => Some(98),
+            IntrinsicId::Int8ArrayPrototype => Some(99),
+            IntrinsicId::Uint8Array => Some(100),
+            IntrinsicId::Uint8ArrayPrototype => Some(101),
+            IntrinsicId::Uint8ClampedArray => Some(102),
+            IntrinsicId::Uint8ClampedArrayPrototype => Some(103),
+            IntrinsicId::Int16Array => Some(104),
+            IntrinsicId::Int16ArrayPrototype => Some(105),
+            IntrinsicId::Uint16Array => Some(106),
+            IntrinsicId::Uint16ArrayPrototype => Some(107),
+            IntrinsicId::Int32Array => Some(108),
+            IntrinsicId::Int32ArrayPrototype => Some(109),
+            IntrinsicId::Uint32Array => Some(110),
+            IntrinsicId::Uint32ArrayPrototype => Some(111),
+            IntrinsicId::BigInt64Array => Some(112),
+            IntrinsicId::BigInt64ArrayPrototype => Some(113),
+            IntrinsicId::BigUint64Array => Some(114),
+            IntrinsicId::BigUint64ArrayPrototype => Some(115),
+            IntrinsicId::Float16Array => Some(116),
+            IntrinsicId::Float16ArrayPrototype => Some(117),
+            IntrinsicId::Float32Array => Some(118),
+            IntrinsicId::Float32ArrayPrototype => Some(119),
+            IntrinsicId::Float64Array => Some(120),
+            IntrinsicId::Float64ArrayPrototype => Some(121),
+            IntrinsicId::Atomics => Some(122),
             _ => None,
         }
     }
@@ -1730,7 +1730,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 121;
+const INTRINSIC_SLOTS: usize = 123;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
