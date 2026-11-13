@@ -14,7 +14,8 @@
 //! includes              SameValueZero with Get(O, k) for k < len (undefined past a shrink)
 //! indexOf lastIndexOf   IsStrictlyEqual, only when HasProperty(O, k) (false past a shrink)
 //! join                  ToString(separator) once, then ToString per element (undefined: "")
-//! toLocaleString        Invoke(element, "toLocaleString") per element (undefined, null: "")
+//! toLocaleString        Invoke(element, "toLocaleString", « locales, options ») per element
+//!                       (undefined, null: "")
 //! toString              the steps of Array.prototype.toString (route TA-TOSTRING-IDENTITY)
 //! get @@toStringTag     [[TypedArrayName]], else undefined (no throw)
 //! ```
@@ -620,16 +621,18 @@ pub(super) fn to_string<'s>(
     cx.array_prototype_to_string(this, args, new_target)
 }
 
-/// `%TypedArray%.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] )`
-/// (`sec-%typedarray%.prototype.tolocalestring`; the ECMA-262 form without ECMA-402): the
-/// steps of `Array.prototype.toLocaleString` after ValidateTypedArray, with the length of the
-/// TypedArray (no `length` property read).
+/// `%TypedArray%.prototype.toLocaleString ( [ locales [ , options ] ] )`
+/// (`sec-%typedarray%.prototype.tolocalestring`): the steps of `Array.prototype.toLocaleString`
+/// after ValidateTypedArray, with the length of the TypedArray (no `length` property read).
+/// ECMA-402 replaces those steps (`sup-array.prototype.tolocalestring`, as in `array.rs`): each
+/// element's toLocaleString gets `locales` and `options`.
 pub(super) fn to_locale_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    let (locales, options) = (args.get(0), args.get(1));
     // 1. Let array be the this value.
     // 2. Let taRecord be ? ValidateTypedArray(array, seq-cst).
     // 3. Let len be TypedArrayLength(taRecord).
@@ -652,12 +655,13 @@ pub(super) fn to_locale_string<'s>(
         let element = cx.get_index(array, k)?;
         // c. If nextElement is neither undefined nor null, then
         if !element.is_undefined_or_null() {
-            // i. Let S be ? ToString(? Invoke(nextElement, "toLocaleString")).
+            // i. Let S be ? ToString(? Invoke(nextElement, "toLocaleString", « locales, options
+            //    »)).
             let f = cx.get_v(element, "toLocaleString")?;
             if !cx.is_callable(f) {
                 return Err(cx.throw_type_error("toLocaleString is not a function"));
             }
-            let s = cx.call(f, element, &[])?;
+            let s = cx.call(f, element, &[locales, options])?;
             let s = cx.to_string(s)?;
             // ii. Set R to the string-concatenation of R and S.
             push_string(cx, &mut r, s)?;

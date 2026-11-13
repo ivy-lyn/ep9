@@ -144,8 +144,8 @@ for (const n of names) {
 /// passing: get `@@toStringTag` (`sec-get-%typedarray%.prototype-%symbol.tostringtag%`: the
 /// `[[TypedArrayName]]`, else undefined, no throw; a detached or zero-length view keeps its
 /// name) and `toLocaleString` (`sec-%typedarray%.prototype.tolocalestring`: ValidateTypedArray,
-/// TypedArrayLength (no `length` read), `Invoke(element, "toLocaleString")` per element,
-/// undefined after a shrink gives the empty String).
+/// TypedArrayLength (no `length` read), `Invoke(element, "toLocaleString", « locales, options
+/// »)` per element, undefined after a shrink gives the empty String).
 #[test]
 fn to_string_tag_and_to_locale_string() {
     let src = r#"
@@ -218,6 +218,41 @@ try { dv.toLocaleString(); print("no throw"); } catch (e) { print(e.constructor.
             "TypeError",
             "TypeError",
             "TypeError",
+        ])
+    );
+}
+
+/// `toLocaleString ( [ locales [ , options ] ] )` with ECMA-402 (`ep9_builtins::TABLE` lists the
+/// ep9_intl modules): the steps of `sup-array.prototype.tolocalestring`, so each element's
+/// toLocaleString gets `locales` and `options` (2 arguments, no more), for each element type
+/// (test262 intl402 `calls-toLocaleString-number-elements.js`). It failed at 12318024: the
+/// elements got no arguments ("0", not "๐.๐๐๐"). The lines are node v26.13.1's.
+#[test]
+fn to_locale_string_passes_locales_and_options() {
+    let src = r#"
+const opts = { minimumFractionDigits: 3 };
+const want = (0).toLocaleString("th-u-nu-thai", opts);
+const kinds = [Float64Array, Float32Array, Float16Array, Int32Array, Int16Array, Int8Array,
+  Uint32Array, Uint16Array, Uint8Array, Uint8ClampedArray];
+const two = want + "," + (1).toLocaleString("th-u-nu-thai", opts);
+print(want, kinds.filter(TA => new TA([0, 1]).toLocaleString("th-u-nu-thai", opts) !== two).length);
+print(new Float64Array([1234.5]).toLocaleString("de"), new BigInt64Array([-1234n]).toLocaleString("de-CH"));
+const args = [];
+const spy = function (...a) { args.push(typeof this + " " + a.length + ":" + a.map(String).join(",")); return "s"; };
+const nsave = Number.prototype.toLocaleString, bsave = BigInt.prototype.toLocaleString;
+Number.prototype.toLocaleString = spy;
+BigInt.prototype.toLocaleString = spy;
+print(new Int8Array([1, 2]).toLocaleString(), new Float32Array([1]).toLocaleString("de", opts, 5),
+  new BigUint64Array([3n]).toLocaleString("tr"), args.join(" "));
+Number.prototype.toLocaleString = nsave;
+BigInt.prototype.toLocaleString = bsave;
+"#;
+    assert_eq!(
+        common::run_both(src),
+        lines(&[
+            "๐.๐๐๐ 0",
+            "1.234,5 -1'234",
+            "s,s s s object 2:undefined,undefined object 2:undefined,undefined object 2:de,[object Object] object 2:tr,undefined",
         ])
     );
 }
