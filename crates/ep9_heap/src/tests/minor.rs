@@ -1123,3 +1123,47 @@ fn an_s1_overflow_page_gives_back_its_tail_when_it_moves_on() {
     heap.verify().expect("verifier");
     drop(roots);
 }
+
+/// The S1 budget after a GC (LEVER-7, M8-P4): `max(initial budget, old bytes)`. A major GC
+/// leaves about 2 MiB of live (old) cells, then every young cell dies: each budget GC is minor
+/// and comes after about 2 MiB of young bytes. The old budget was half the old bytes (about
+/// 1 MiB here), so the same run had twice the minor GCs.
+#[test]
+#[cfg_attr(miri, ignore = "72,000 allocations")]
+fn the_budget_after_a_gc_is_the_old_bytes() {
+    let heap = gen_heap(false, |c| c.initial_budget = PAGE_SIZE);
+    // A rooted list of 8,192 cells of 256 B: 2 MiB that stays live. 3 dead cells per list
+    // cell keep the survival of the minor GCs low, so the nursery policy runs no probe
+    // minor GC after the major GC below.
+    let head = new_node(&heap, 0, 30);
+    let g = heap.new_global(head.to_value());
+    let mut tail = head;
+    for i in 1..8_192u32 {
+        let c = new_node(&heap, i, 30);
+        store(&heap, tail, 0, c.to_value());
+        tail = c;
+        for d in 0..3 {
+            new_node(&heap, 10_000 + 3 * i + d, 30);
+        }
+    }
+    heap.collect_with_words(&[]);
+    let st = heap.stats();
+    assert!(!st.last_minor);
+    let live = st.last_marked_bytes as u64;
+    assert!(live >= 8 * PAGE_SIZE as u64, "{live} live bytes");
+    // Young cells that all die: the old bytes stay `live`, below the major limit.
+    let gcs = budget_gcs(&heap, 40_000, |i| {
+        new_node(&heap, 100_000 + i, 30);
+    });
+    assert!(gcs.len() >= 3, "{gcs:?}");
+    for (k, &(minor, bytes)) in gcs.iter().enumerate() {
+        assert!(minor, "GC {k} is major: {gcs:?}");
+        // The budget, within one hole (at most a page): never half of it.
+        assert!(
+            bytes > live * 3 / 4 && bytes <= live + PAGE_SIZE as u64,
+            "GC {k}: {bytes} bytes before it, {live} old bytes: {gcs:?}"
+        );
+    }
+    heap.verify().expect("verifier");
+    heap.drop_global(g);
+}

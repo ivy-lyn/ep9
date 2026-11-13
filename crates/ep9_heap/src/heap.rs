@@ -111,8 +111,8 @@ pub struct HeapConfig {
     /// also runs when the cage is full, where a higher limit does not help. `None` (the
     /// default): no callback.
     pub near_limit: Option<fn(committed: usize, limit: usize) -> usize>,
-    /// Bytes allocated before the first GC. Later budgets are `max(this, live bytes)`, so the
-    /// heap may double between collections.
+    /// Bytes allocated before the first GC. Later budgets are `max(this, live bytes)` (S0) or
+    /// `max(this, old bytes)` (S1, `Inner::after_gc`), so the heap may double between GCs.
     pub initial_budget: usize,
     /// GC-stress: collect before every Nth allocation. 0 = off, 1 = every allocation. A
     /// value above 0 also turns on the process-wide E2 check
@@ -1469,8 +1469,8 @@ impl Inner {
             self.major_limit = initial.max(marked_bytes).saturating_mul(2);
         }
         self.next_major = self.old_bytes > self.major_limit;
-        // The sweep visits every page (it walks cells only where one died): grow with the heap.
-        self.budget = initial.max(self.old_bytes / 2);
+        // A minor GC sweeps every page and traces logged old hosts again: budget = old bytes.
+        self.budget = initial.max(self.old_bytes);
         // The nursery policy (S2a part 2). A minor GC that kept most young bytes
         // freed little: its trace mostly promoted cells that the next major GC traces again.
         // So the GCs skip the minor GCs: the next budget GC is major, once the heap holds 5/2
