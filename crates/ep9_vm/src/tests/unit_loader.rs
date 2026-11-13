@@ -320,8 +320,8 @@ fn unit_loader_counts_one_string_table_pass_per_load() {
 
 // ---- steps 6-7: fuse refs --------------------------------------------------------------------
 
-/// A variant that names a fuse: picked while the fuse is wired and intact; not picked after
-/// the fuse pops, and never for an index this build does not know.
+/// A variant that names a fuse: picked while the fuse is wired and intact; not picked after the
+/// fuse pops, never for an unknown index. Since MC-w35-5 (M8-P4) step 8 installs the pick.
 #[test]
 fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     let with_fuse = |index: u32| FunctionCode {
@@ -347,14 +347,14 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     let iso = defs_isolate(ExecOptions::jitless());
     let r = load(&iso, &Policy::JITLESS, &[with_fuse(1000)]);
     assert_eq!(r.count(Reason::Bytecode), 1);
-    // A wired fuse is a dependency: step 8 does not install it (no pop path re-selects yet).
+    // MC-w35-5 (M8-P4): a wired static fuse is a GuardFuse read (H31:138): step 8 installs it.
     let iso = defs_isolate(ExecOptions::jitless());
     iso.rt.fuses.wire(&iso.rt, 0).unwrap();
     let lu = info(&iso, "g").loaded_unit().unwrap();
     let mut f = with_fuse(0);
     f.variants[0].len = call0_bytes().0.len() as u32;
-    // SAFETY: the dependency refusal comes before `install_code`; no code is installed (the
-    // text and its unwind data are the frame stub's).
+    // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g` and reads no
+    // fuse), and `stub_unwind` describes it.
     let r = unsafe {
         unit_loader::load_and_install(
             &iso.rt,
@@ -370,9 +370,9 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     };
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
-        (0, 1)
+        (1, 0)
     );
-    assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::AotBaseline));
 }
 
 /// One variant of the Cx API: (kind, lowering, entry, len, cpu, fuse ids).
@@ -2760,5 +2760,81 @@ fn unit_loader_a_registered_linked_text_runs_in_place() {
         (1, 0),
         "{:?}",
         r.rows()
+    );
+}
+
+// ---- M8-P4 A2-GATE: MC-w35-5, the GuardFuse-only install rule -------------------------------
+
+/// MC-w35-5 (H31:138): step 8 installs a pick only when each fuse ref is a GuardFuse read: a
+/// static fuse that this build knows and that holds. A dynamic fuse is an invalidation
+/// dependency (not installable until H29 A4); a popped or unknown static fuse keeps the
+/// bytecode, also when it popped after the pick.
+#[test]
+fn unit_loader_install_takes_only_guard_fuse_reads() {
+    use crate::select::Dep;
+    let ok = |index| Dep::Static {
+        index,
+        intact: true,
+    };
+    assert!(unit_loader::guard_fuse_reads_only(&[]));
+    assert!(unit_loader::guard_fuse_reads_only(&[ok(0), ok(1)]));
+    let popped = Dep::Static {
+        index: 0,
+        intact: false,
+    };
+    let unknown = ok(u32::MAX);
+    let dynamic = Dep::Dynamic {
+        kind: 1,
+        intact: true,
+    };
+    for d in [popped, unknown, dynamic] {
+        assert!(!unit_loader::guard_fuse_reads_only(&[d]), "{d:?}");
+        assert!(!unit_loader::guard_fuse_reads_only(&[ok(0), d]), "{d:?}");
+    }
+}
+
+/// MC-w35-5: the unit code of a pick with a static fuse ref runs, and a pop after the install
+/// leaves it installed: its GuardFuse reads take the slow path at each use (H31:138), so no
+/// frame needs a swap. A fuse that popped before the load keeps the bytecode (no pick).
+#[test]
+fn unit_loader_a_guard_fuse_pick_runs_and_stays_after_a_pop() {
+    let install = |iso: &Isolate| {
+        let lu = info(iso, "g").loaded_unit().unwrap();
+        let mut f = g_stub();
+        f.variants[0].fuses = vec![0];
+        // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g` and reads
+        // no fuse), and `stub_unwind` describes it.
+        unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &stub_text(),
+                &stub_unwind(),
+                &[],
+                0,
+                &[f],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        }
+    };
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    iso.rt.fuses.wire(&iso.rt, 0).unwrap();
+    let r = install(&iso);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    g_walk_gives_42(&mut iso);
+    iso.rt.fuses.pop(&iso.rt, FuseRef::Static(0));
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::AotBaseline));
+    g_walk_gives_42(&mut iso);
+    // Popped before the load: no pick, nothing installed, the bytecode runs.
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    iso.rt.fuses.wire(&iso.rt, 0).unwrap();
+    iso.rt.fuses.pop(&iso.rt, FuseRef::Static(0));
+    let r = install(&iso);
+    assert_eq!((r.count(Reason::Picked), r.count(Reason::Installed)), (0, 0));
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::Interp));
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
     );
 }
