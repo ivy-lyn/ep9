@@ -1,17 +1,17 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 68 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2,
-# 1 INTL W3, 1 TA sync 1, 3 TA-3 and 4 TA-4 tests. 8 of them also fail without GC-stress and
+# 67 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2,
+# 1 INTL W3, 1 TA sync 1, 3 TA-3 and 3 TA-4 tests. 8 of them also fail without GC-stress and
 # are listed in every expectations/test262.<triple>.jit.txt: the 5 month-2 tco-* tests, the
 # M3-P1 test two-digit-years.js and the 2 INTL W2 supportedLocalesOf-* tests (they also need
 # Intl.DateTimeFormat). Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
-# 42331111457), and ownkeys-linear.js passes too. The other 60 pass without GC-stress: the
+# 42331111457), and ownkeys-linear.js passes too. The other 59 pass without GC-stress: the
 # other 6 month-2 tests, the other 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test, the 7
 # M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the 2 INTL W2 NumberFormat tests, the
-# INTL W3 test, the TA sync 1 test, the 3 TA-3 tests and the 4 TA-4 tests.
+# INTL W3 test, the TA sync 1 test, the 3 TA-3 tests and the 3 TA-4 tests.
 # The 8 month-2 tests that failed without GC-stress when they were listed:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists). They failed at the first lone surrogate, 0xD800, until the M7-P2 shim; now they
@@ -141,9 +141,9 @@
 #   constructor of the harness, plain and shared;
 # - sort_large_countingsort.js: both runs past 120 s (244 s wall). The harness's shared
 #   constructors copy each element with `sharedArray[i] = array[i]`, and a keyed store into a
-#   SharedArrayBuffer view makes a key string per store (`property::set_keyed` has no view arm,
-#   unlike `set_index`; a TA-4 fixer r1 need): one collection per element. With a view arm
-#   (tested, not committed) it takes 1.0 s wall, so it can leave this list with that fix;
+#   SharedArrayBuffer view made a key string per store (`property::set_keyed` had no view arm,
+#   unlike `set_index`): one collection per element. TA-SETKEYED-VIEW (2026-11-13) added the
+#   arm: 2.1 s wall, 2 of 2 runs pass (the same flags, 1 worker), so it left this list;
 # - sort_sorted.js: 93.9 s wall, about 47 s per run (its template message per assert: 2
 #   allocations each, about 65,000 asserts);
 # - sort-negative-nan.js: 48.8 s wall, about 24 s per run (its template message per assert,
@@ -212,7 +212,6 @@ test/staging/sm/Proxy/ownkeys-linear.js
 test/staging/sm/String/string-upper-lower-mapping.js
 test/staging/sm/TypedArray/element-setting-converts-using-ToNumber.js
 test/staging/sm/TypedArray/sort-negative-nan.js
-test/staging/sm/TypedArray/sort_large_countingsort.js
 test/staging/sm/TypedArray/sort_sorted.js
 test/staging/sm/expressions/destructuring-array-default-simple.js
 test/staging/sm/expressions/short-circuit-compound-assignment.js
