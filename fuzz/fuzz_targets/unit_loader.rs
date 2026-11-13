@@ -10,7 +10,7 @@
 //!                                                    (refused: no table, the bytecode runs)
 //!         run_script_with_unit_code; a watchdog thread terminates the run after RUN_BOUND
 //!         the counts: "installed" 0 and "deferred" = "picked" (the safe method never installs)
-//! crash = a panic or an abort anywhere (one panic is not: the H23 heap limit, below), an ASan
+//! crash = a panic or an abort anywhere (the H23 out-of-memory panics are not, below), an ASan
 //!         report, a count that breaks the rule above, or a run past libFuzzer -timeout
 //! ```
 //!
@@ -30,7 +30,8 @@
 //! doc, route MC-w34-2), so the text bytes never run. The fuzzed bytecode does run (it passed
 //! the verifier); the isolate has no builtin table, and `print` is a host function that does
 //! nothing. The heap limit is `MAX_HEAP`: an allocation past it is fatal by design (H23 "Out of
-//! memory": `ep9: heap limit reached`), so the target ends that run and drops its isolate.
+//! memory": the heap limit, a feedback vector or a shape, `out_of_memory`), so the target ends
+//! that run and drops its isolate.
 //! The target never enables the `aot` feature of ep9_unit (dep-guards check 10).
 #![no_main]
 
@@ -57,6 +58,16 @@ const RUN_BOUND: Duration = Duration::from_millis(250);
 const MAX_HEAP: usize = 256 << 20;
 /// The panic text of the H23 heap limit (`ep9_vm` runtime.rs, `alloc_failed`).
 const HEAP_LIMIT: &str = "ep9: heap limit reached";
+
+/// True for an H23 out-of-memory panic under `MAX_HEAP`: the heap limit (`runtime.rs`
+/// `alloc_failed`), a feedback vector (`feedback.rs`) or a shape (`shape.rs`).
+fn out_of_memory(p: &(dyn std::any::Any + Send)) -> bool {
+    let s = p
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| p.downcast_ref::<String>().map(String::as_str));
+    s.is_some_and(|s| s == HEAP_LIMIT || s.ends_with(" allocation failed: OutOfMemory"))
+}
 
 fuzz_target!(|data: &[u8]| {
     let mut bytes = padded(data);
@@ -196,15 +207,15 @@ fn content_hash(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Runs `f` on a new jitless isolate (heap limit `MAX_HEAP`, a no-op `print`) while a watchdog
-/// thread terminates the run after `RUN_BOUND`. A throw and the heap limit end the run.
+/// thread terminates the run after `RUN_BOUND`. A throw and an H23 OOM panic end the run.
 fn run_bounded(f: impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<()>) {
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
-        // libfuzzer-sys's hook aborts on every panic; the H23 heap-limit panic unwinds instead
+        // libfuzzer-sys's hook aborts on every panic; an H23 out-of-memory panic unwinds instead
         // (to `catch_unwind` below). Every other panic still goes to that hook.
         let fuzzer_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
-            if info.payload().downcast_ref::<&str>() != Some(&HEAP_LIMIT) {
+            if !out_of_memory(info.payload()) {
                 fuzzer_hook(info);
             }
         }));
@@ -226,7 +237,8 @@ fn run_bounded(f: impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<()>) {
         drop(done);
         match r {
             Ok(_) => {}
-            Err(p) if p.downcast_ref::<&str>() == Some(&HEAP_LIMIT) => {}
+            // Then the isolate drops, not forgets (a leak per input); a probe drop was clean.
+            Err(p) if out_of_memory(&*p) => {}
             Err(p) => panic::resume_unwind(p),
         }
     });
