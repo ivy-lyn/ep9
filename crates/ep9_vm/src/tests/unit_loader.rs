@@ -2775,7 +2775,7 @@ fn unit_loader_a_registered_linked_text_runs_in_place() {
 /// MC-w35-5 (H31:138): step 8 installs a pick only when each fuse ref is a GuardFuse read: a
 /// static fuse that this build knows and that holds. A dynamic fuse is an invalidation
 /// dependency (not installable until H29 A4); a popped or unknown static fuse keeps the
-/// bytecode, also when it popped after the pick.
+/// bytecode.
 #[test]
 fn unit_loader_install_takes_only_guard_fuse_reads() {
     use crate::select::Dep;

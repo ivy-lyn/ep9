@@ -23,7 +23,7 @@
 //!      (H07:52) -- fails ----------------------------------------------> each pick "no-text"
 //!   7  the unwind data of the text registered with the system unwinder, once per mapped
 //!      text, before any of its code can run (JIT review O3) -- fails --> each pick "no-unwind"
-//!   8  install the picks (`install_picked`; never a constructor) --------> "installed" |
+//!   8  install the picks (`install_picked`; GuardFuse fuse refs only) ---> "installed" |
 //!                                                                          "not-installable"
 //! ```
 //!
@@ -941,10 +941,10 @@ fn load_inner(
         let _ = fi.code_set.set(Box::new(uc));
     }
     if mapped {
-        // SAFETY: only `load_and_install` passes `unwind`; its caller ran the H35 S4 checks
-        // (steps 1-4) on these bytes, and the digest above binds each code set to its bytecode:
-        // that stands for the code contract of `install_picked`. The text is mapped, and its
-        // unwind data is registered (O3).
+        // SAFETY: only `load_and_install` passes `unwind`; its caller ran the H35 S4 checks (steps
+        // 1-4) on these bytes. The digest above binds each code set to its bytecode, and step 3
+        // (this build wrote the unit) stands for the GuardFuse reads of its fuse refs (H31:138):
+        // the `install_picked` code contract. The text is mapped, its unwind data registered (O3).
         let installed = unsafe { install_picked(rt, lu) };
         for reason in Reason::ALL {
             r.add(reason, installed.count(reason));
@@ -1130,10 +1130,10 @@ fn linked_or_shared_text(
 /// compiled code reads a static fuse as a GuardFuse at each use (and again after a call in the
 /// same operation), so a later pop sends that code to its slow path and no frame needs a swap.
 /// A dynamic fuse ([`Dep::Dynamic`]) is an invalidation dependency: not installable until H29
-/// A4. A pick names only fuses that held at its load (`select()` skips the rest); this test
-/// runs again at the install, so a fuse that popped in between keeps the bytecode. The function
-/// table names only static fuse ids (`ep9_unit::functions` form 1), so the loader makes no
-/// dynamic dependency today. (At the end of the file, so no cited line moves.)
+/// A4. A pick names only fuses that held at its load (`select()` skips the rest); `holds()` reads
+/// that load-time state (no JS runs before step 8), and a later pop needs no new check: GuardFuse
+/// reads take the slow path. The function table names only static fuse ids (`ep9_unit::functions`
+/// form 1), so no dependency is dynamic today. (At the file end: no cited line moves.)
 pub(crate) fn guard_fuse_reads_only(deps: &[Dep]) -> bool {
     deps.iter()
         .all(|&d| matches!(d, Dep::Static { .. }) && d.holds())
