@@ -2096,9 +2096,9 @@ thread_local! {
 /// `Cx::construct`, a construct of another realm) of an ordinary function enters it too, with
 /// new.target in its frame (`construct_function_object` made the receiver and checks the
 /// result). The entry counts the call as `slow::count_entry` does for a T0 callee
-/// (M8-PLAN-D26, MC-w29-1). Any other kind, and a class constructor (`native_callee`), stays
-/// refused. (At the end of the file, so no cited line moves.) Out of line and cold: the T0
-/// path of [`call_bytecode`] keeps its code.
+/// (M8-PLAN-D26, MC-w29-1). Since M8-P4 (MC-w29-8 step 2) a construct of an AotBaseline class
+/// constructor enters it too (`native_callee_for`; `[[Call]]` of one threw above). Any other
+/// kind stays refused. (At the end of the file.) Out of line and cold: the T0 path keeps its code.
 #[cold]
 #[inline(never)]
 fn call_native_from_rust(
@@ -2109,7 +2109,7 @@ fn call_native_from_rust(
     arg: impl Fn(u32) -> u64,
     new_target: u64,
 ) -> Res<u64> {
-    if let Some(nfi) = crate::native::native_callee(f) {
+    if let Some(nfi) = crate::native::native_callee_for(f, new_target) {
         return crate::native::enter_from_rust_with(cx, f, nfi, this, argc, arg, new_target);
     }
     Err(not_implemented(cx, "calling code of this dispatch kind"))

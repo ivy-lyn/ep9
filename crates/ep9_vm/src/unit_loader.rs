@@ -986,13 +986,13 @@ fn link_and_map(
 /// [`Reason::Installed`] and [`Reason::NotInstallable`]; a pick with no mapped text is not
 /// counted (its load counted it). The fuse rule is [`guard_fuse_reads_only`] (MC-w35-5).
 ///
-/// A class constructor (`fi.is_class_constructor()`) is not installable: its slot stays
-/// Interp, so `new`, `super()` and `Reflect.construct` run its bytecode (the MC-w33-6 result
-/// contract is step 2, A2-GATE). An ordinary `function` is installable since M8-P1
-/// A2-CONSTRUCT (M8-PLAN-D25, MC-w29-8 step 1; form 2 of M6-ORCH-386 refused it): every
-/// construct path enters its native code through `native::native_callee` with new.target in
-/// its frame (`slow::call`, `call::call_native_from_rust`). Every install of unit code comes
-/// here: also a later installing load of the same unit and a load that takes a shared text.
+/// A class constructor is installable since M8-P4 A2-GATE (MC-w29-8 step 2, the MC-w33-6
+/// result contract; `native::installs_class_code`: never in a `spike-native` build), and an
+/// ordinary `function` since M8-P1 A2-CONSTRUCT (M8-PLAN-D25, step 1). `new`, `super()` and
+/// `Reflect.construct` enter its native code through `native::native_construct_callee` with
+/// new.target in its frame (`slow::call`, `call::call_native_from_rust`); a call of a class
+/// constructor throws its TypeError first (`native_callee` refuses it). Every install of unit
+/// code comes here: also a later installing load of the same unit and a load of a shared text.
 ///
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
@@ -1013,7 +1013,7 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
         };
         let obj = &uc.set.objects[i];
         let aot = DispatchKind::from_u8(obj.kind) == Some(DispatchKind::AotBaseline);
-        if !aot || !guard_fuse_reads_only(&obj.deps) || fi.is_class_constructor() {
+        if !aot || !guard_fuse_reads_only(&obj.deps) {
             r.add(Reason::NotInstallable, 1);
             continue;
         }

@@ -1152,13 +1152,13 @@ fn call_native_cold(
 }
 
 /// The `!runs_bytecode` arm of [`do_call`]'s construct path (M8-P1 A2-CONSTRUCT; M8-PLAN-D25,
-/// MC-w29-8 step 1, MC-w36-3): `[[Construct]]` of a FUNCTION of the caller's realm with
-/// native code (an AotBaseline unit function or a Baseline slot; `native::native_callee`, so
-/// never a class constructor). The steps of the bytecode arm, in its order, then the native
-/// entry instead of the stub and callee frames:
+/// MC-w29-8 steps 1 and 2, MC-w36-3): `[[Construct]]` of a FUNCTION of the caller's realm with
+/// native code (an AotBaseline unit function or a Baseline slot; since M8-P4 also an AotBaseline
+/// class constructor: `native::native_construct_callee`). The steps of the bytecode arm, in its
+/// order, then the native entry instead of the stub and callee frames:
 ///
 /// ```text
-/// kind check (native_callee, else "not implemented") -> count_call (M8-PLAN-D26)
+/// kind check (native_construct_callee, else "not implemented") -> count_call (M8-PLAN-D26)
 ///   -> the receiver (OrdinaryCreateFromConstructor(new.target), §10.2.2 step 5)
 ///   -> construct_ic::miss (the site's record, as for the bytecode constructor: M-R9)
 ///   -> native::enter_native_with (new.target in fp - 3, the construct bit; return pc = the
@@ -1178,7 +1178,7 @@ fn construct_native_cold(
     args: &[u64],
 ) -> Res<u64> {
     let argc = args.len() as u32;
-    let Some(nfi) = crate::native::native_callee(callee) else {
+    let Some(nfi) = crate::native::native_construct_callee(callee) else {
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     };
     // GC point, before `this` exists: the callee and the arguments are in caller registers
