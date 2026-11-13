@@ -1195,8 +1195,8 @@ fn construct_native_cold(
     crate::construct_ic::miss(cx, fp, s, callee, new_target, this);
     // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
     // with no scratch area), `args` holds valid Value bits that the push copies before any GC
-    // point, `native_callee` checked the native slot, and `this` is a new object in a Rust
-    // local.
+    // point, `native_construct_callee` checked the native slot, and `this` is the HOLE (a
+    // derived constructor) or a new object in a Rust local.
     let r = unsafe {
         crate::native::enter_native_with(
             cx,
