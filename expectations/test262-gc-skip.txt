@@ -4,8 +4,7 @@
 # 68 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2,
 # 1 INTL W3, 1 TA sync 1, 3 TA-3 and 4 TA-4 tests. 8 of them also fail without GC-stress and
 # are listed in every expectations/test262.<triple>.jit.txt: the 5 month-2 tco-* tests, the
-# M3-P1 test
-# two-digit-years.js and the 2 INTL W2 supportedLocalesOf-* tests (they also need
+# M3-P1 test two-digit-years.js and the 2 INTL W2 supportedLocalesOf-* tests (they also need
 # Intl.DateTimeFormat). Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
