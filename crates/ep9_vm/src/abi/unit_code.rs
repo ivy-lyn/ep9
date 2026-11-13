@@ -53,7 +53,7 @@ impl<'s> Cx<'s> {
     /// Runs the script `unit` as [`Cx::run_script`] does, after the unit loader read its
     /// native part: `text` (the unit's text section) and `functions` (its function table: per
     /// function its index in `unit`, its digest and its variants; see the module doc). The
-    /// loader maps the text into the process code range, gives each listed function a code
+    /// loader does not map the text; it gives each listed function a code
     /// set and calls `select()` with the isolate's policy and a session with the CPU bits
     /// `host_cpu`. Returns the load counts by reason, `(name, count)` in a fixed order (H35
     /// S5), and the run's result. A function whose variants are all skipped, or that is not

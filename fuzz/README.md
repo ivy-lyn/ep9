@@ -1,6 +1,6 @@
 # ep9 fuzz targets
 
-cargo-fuzz (libFuzzer) targets for the front end, in their own workspace on the nightly of
+5 cargo-fuzz targets (front end, regexp, unit loader), in their own workspace on the nightly of
 `rust-toolchain.toml` (the root `Cargo.toml` excludes `fuzz`). Plan: docs/plan/10-quality.md
 section 4 ("Front end (source -> verified bytecode)": no panics, no aborts, the bytecode
 verifier passes); budget 24 CPU-h at M1 (plan v9 V9-D24).

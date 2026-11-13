@@ -1,5 +1,5 @@
-# Front-end cargo-fuzz campaigns (plan v9 V9-D24; docs/plan/10-quality.md section 4: the
-# front-end budget is 24 CPU-h at M1). Dispatch only; the orchestrator runs it (plan v9 rule 3).
+# cargo-fuzz campaigns of the 5 targets: 3 front-end ones, regexp and unit_loader (plan v9 V9-D24;
+# 10-quality.md section 4: 24 CPU-h for the front end at M1). Dispatch only; the orchestrator runs it (plan v9 rule 3).
 #
 #   one job per target x runner: seeds (fuzz/seeds + a test262 sample) -> cargo fuzz run
 #   -fork=<jobs> for <seconds> -> crash count + SHA-256 per crash file -> one ep9-fuzz/v1

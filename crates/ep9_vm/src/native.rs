@@ -664,8 +664,8 @@ fn not_call(cx: &mut Cx, off: usize) -> Throw {
 pub enum InstallError {
     /// The value is not a FUNCTION with bytecode (a host or bound function, or no function).
     NotBytecode,
-    /// A class constructor: T0 never enters one natively (`[[Call]]` throws, and
-    /// `[[Construct]]` stays in T0).
+    /// A class constructor where T0 never enters it natively: a spike install, a Baseline
+    /// install or any `spike-native` build (`installs_class_code`; `[[Call]]` always throws).
     ClassConstructor,
     /// A generator function (M2-P1-R1; for [`install_code`] also an async or async generator
     /// function): its frames are entered at the `SwitchOnGeneratorState` prologue on every
