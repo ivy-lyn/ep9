@@ -453,3 +453,7 @@ history	H34-relocation-kinds.md	.github/scripts/dep-guards.sh:423	| 4 Data (M7-P
 # text at the M8-P0 head a542d985, where the line refused every constructor.
 history	H20-builtin-abi.md	crates/ep9_vm/src/unit_loader.rs:1016	| 3 Verifier (M7-P5 amendment: the 2026-11-10 fill (API addition) row, the unsafe install method	a542d985	^        if kind != Some\(DispatchKind::AotBaseline\) \|\| !obj\.deps\.is_empty\(\) \|\| fi\.is_constructor\(\) \{$
 history	H35-aot-unit-format.md	crates/ep9_vm/src/unit_loader.rs:1016	| 3 Verifier (M7-P5 amendment: the 2026-11-10 fill row, RW template form 1 and unwind form 1 (A2-RW))	a542d985	^        if kind != Some\(DispatchKind::AotBaseline\) \|\| !obj\.deps\.is_empty\(\) \|\| fi\.is_constructor\(\) \{$
+# M8-P4 A2-GATE (4c328c2c, 33dc5214): crates/ep9_vm/src/unit_loader.rs:1016, the install
+# filter, now installs a pick whose fuse refs are GuardFuse reads, and class constructors; this
+# H32 Review record row keeps its text at the M8-P3 head e179e5aa, where the line refused both.
+history	H32-guard-failure-policy.md	crates/ep9_vm/src/unit_loader.rs:1016	| 4 Data (M8-P1 amendment: the 2026-11-12 clarify row, the caller counts (A2-CONSTRUCT))	e179e5aa	^        if !aot \|\| !obj\.deps\.is_empty\(\) \|\| fi\.is_class_constructor\(\) \{$
