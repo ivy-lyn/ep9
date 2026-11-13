@@ -30,6 +30,12 @@ icu_plurals = { workspace = true }
 icu_provider = { workspace = true }
 icu_segmenter = { workspace = true }
 icu_time = { workspace = true }
+# The search-collation table (INTL-V2-D17 Form A, INTL-W4-CLDR; W4 COLLATOR-SEARCH writes it in
+# src/cldr/gen/collator_search) is ICU4X baked data: its DataProvider impl needs the root
+# `icu_provider` feature `baked` (on already through icu_collator's `compiled_data`; the root
+# line names it), and its code names `zerovec::ZeroVec`. zerovec is in the graph already (every
+# icu crate) and in the check 24 list of ep9_intl edges, so no new package.
+zerovec = { version = "0.11.9", default-features = false }
 
 # The tests run JS on an isolate with ep9_builtins::TABLE (which lists this crate's modules).
 [dev-dependencies]

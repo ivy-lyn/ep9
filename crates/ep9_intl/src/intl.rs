@@ -5,6 +5,9 @@
 //! ```text
 //! globalThis.Intl {w, c}  %Intl%  [@@toStringTag] "Intl" {c},
 //!                                 getCanonicalLocales (8.3.1), supportedValuesOf (8.3.2)
+//! %IntlFallbackSymbolHolder%      ep9-internal: a null-prototype object that keeps
+//!                                 %Intl%.[[FallbackSymbol]] (8, normative optional) as a
+//!                                 data property; one per realm; no property names it
 //! ```
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
@@ -28,12 +31,20 @@ pub const DEFS: &[BuiltinDef] = &[
 ];
 
 /// The intrinsics this module makes.
-pub const INTRINSICS: &[IntrinsicDef] = &[IntrinsicDef {
-    id: IntrinsicId::Intl,
-    value: IntrinsicValue::Object {
-        proto: Some(IntrinsicId::ObjectPrototype),
+pub const INTRINSICS: &[IntrinsicDef] = &[
+    IntrinsicDef {
+        id: IntrinsicId::Intl,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::ObjectPrototype),
+        },
     },
-}];
+    // The holder of %Intl%.[[FallbackSymbol]] (INTL W4 DTF-OPT, the O-B decision): a group
+    // intrinsic of this module, so each realm has its own.
+    IntrinsicDef {
+        id: IntrinsicId::IntlFallbackSymbolHolder,
+        value: IntrinsicValue::Object { proto: None },
+    },
+];
 
 /// The properties this module adds, per object.
 pub const PROPS: &[ObjectProps] = &[

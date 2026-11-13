@@ -1,7 +1,7 @@
 //! `%String.prototype%` methods without a pattern or a case mapping (§22.1.3): at, charAt,
 //! codePointAt, concat, endsWith, includes, indexOf, lastIndexOf, isWellFormed, toWellFormed,
-//! localeCompare, padStart, padEnd, repeat, slice, startsWith, substring, trim, trimStart,
-//! trimEnd.
+//! localeCompare, normalize, padStart, padEnd, repeat, slice, startsWith, substring, trim,
+//! trimStart, trimEnd.
 
 use core::cmp::Ordering;
 
@@ -697,4 +697,15 @@ pub(super) fn trim_start<'s>(
     // 1. Let S be the this value.
     // 2. Return ? TrimString(S, start).
     trim_string(cx, this, Where::Start, "trimStart")
+}
+
+/// String.prototype.normalize ( \[ form \] ) (§22.1.3.15): a TypeError until INTL W4 NORMALIZE
+/// writes the body (over `ep9_intl::normalize`).
+pub(super) fn normalize<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Err(cx.throw_type_error("String.prototype.normalize is not implemented"))
 }

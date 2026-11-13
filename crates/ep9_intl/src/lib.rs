@@ -16,6 +16,10 @@
 //!   37 display_names  %Intl.DisplayNames%, its prototype      display_names.rs  (W2 DISPLAYNAMES)
 //!   38 relative_time_format  %Intl.RelativeTimeFormat%, its prototype
 //!                                                            relative_time_format.rs (W3 RTF)
+//!   39 date_time_format  %Intl.DateTimeFormat%, its prototype  date_time_format.rs (W4 DTF-OPT)
+//!   40 duration_format   %Intl.DurationFormat%, its prototype  duration_format.rs  (W4 DURATION)
+//!   (intl.rs also makes %IntlFallbackSymbolHolder%, the ep9-internal holder of
+//!    %Intl%.[[FallbackSymbol]]; W4 DTF-OPT)
 //! support (W1 CORE):
 //!   tag        IsStructurallyValidLanguageTag, CanonicalizeUnicodeLocaleId,
 //!              CanonicalizeLocaleList (ECMA-402 §6.2, §9.2.1)
@@ -29,6 +33,7 @@
 //!   cache      the thread_local cache of ICU4X formatters (Rc; never in a slot, rule 8)
 //!   casemap    TransformCase (§20.1.2.1): toLocaleLowerCase / toLocaleUpperCase (W2 LIST+CASEMAP)
 //!   locale_info  Locale info (W1 LOCALE: getCalendars .. getWeekInfo)
+//!   normalize  Unicode normalization for String.prototype.normalize (W4 NORMALIZE)
 //! ```
 //!
 //! Rules of the glue (design INTL-I1 §4.5): slots hold Values only (strings and packed int32
@@ -42,12 +47,15 @@ pub mod cache;
 pub mod casemap;
 pub(crate) mod cldr;
 pub mod collator;
+pub mod date_time_format;
 pub mod digits;
 pub mod display_names;
+pub mod duration_format;
 pub mod intl;
 pub mod list_format;
 pub mod locale;
 pub mod locale_info;
+pub mod normalize;
 pub mod number_format;
 pub mod options;
 pub mod plural_rules;
@@ -69,6 +77,8 @@ pub const MODULES: &[BuiltinModule] = &[
     segmenter::MODULE,
     display_names::MODULE,
     relative_time_format::MODULE,
+    date_time_format::MODULE,
+    duration_format::MODULE,
 ];
 
 /// Helpers of the unit tests.

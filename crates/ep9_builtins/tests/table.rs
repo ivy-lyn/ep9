@@ -107,6 +107,9 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_intl::display_names::BLOCK, 37);
     // INTL W3: relative_time_format.
     assert_eq!(ep9_intl::relative_time_format::BLOCK, 38);
+    // INTL W4: date_time_format, duration_format.
+    assert_eq!(ep9_intl::date_time_format::BLOCK, 39);
+    assert_eq!(ep9_intl::duration_format::BLOCK, 40);
 }
 
 #[test]

@@ -18,8 +18,10 @@
 //!          28        29
 //!          ep9_intl::MODULES: intl, locale, collator, plural_rules, number_format,
 //!                             30    31      32        33            34
-//!                             list_format, segmenter, display_names, relative_time_format]
+//!                             list_format, segmenter, display_names, relative_time_format,
 //!                             35           36         37             38
+//!                             date_time_format, duration_format]
+//!                             39                40
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -102,6 +104,9 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_intl::display_names::MODULE,
     // INTL W3 (the RTF skeleton; RTF fills it): the lazy group "Intl".
     ep9_intl::relative_time_format::MODULE,
+    // INTL W4 (the DTF-OPT skeleton; DTF-OPT and DURATION fill them): the lazy group "Intl".
+    ep9_intl::date_time_format::MODULE,
+    ep9_intl::duration_format::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

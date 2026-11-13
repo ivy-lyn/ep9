@@ -232,6 +232,7 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "icu_time",
+ "zerovec",
 ]
 
 [[package]]

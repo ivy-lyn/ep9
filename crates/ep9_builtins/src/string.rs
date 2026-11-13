@@ -26,7 +26,7 @@
 //! global                 String {w, c}
 //! ```
 //!
-//! Not here: matchAll (month 5, REGEXP2) and normalize (the normalization tables are M1).
+//! normalize (6.48): its Unicode normalization is in `ep9_intl::normalize` (INTL W4).
 //!
 //! Strings are read as UTF-16 code units (the private `units` helper) and built in a
 //! `Vec<u16>` (no `Value` in a Rust heap list). A loop whose length is bounded by a string's
@@ -100,6 +100,7 @@ mod def {
     pub const STRIKE: u16 = 45;
     pub const SUB: u16 = 46;
     pub const SUP: u16 = 47;
+    pub const NORMALIZE: u16 = 48;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -152,6 +153,7 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("strike", 0, annex_b::strike), // 45
     BuiltinDef::method("sub", 0, annex_b::sub),   // 46
     BuiltinDef::method("sup", 0, annex_b::sup),   // 47
+    BuiltinDef::method("normalize", 0, proto::normalize), // 48
 ];
 
 /// The intrinsics this module makes.
@@ -237,6 +239,7 @@ pub const PROPS: &[ObjectProps] = &[
             method("strike", def::STRIKE),
             method("sub", def::SUB),
             method("sup", def::SUP),
+            method("normalize", def::NORMALIZE),
             PropDef::alias(
                 PropKey::Str("trimLeft"),
                 PropKey::Str("trimStart"),

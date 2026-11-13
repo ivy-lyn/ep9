@@ -142,6 +142,12 @@ pub enum ObjectClass {
     /// String); the other slots are named in `ep9_intl` relative_time_format.rs. No ICU4X object
     /// is in a slot.
     IntlRelativeTimeFormat,
+    /// An Intl.DateTimeFormat instance (ECMA-402 §11, INTL W4): slot 0 `[[Locale]]` (a String);
+    /// the other slots are named in `ep9_intl` date_time_format.rs. No ICU4X object is in a slot.
+    IntlDateTimeFormat,
+    /// An Intl.DurationFormat instance (ECMA-402 §13, INTL W4): slot 0 `[[Locale]]` (a String);
+    /// the other slots are named in `ep9_intl` duration_format.rs. No ICU4X object is in a slot.
+    IntlDurationFormat,
 }
 
 impl ObjectClass {
@@ -183,6 +189,8 @@ impl ObjectClass {
         ObjectClass::IntlSegmentIterator,
         ObjectClass::IntlDisplayNames,
         ObjectClass::IntlRelativeTimeFormat,
+        ObjectClass::IntlDateTimeFormat,
+        ObjectClass::IntlDurationFormat,
     ];
 
     /// Most internal slots of one object.
@@ -241,6 +249,8 @@ impl ObjectClass {
             ObjectClass::IntlSegmentIterator => "Segment Iterator",
             ObjectClass::IntlDisplayNames => "Intl.DisplayNames",
             ObjectClass::IntlRelativeTimeFormat => "Intl.RelativeTimeFormat",
+            ObjectClass::IntlDateTimeFormat => "Intl.DateTimeFormat",
+            ObjectClass::IntlDurationFormat => "Intl.DurationFormat",
         }
     }
 }

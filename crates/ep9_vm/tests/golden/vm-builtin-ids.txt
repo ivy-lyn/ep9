@@ -171,3 +171,8 @@ intrinsic 119  %Intl.DisplayNames%
 intrinsic 120  %Intl.DisplayNames.prototype%
 intrinsic 121  %Intl.RelativeTimeFormat%
 intrinsic 122  %Intl.RelativeTimeFormat.prototype%
+intrinsic 123  %Intl.DateTimeFormat%
+intrinsic 124  %Intl.DateTimeFormat.prototype%
+intrinsic 125  %Intl.DurationFormat%
+intrinsic 126  %Intl.DurationFormat.prototype%
+intrinsic 127  %IntlFallbackSymbolHolder%
