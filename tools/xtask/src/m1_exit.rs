@@ -223,11 +223,19 @@ const T262_FRESH_PATHS: [&str; 11] = [
 /// `fuzz/Cargo.toml` and theirs; a test checks the list against them), the regress fork that
 /// its `[patch.crates-io]` builds ([`REGRESS_PATHS`]), the root `Cargo.toml` (its
 /// `[profile.release]`, the workspace members) and `Cargo.lock`.
-const CARGO_FUZZ_FRESH_PATHS: [&str; 9] = [
+const CARGO_FUZZ_FRESH_PATHS: [&str; 17] = [
     "crates/ep9_frontend",
     "crates/ep9_bytecode",
     "crates/ep9_rx1",
     "crates/ep9_regexp",
+    "crates/ep9_unit",
+    "crates/ep9_vm",
+    "crates/ep9_bigint",
+    "crates/ep9_facts",
+    "crates/ep9_heap",
+    "crates/ep9_math",
+    "crates/ep9_platform",
+    "crates/ep9_value",
     REGRESS_PATHS[0],
     REGRESS_PATHS[1],
     "fuzz",
@@ -3673,7 +3681,7 @@ mod tests {
             ),
             (
                 4,
-                "f2.json: not counted: not this tree: crates/ep9_frontend, crates/ep9_bytecode, crates/ep9_rx1, crates/ep9_regexp, third_party/regress.commit, third_party/patches/regress, fuzz, Cargo.toml, Cargo.lock changed",
+                "f2.json: not counted: not this tree: crates/ep9_frontend, crates/ep9_bytecode, crates/ep9_rx1, crates/ep9_regexp, crates/ep9_unit, crates/ep9_vm, crates/ep9_bigint, crates/ep9_facts, crates/ep9_heap, crates/ep9_math, crates/ep9_platform, crates/ep9_value, third_party/regress.commit, third_party/patches/regress, fuzz, Cargo.toml, Cargo.lock changed",
             ),
             (7, "Cargo.toml"),
         ] {
@@ -6806,9 +6814,10 @@ mod tests {
             "{}",
             c.evidence
         );
-        // A counted Fuzzilli run before a crates change does not count (V9-A30).
-        write(&root, "crates/ep9_vm/src/lib.rs", "// changed\n");
-        commit_all(&root, "vm");
+        // A counted Fuzzilli run before a crates change does not count (V9-A30); cargo-fuzz
+        // does not build ep9_builtins, so its record still counts.
+        write(&root, "crates/ep9_builtins/src/lib.rs", "// changed\n");
+        commit_all(&root, "builtins");
         set(
             &mut o,
             fuzz_json("fuzzilli", &head, 100.0, true, ""),
