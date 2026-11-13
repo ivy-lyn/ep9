@@ -115,6 +115,33 @@ pub enum ObjectClass {
     /// other slots (1 the packed options with `[[Collation]]`, 2 `[[BoundCompare]]`) are named
     /// in `ep9_intl` collator.rs. No ICU4X object is in a slot (INTL-I1-D7).
     IntlCollator,
+    /// An Intl.PluralRules instance (ECMA-402 §17, INTL W2): slot 0 `[[Locale]]` (a String); the
+    /// other slots are named in `ep9_intl` plural_rules.rs. No ICU4X object is in a slot.
+    IntlPluralRules,
+    /// An Intl.NumberFormat instance (ECMA-402 §16, INTL W2): slot 0 `[[Locale]]` (a String); the
+    /// other slots (packed options, digit options, `[[BoundFormat]]`) are named in `ep9_intl`
+    /// number_format.rs. No ICU4X object is in a slot.
+    IntlNumberFormat,
+    /// An Intl.ListFormat instance (ECMA-402 §14, INTL W2): slot 0 `[[Locale]]` (a String); the
+    /// other slots are named in `ep9_intl` list_format.rs. No ICU4X object is in a slot.
+    IntlListFormat,
+    /// An Intl.Segmenter instance (ECMA-402 §19, INTL W2): slot 0 `[[Locale]]` (a String); the
+    /// other slots are named in `ep9_intl` segmenter.rs. No ICU4X object is in a slot.
+    IntlSegmenter,
+    /// A Segments instance (ECMA-402 §19.5, INTL W2): `[[SegmentsSegmenter]]` and
+    /// `[[SegmentsString]]`, named in `ep9_intl` segmenter.rs.
+    IntlSegments,
+    /// A Segment Iterator instance (ECMA-402 §19.6, INTL W2): `[[IteratingSegmenter]]`,
+    /// `[[IteratedString]]` and `[[IteratedStringNextSegmentCodeUnitIndex]]`, named in
+    /// `ep9_intl` segmenter.rs.
+    IntlSegmentIterator,
+    /// An Intl.DisplayNames instance (ECMA-402 §12, INTL W2): slot 0 `[[Locale]]` (a String); the
+    /// other slots are named in `ep9_intl` display_names.rs. No ICU4X object is in a slot.
+    IntlDisplayNames,
+    /// An Intl.RelativeTimeFormat instance (ECMA-402 §18, INTL W3): slot 0 `[[Locale]]` (a
+    /// String); the other slots are named in `ep9_intl` relative_time_format.rs. No ICU4X object
+    /// is in a slot.
+    IntlRelativeTimeFormat,
 }
 
 impl ObjectClass {
@@ -148,6 +175,14 @@ impl ObjectClass {
         ObjectClass::AsyncDisposableStack,
         ObjectClass::IntlLocale,
         ObjectClass::IntlCollator,
+        ObjectClass::IntlPluralRules,
+        ObjectClass::IntlNumberFormat,
+        ObjectClass::IntlListFormat,
+        ObjectClass::IntlSegmenter,
+        ObjectClass::IntlSegments,
+        ObjectClass::IntlSegmentIterator,
+        ObjectClass::IntlDisplayNames,
+        ObjectClass::IntlRelativeTimeFormat,
     ];
 
     /// Most internal slots of one object.
@@ -198,6 +233,14 @@ impl ObjectClass {
             ObjectClass::AsyncDisposableStack => "AsyncDisposableStack",
             ObjectClass::IntlLocale => "Intl.Locale",
             ObjectClass::IntlCollator => "Intl.Collator",
+            ObjectClass::IntlPluralRules => "Intl.PluralRules",
+            ObjectClass::IntlNumberFormat => "Intl.NumberFormat",
+            ObjectClass::IntlListFormat => "Intl.ListFormat",
+            ObjectClass::IntlSegmenter => "Intl.Segmenter",
+            ObjectClass::IntlSegments => "Segments",
+            ObjectClass::IntlSegmentIterator => "Segment Iterator",
+            ObjectClass::IntlDisplayNames => "Intl.DisplayNames",
+            ObjectClass::IntlRelativeTimeFormat => "Intl.RelativeTimeFormat",
         }
     }
 }

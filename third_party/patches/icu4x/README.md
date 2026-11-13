@@ -1,12 +1,13 @@
 # icu4x patches (icu_calendar)
 
-ep9 builds icu_calendar 2.3.0 from a git checkout of ICU4X with ep9's patches on top, in the
+ep9 builds icu_calendar 2.4.0 from a git checkout of ICU4X with ep9's patches on top, in the
 same form as the regress fork (third_party/patches/regress/README.md; vendor by hash). Only
 icu_calendar comes from the checkout; every other ICU4X crate comes from crates.io.
 
 ```text
 third_party/icu4x.commit            upstream commit (the vcs commit of the crates.io            tracked
-                                    icu_calendar 2.3.0 package: "Bump component crates to 2.3.0")
+                                    icu_calendar 2.4.0 package: "Consolidate fieldbag changelog
+                                    (#8634)")
 third_party/patches/icu4x/*.patch   ep9 patches, applied in name order                         tracked (this folder)
 scripts/sync-icu4x.sh               sync_dep icu4x <url> (scripts/sync-lib.sh)
 third_party/icu4x/                  checkout + patches                                         git-ignored
@@ -18,10 +19,11 @@ third_party/icu4x/                  checkout + patches                          
 
 ## State
 
-- Pin: `a14f2dad852be26bad277ae704abf27a15cbfed1` of https://github.com/unicode-org/icu4x, the
-  commit that `.cargo_vcs_info.json` of the crates.io icu_calendar 2.3.0 package names
-  (`path_in_vcs` components/calendar). Its `components/calendar/src` equals the package's
-  `src` (`diff -r`: no difference).
+- Pin: `031d9e89f6a3fd26a14491e090729d46094328fd` of https://github.com/unicode-org/icu4x, the
+  commit that `.cargo_vcs_info.json` of the crates.io icu_calendar 2.4.0 package names
+  (`path_in_vcs` components/calendar; the INTL W2-0 BUMP, INTL-V2-D4; the 2.3.0 pin was
+  `a14f2dad852be26bad277ae704abf27a15cbfed1`). Its `components/calendar/src` equals the
+  package's `src` (`diff -r`: no difference).
 - Patches: 2.
 
   | File | What | Test | ep9 use |
@@ -33,3 +35,8 @@ third_party/icu4x/                  checkout + patches                          
   pin moves to the vcs commit of the new package, 0001 is made again from the new package
   manifest, and 0002 goes away once upstream has a bounded `until` (the report draft of the
   INTL W1 fixer r3).
+- Bump 2.3.0 -> 2.4.0 (INTL W2-0, INTL-V2-D4): 0001 made again from the 2.4.0 package manifest
+  (`git diff` of `components/calendar/Cargo.toml` after a copy of the package's `Cargo.toml`).
+  0002 applies with no change (the same diff, line for line): `calendar_arithmetic.rs` is the
+  same file in both packages, and 2.4.0 still finds the month count with the unbounded spec
+  loop (`while !surpasses_checker.surpasses_months(candidate_months)`), so 0002 stays.

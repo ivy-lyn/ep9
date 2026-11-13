@@ -131,6 +131,20 @@ pub struct RuntimeTable {
     /// feedback (MC-w15-6). The value, or 0 with a pending exception: the ReferenceError of a
     /// TDZ binding or of a missing name outside `typeof`, or the throw of a getter or a trap.
     pub load_global: RtFn0,
+    /// The allocation-site entry of an array literal that native code made (M8-P2 A2-CUT,
+    /// MC-w20-4 (3); a recording entry, doc 13:349): the object-model part of T0's literal
+    /// cold path (`literal_site::array_site`: the site's ALLOC_SITE handler, its birth kind
+    /// and count, the array's back pointer). Operands: the feedback slot of the site and the
+    /// new array; the site is (the FunctionInfo of `fp`, the slot), passed in, never found
+    /// from the top frame. The `CreateArrayLiteral` or `CreateEmptyArrayLiteral` at `off`
+    /// must name that slot. The array, or 0.
+    pub alloc_site: RtFn2,
+    /// The clone entry of a `CloneObject` that native code ran (M8-P2 A2-CUT, MC-w20-4 (3);
+    /// a recording entry): the object-model part of T0's clone cold path
+    /// (`literal_site::miss_clone`: the result shape's fields widened to any value, under the
+    /// same conditions). Operands: the feedback slot of the site, the source and the result;
+    /// the `CloneObject` at `off` must name that slot. The result, or 0.
+    pub clone_widen: RtFn3,
 }
 
 // ---- Cx (the isolate register points at it): VM_LAYOUT ----
@@ -187,6 +201,10 @@ pub const RT_SET_KEYED: usize = offset_of!(RuntimeTable, set_keyed);
 pub const RT_DEOPT: usize = offset_of!(RuntimeTable, deopt);
 /// VM_LAYOUT. Entry 11 (M6-P0 VM6, V11-D43): the global load.
 pub const RT_LOAD_GLOBAL: usize = offset_of!(RuntimeTable, load_global);
+/// VM_LAYOUT. Entry 12 (M8-P2 A2-CUT, MC-w20-4 (3)): the array-literal allocation site.
+pub const RT_ALLOC_SITE: usize = offset_of!(RuntimeTable, alloc_site);
+/// VM_LAYOUT. Entry 13 (M8-P2 A2-CUT, MC-w20-4 (3)): the clone widening.
+pub const RT_CLONE_WIDEN: usize = offset_of!(RuntimeTable, clone_widen);
 
 // ---- FunctionInfo: VM_LAYOUT ----
 /// VM_LAYOUT. FunctionInfo: the start of its bytecode (`*const u8`).

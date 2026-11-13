@@ -99,6 +99,14 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_intl::intl::BLOCK, 30);
     assert_eq!(ep9_intl::locale::BLOCK, 31);
     assert_eq!(ep9_intl::collator::BLOCK, 32);
+    // INTL W2: plural_rules, number_format, list_format, segmenter, display_names.
+    assert_eq!(ep9_intl::plural_rules::BLOCK, 33);
+    assert_eq!(ep9_intl::number_format::BLOCK, 34);
+    assert_eq!(ep9_intl::list_format::BLOCK, 35);
+    assert_eq!(ep9_intl::segmenter::BLOCK, 36);
+    assert_eq!(ep9_intl::display_names::BLOCK, 37);
+    // INTL W3: relative_time_format.
+    assert_eq!(ep9_intl::relative_time_format::BLOCK, 38);
 }
 
 #[test]

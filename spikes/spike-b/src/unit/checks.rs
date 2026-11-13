@@ -880,7 +880,7 @@ fn scrub_stack() {
 // ---- (d) threads -----------------------------------------------------------------------------
 
 /// Calls of each runtime-table entry through the counting table.
-static COUNTS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+static COUNTS: [AtomicU64; 14] = [const { AtomicU64::new(0) }; 14];
 
 macro_rules! counting {
     ($($name:ident = $idx:literal, $field:ident, ($($a:ident: $t:ty),*);)*) => {$(
@@ -912,6 +912,8 @@ counting! {
     c_set_keyed = 9, set_keyed, (cx: *mut NativeCx, fp: *mut u64, off: u32, o: u64, k: u64, v: u64);
     c_deopt = 10, deopt, (cx: *mut NativeCx, fp: *mut u64, off: u32, dump: u64, native_fp: u64);
     c_load_global = 11, load_global, (cx: *mut NativeCx, fp: *mut u64, off: u32);
+    c_alloc_site = 12, alloc_site, (cx: *mut NativeCx, fp: *mut u64, off: u32, slot: u64, result: u64);
+    c_clone_widen = 13, clone_widen, (cx: *mut NativeCx, fp: *mut u64, off: u32, slot: u64, source: u64, result: u64);
 }
 
 /// A runtime table that counts each call, then runs the process table's entry.
@@ -928,6 +930,8 @@ static COUNTING: RuntimeTable = RuntimeTable {
     set_keyed: c_set_keyed,
     deopt: c_deopt,
     load_global: c_load_global,
+    alloc_site: c_alloc_site,
+    clone_widen: c_clone_widen,
 };
 
 /// What one thread of check (d) saw.

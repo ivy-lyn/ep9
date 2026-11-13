@@ -324,6 +324,22 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 /// inline and continues at the next pc. The `ics_only` expansions (MODES-D11, MODES-D19; M5-P3
 /// PROFILE6) drop the record: (b) tail-calls [`skip_next`] (no record, the next pc), (c)
 /// continues at the next pc. Their fast handlers have no record code; the bits are dead there.
+///
+/// **The no-change test (M8-P1 RECCOST2).** In a `full` (b) handler the arm first runs
+/// `profile::adds_bit` (the test of `profile::record`: the vector through the frame's
+/// FunctionInfo, then the slot's value half; no store). Only a record that adds a bit tail-calls
+/// [`record_next`], which tests again and stores it, so every slot gets the same bits (FACT_SCHEMA
+/// 2). A record with no new bit tail-calls [`skip_next`], as the `ics_only` arm does: no call of
+/// `record_next`, and the handler's own dispatch stays apart from this arm (an inline dispatch
+/// here made LLVM merge it with the int32 dispatch: one more `jmp` on the int32 path of `Add`
+/// on x86-64). x86-64: the test is about 11 instructions and `skip_next` 3, where the call took
+/// 18 (`record_next` 16 and the jump); no fast handler saves a register on entry for it (the
+/// slot operand is a volatile read, so LLVM does not load it at the handler entry). Three
+/// opcodes keep the plain tail call: with the test, x86-64 `Div` and `DivSmi` got 2 more
+/// instructions on their int32 path (LLVM merged two dispatch tails), and aarch64
+/// `ForInPrepare` built a frame on entry. The `Flow::RecordPair` arm has no such test: its
+/// bits (`profile::compare_bits`) read the kind of a cell operand, too much code for a fast
+/// handler ([`record_pair_exit`]).
 macro_rules! record_exit {
     (return, ics_only, $name:ident, $st:ident, $r:ident) => {{
         let _ = $r;
@@ -333,7 +349,38 @@ macro_rules! record_exit {
         let _ = $r;
         $st.next
     }};
+    (return, full, Div, $st:ident, $r:ident) => {{
+        $crate::interp::dsl::record_exit!(@call Div, $st, $r)
+    }};
+    (return, full, DivSmi, $st:ident, $r:ident) => {{
+        $crate::interp::dsl::record_exit!(@call DivSmi, $st, $r)
+    }};
+    (return, full, ForInPrepare, $st:ident, $r:ident) => {{
+        $crate::interp::dsl::record_exit!(@call ForInPrepare, $st, $r)
+    }};
     (return, full, $name:ident, $st:ident, $r:ident) => {{
+        const PLACE: u64 = $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name);
+        // SAFETY: `pc` is this one-byte-scale instruction of verified code; its one-byte slot
+        // operand is at `PLACE & 0xFF` (`slot_place`). A volatile read, so LLVM does not move
+        // it to the handler entry, where it would hold a register on every path.
+        let slot = unsafe { core::ptr::read_volatile($st.pc.add((PLACE & 0xFF) as usize)) };
+        // The no-change test (M8-P1 RECCOST2): no bit is new, so no record; the tail call of
+        // `skip_next` (as `ics_only`), not the handler's own dispatch, so LLVM does not merge
+        // this arm into the dispatch of the int32 paths.
+        if !$crate::profile::adds_bit(
+            &$st,
+            $crate::interp::dsl::FSlot(u32::from(slot)),
+            $r.bits() as u32,
+        ) {
+            $crate::interp::dsl::skip_exit!($name, $st)
+        }
+        $crate::interp::dsl::record_exit!(@call $name, $st, $r)
+    }};
+    (become, full, $name:ident, $st:ident, $r:ident) => {{
+        $crate::profile::record(&$st, $r);
+        $st.next
+    }};
+    (@call $name:ident, $st:ident, $r:ident) => {{
         let St {
             cx, pc, fp, acc, ..
         } = $st;
@@ -344,10 +391,6 @@ macro_rules! record_exit {
                 { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) },
             >(cx, pc, fp, acc, $r.bits());
         }
-    }};
-    (become, full, $name:ident, $st:ident, $r:ident) => {{
-        $crate::profile::record(&$st, $r);
-        $st.next
     }};
 }
 pub(crate) use record_exit;
@@ -525,8 +568,10 @@ macro_rules! record_next_fn {
         /// registers are saved here, not on entry to every handler that may record
         /// (M4-P1 PROFILE-X64). One copy per `PLACE` (M7-P2 RECCOST): the slot operand's
         /// offset and the instruction length are constants, so it decodes no word (x86-64: 16
-        /// instructions on the path that adds no bit, 22 before). `cargo xtask disasm-check`
-        /// follows the jump to it as part of the handler.
+        /// instructions on the path that adds no bit, 22 before). Since M8-P1 RECCOST2 a
+        /// handler tail-calls it only for a record that adds a bit, except `Div`, `DivSmi` and
+        /// `ForInPrepare` ([`record_exit`]). `cargo xtask disasm-check` follows the jump to it
+        /// as part of the handler.
         ///
         /// # Safety
         /// `pc` is an instruction of verified code at one-byte scale in the live top frame

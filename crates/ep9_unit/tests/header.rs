@@ -216,7 +216,7 @@ fn decode_rejects_bad_headers() {
     assert_eq!(UnitHeader::decode(&[]), Err(BadUnit::Truncated));
     assert_eq!(with(0, &[0x88]), Err(BadUnit::Magic));
     assert_eq!(with(7, b"\r"), Err(BadUnit::Magic));
-    for v in [1, 3] {
+    for v in [1, 2, 3, 5] {
         assert_eq!(
             with(offsets::CONTAINER_VERSION, &le(v)),
             Err(BadUnit::ContainerVersion(v))
@@ -283,7 +283,9 @@ fn section_entries_round_trip_and_reject_bad_bytes() {
         let b = e.encode();
         assert_eq!(SectionEntry::decode(&b), Ok(e));
         assert_eq!(SectionKind::from_u32(k as u32), Some(k));
-        assert_eq!(b[entry_offsets::ALIGN_LOG2], 3);
+        // Container v3: the text is 64 KiB-aligned, every other named kind 8-aligned.
+        let align = if k == SectionKind::Text { 16 } else { 3 };
+        assert_eq!(b[entry_offsets::ALIGN_LOG2], align, "{}", k.name());
     }
     let good = SectionEntry {
         kind: SectionKind::Facts,
@@ -308,6 +310,18 @@ fn section_entries_round_trip_and_reject_bad_bytes() {
     );
     assert_eq!(
         with(entry_offsets::ALIGN_LOG2, 4),
+        Err(BadUnit::SectionTable("section alignment"))
+    );
+    // A text entry that says 8 bytes (the container v2 value) is refused.
+    let mut text = SectionEntry {
+        kind: SectionKind::Text,
+        offset: 1 << 16,
+        size: 8,
+    }
+    .encode();
+    text[entry_offsets::ALIGN_LOG2] = 3;
+    assert_eq!(
+        SectionEntry::decode(&text),
         Err(BadUnit::SectionTable("section alignment"))
     );
     for i in entry_offsets::RESERVED..SECTION_ENTRY_SIZE {
@@ -495,4 +509,164 @@ fn extension_entries_round_trip_and_reject_bad_bytes() {
         Some("facts")
     );
     assert!(SectionKind::Deps.reserved() && SectionKind::SnapshotBinding.reserved());
+}
+
+/// The header of `tests/golden/code-tables.txt` (a bless of an empty file writes it).
+const CODE_TABLES_HEAD: &str = "\
+# ep9 unit code tables (docs/adr/H35-aot-unit-format.md, the Freeze-table part \"code tables
+# (append-only)\"; MC-w29-2). One line per defined value: <table> <value> <name>. Lines only
+# append: a value keeps its number and its meaning. Written by ep9_unit::code_table_lines();
+# EP9_BLESS=1 appends a new value and never rewrites a line. layout_text() pins the SHA-256 of
+# the first lines (the tables of container version 4), so an edit of one of them needs a
+# CONTAINER_VERSION bump.
+";
+
+/// The (table, value) key of a code-table line.
+fn code_key(line: &str) -> Option<(&str, &str)> {
+    let mut parts = line.split(' ');
+    Some((parts.next()?, parts.next()?))
+}
+
+/// The code-table history check (MC-w29-2): `golden` is the file, `now` the lines of
+/// [`code_table_lines`], `base` the pinned (line count, SHA-256) of [`CODE_TABLES_V4`].
+/// `Ok` gives the lines that a bless appends (new values, in table order); `Err` when an older
+/// line is gone or changed, when the pinned lines do not hash to the pin, or when two lines
+/// name one value.
+fn code_tables_state(
+    golden: &str,
+    now: &[String],
+    base: (usize, &str),
+) -> Result<Vec<String>, String> {
+    let old: Vec<&str> = golden
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .collect();
+    if old.len() < base.0 {
+        return Err(format!(
+            "code-tables.txt has {} lines, fewer than the {} of container version 4",
+            old.len(),
+            base.0
+        ));
+    }
+    let pinned: String = old[..base.0].iter().map(|l| format!("{l}\n")).collect();
+    let fp = sha256::to_hex(&sha256::sha256(pinned.as_bytes()));
+    if fp != base.1 {
+        return Err(format!(
+            "the first {} code-table lines hash to {fp}, not to the pin {} (CODE_TABLES_V4): \
+             an older line changed",
+            base.0, base.1
+        ));
+    }
+    fn key(l: &str) -> Result<(&str, &str), String> {
+        code_key(l).ok_or_else(|| format!("bad code-table line {l:?}"))
+    }
+    let mut keys = std::collections::HashSet::new();
+    for l in &old {
+        if !keys.insert(key(l)?) {
+            return Err(format!("two code-table lines name the value of {l:?}"));
+        }
+        if !now.iter().any(|n| n == l) {
+            return Err(format!(
+                "the code-table line {l:?} is gone or changed: a value keeps its number and its \
+                 meaning (H35 Freeze table); add a new value with a new line"
+            ));
+        }
+    }
+    let mut add = Vec::new();
+    for n in now {
+        if !old.contains(&n.as_str()) {
+            if !keys.insert(key(n)?) {
+                return Err(format!(
+                    "the line {n:?} names a value that has another line"
+                ));
+            }
+            add.push(n.clone());
+        }
+    }
+    Ok(add)
+}
+
+#[test]
+fn code_tables_only_append() {
+    let text = read_golden("code-tables.txt");
+    let now = code_table_lines();
+    let blessing_empty = blessing() && text.is_empty();
+    if blessing_empty {
+        let mut out = CODE_TABLES_HEAD.to_string();
+        for l in &now {
+            out.push_str(l);
+            out.push('\n');
+        }
+        write_golden("code-tables.txt", &out);
+        return;
+    }
+    match code_tables_state(&text, &now, CODE_TABLES_V4) {
+        Ok(add) if add.is_empty() => {}
+        Ok(add) if blessing() => {
+            let mut out = text;
+            for l in add {
+                out.push_str(&l);
+                out.push('\n');
+            }
+            write_golden("code-tables.txt", &out);
+        }
+        Ok(add) => panic!("new code-table values {add:?}; run with EP9_BLESS=1 to append them"),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+/// MC-w29-2: the code tables left the layout text (container version 4). An appended CPU bit,
+/// target code or flag bit adds one line to `code-tables.txt` and leaves the layout text and
+/// the container version as they are; a changed or removed older line fails.
+#[test]
+fn a_code_table_append_moves_no_container_version() {
+    let now = code_table_lines();
+    let base: String = now.iter().map(|l| format!("{l}\n")).collect();
+    let pin = (now.len(), sha256::to_hex(&sha256::sha256(base.as_bytes())));
+    let pin = (pin.0, pin.1.as_str());
+    let golden = format!("# head\n{base}");
+    assert_eq!(code_tables_state(&golden, &now, pin), Ok(vec![]));
+    // The layout text names no CPU bit, target code or flag bit by name.
+    for gone in ["sse4.1", "dotprod", "x86_64", "windows", "has_pads"] {
+        assert!(
+            !layout_text().contains(gone),
+            "{gone} is still in the layout text"
+        );
+    }
+    // An append: a new x86-64 bit, a new target ABI code, a compat bit.
+    let mut more = now.clone();
+    more.insert(11, "cpu 11 avx512f x86_64".to_string());
+    more.push("target_abi 4 freebsd".to_string());
+    more.push("compat 1 later_bit".to_string());
+    let add = code_tables_state(&golden, &more, pin).unwrap();
+    assert_eq!(add.len(), 3);
+    // After the append the old pin still holds (the pinned lines are a prefix).
+    let appended = format!(
+        "{golden}{}",
+        add.iter().map(|l| format!("{l}\n")).collect::<String>()
+    );
+    assert_eq!(code_tables_state(&appended, &more, pin), Ok(vec![]));
+    // A changed meaning (a renamed bit) or a removed value fails.
+    let renamed: Vec<String> = now
+        .iter()
+        .map(|l| l.replace("cpu 2 sse4.1", "cpu 2 sse41"))
+        .collect();
+    assert!(
+        code_tables_state(&golden, &renamed, pin)
+            .unwrap_err()
+            .contains("gone or changed")
+    );
+    let removed: Vec<String> = now[1..].to_vec();
+    assert!(code_tables_state(&golden, &removed, pin).is_err());
+    // A new line that reuses a value: refused.
+    let mut reuse = now.clone();
+    reuse.push("cpu 2 sse4.1-again x86_64".to_string());
+    assert!(code_tables_state(&golden, &reuse, pin).is_err());
+    // A hand edit of a pinned line in the file (with the code edited to match): the pin fails.
+    let edited = golden.replace("cpu 2 sse4.1 x86_64", "cpu 2 sse41 x86_64");
+    assert!(
+        code_tables_state(&edited, &renamed, pin)
+            .unwrap_err()
+            .contains("pin")
+    );
 }

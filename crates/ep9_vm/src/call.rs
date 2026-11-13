@@ -674,15 +674,15 @@ pub(crate) fn construct_function_object(
     };
     let r = call_function_object(cx, f, this, argc, arg, new_target)?;
     // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers: after the call,
-    // in the caller's realm (`call_function_object` switched back).
-    if is_object(r) {
-        Ok(r)
-    } else if this != HOLE {
-        Ok(this)
-    } else {
-        let (kind, msg) = interp::derived_result_error(r);
-        Err(throw_error(cx, kind, msg))
-    }
+    // in the caller's realm (`call_function_object` switched back). One helper for this path
+    // and for the T0 construct of native code (`slow::call`; M8-P1 A2-CONSTRUCT, MC-w36-3):
+    // an object result is the result; else the receiver of a base constructor; else (a
+    // derived constructor: its `this` binding is the hole, or a result that is not an
+    // object) the error of `interp::derived_result_error`. Each caller has its own receiver
+    // in a Rust local (the conservative scan sees it), so the result helper needs no frame.
+    // The helper is at the end of the file, so no cited line moves (the same line count
+    // here as before).
+    construct_result(cx, r, this)
 }
 
 /// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13): a `prototype` that is
@@ -967,8 +967,8 @@ pub(crate) unsafe fn push_construct_stub(
 /// test before its count and its budget unit, then writes the frame with
 /// [`fill_missing_args`], [`write_call_args`] and [`write_call_header`]; the four together
 /// write what [`push_frame`] writes (test `tests::calls::the_fast_frame_write_equals_push_frame`).
-/// The forwarded call of the T0 call fast path on the other targets ([`forward_frame`], M7-P4
-/// LEVER-3) writes its frame with the same four.
+/// The forwarded call of the T0 call path ([`forward_frame`], M7-P4 LEVER-3; x86-64 since M8-P0)
+/// writes its frame with the same four.
 ///
 /// The `& !7` changes no bit (`base` is a slot address, so `fp` is 8-byte aligned). It keeps
 /// LLVM from folding `base + 8 * n + 72` into every later address, so the fast path holds the
@@ -1703,6 +1703,8 @@ mod tail_tests {
 // ```text
 // T0 call fast path (interp/ops.rs call_fast): a host callee with a FUNCTION receiver
 //   ──> forward_frame: no GC point, nothing thrown, the budget above 0 (else None: cold)
+//   (x86-64 without spike-native: from the cold body of the call, after the call record,
+//   interp/ops.rs call_receiver_cold ──> forward_or_call; M8-P0 X86-CALL-FWD)
 // slow::call ──> host_entry ──> forward: the same steps after `enter`, with the GC point of
 //   the feedback count (the call that makes the callee's vector) and the RangeError of a
 //   full VM stack
@@ -1769,7 +1771,8 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 /// threshold or with the vector made: no GC point) and pushes its frame right above `fp`, and
 /// gives the new frame and the callee's code (else a null frame). The caller then takes the call's budget unit and
 /// the sampled call record of `callee`, as the cold path does (`call_record_cold`,
-/// `slow::call`), and jumps.
+/// `slow::call`), and jumps. (`call_fast` sends a call whose record is due cold; the x86-64
+/// cold body `interp::ops::call_receiver_cold` records before its `forward_or_call` calls this.)
 ///
 /// It makes no call (no panic path either), so the call handlers that inline it keep their
 /// register use and their frame: the callee test reads the current REALM record's intrinsics
@@ -1778,8 +1781,10 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 ///
 /// Not in the x86-64 form of the call fast path (`call_fast`, PERF3 item 2): there, the
 /// inlined body costs the call handlers more callee-saved registers, pushed on each call
-/// (CallProperty0 2 to 6, CallProperty1 3 to 6, M7-P4 LEVER-3), so x86-64 forwards stay on
-/// the cold path.
+/// (CallProperty0 2 to 6, CallProperty1 3 to 6, M7-P4 LEVER-3). On x86-64 (not spike-native)
+/// the cold body of the 5 call opcodes with a receiver calls it instead, out of line
+/// (`interp::ops::forward_or_call`, M8-P0 X86-CALL-FWD): the fast handler reaches that body
+/// by its tail jump to the cold handler, so no fast handler saves a register for it.
 ///
 /// A null frame and code, with no state changed (the slots it may have written lie above the top frame,
 /// where no GC root scan and no reader looks): the cold path decides. That is every call that
@@ -1794,10 +1799,6 @@ pub(crate) fn forward_list(cx: &Cx, list: u64) -> Option<ForwardList> {
 /// `fp` is the live top frame (bytecode runs with no scratch area), `next` the pc after its
 /// current call instruction, and `arg(fp, i)` returns valid Value bits for `i < argc`, rooted
 /// in the caller's registers.
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 // Out of line in debug builds: inline, its unoptimized locals grow the frame of each call
 // handler (and of `step::<S2>`, which holds them), and the debug Sibling dispatch and the
 // small-stack re-entry test (`tests::interp::scaled_steps_fit_a_small_stack`) run out of
@@ -1832,10 +1833,6 @@ pub(crate) unsafe fn forward_frame(
 ///
 /// # Safety
 /// As [`forward_frame`].
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 #[inline(always)]
 unsafe fn forward_frame_in(
     cx: &Cx,
@@ -1933,10 +1930,6 @@ unsafe fn forward_frame_in(
 /// [`forward_list`]'s Array form that `forward_frame` reads in place, with
 /// `arguments::unmapped_word` (each `object::array_get` of an index below n gives that
 /// word). `None` for any other Array. Not a GC point; no panic path.
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 #[inline(always)]
 fn packed_array(a: u64) -> Option<(u32, Option<ep9_heap::CellPtr>)> {
     use ep9_value::encoding::NUMBER_TAG;
@@ -1973,10 +1966,6 @@ fn packed_array(a: u64) -> Option<(u32, Option<ep9_heap::CellPtr>)> {
 /// the record's list a copy of the intrinsic slots; `realm::switch` reads it back). `None`
 /// when `Cx::realm` is no REALM record or its list is too short. Not a GC point; no panic
 /// path.
-#[cfg_attr(
-    all(not(feature = "spike-native"), target_arch = "x86_64"),
-    allow(dead_code)
-)]
 #[inline(always)]
 fn realm_intrinsic(cx: &Cx, id: crate::builtins::IntrinsicId) -> Option<u64> {
     let realm = cx.realm;
@@ -2095,17 +2084,23 @@ thread_local! {
     /// The calls that `interp/slow/call.rs` `forward` or [`forward_frame`] pushed a frame for
     /// on this thread.
     pub(crate) static FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-    /// The calls of [`FORWARDED_CALLS`] that [`forward_frame`] (the T0 call fast path) pushed.
-    #[cfg_attr(all(not(feature = "spike-native"), target_arch = "x86_64"), allow(dead_code))]
+    /// The calls of [`FORWARDED_CALLS`] that [`forward_frame`] (the T0 call path) pushed.
     pub(crate) static T0_FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
 /// The non-bytecode arm of [`call_bytecode`] (M7-P5 A2-RW, route MC-w30-2): a call from Rust
 /// (`Cx::call`, a builtin callback, a forwarded `apply` or `call` that the T0 forward refused,
 /// a callee of another realm) of native code (an AotBaseline unit function or a Baseline slot)
-/// enters it through the Rust entry, with an entry frame. Construct (`new_target` set) stays
-/// refused (MC-w29-8), and so does any other kind. (At the end of the file, so no cited line
-/// moves.)
+/// enters it through the Rust entry, with an entry frame. Since M8-P1 A2-CONSTRUCT
+/// (M8-PLAN-D25, MC-w29-8 step 1) a construct (`new_target` set: `Reflect.construct`,
+/// `Cx::construct`, a construct of another realm) of an ordinary function enters it too, with
+/// new.target in its frame (`construct_function_object` made the receiver and checks the
+/// result). The entry counts the call as `slow::count_entry` does for a T0 callee
+/// (M8-PLAN-D26, MC-w29-1). Any other kind, and a class constructor (`native_callee`), stays
+/// refused. (At the end of the file, so no cited line moves.) Out of line and cold: the T0
+/// path of [`call_bytecode`] keeps its code.
+#[cold]
+#[inline(never)]
 fn call_native_from_rust(
     cx: &mut Cx,
     f: u64,
@@ -2114,10 +2109,116 @@ fn call_native_from_rust(
     arg: impl Fn(u32) -> u64,
     new_target: u64,
 ) -> Res<u64> {
-    if new_target == UNDEFINED
-        && let Some(nfi) = crate::native::native_callee(f)
-    {
-        return crate::native::enter_from_rust(cx, f, nfi, this, argc, arg);
+    if let Some(nfi) = crate::native::native_callee(f) {
+        return crate::native::enter_from_rust_with(cx, f, nfi, this, argc, arg, new_target);
     }
     Err(not_implemented(cx, "calling code of this dispatch kind"))
+}
+
+/// ECMA-262 §10.2.2 `[[Construct]]` steps 10-12 for the result `r` of a constructor body that
+/// got the receiver `this` (the hole for a derived constructor): an object result is the
+/// result; else the receiver of a base constructor; else the error of
+/// [`interp::derived_result_error`] (a derived constructor), thrown in the current realm,
+/// which is the caller's. The one result check of the Rust construct path
+/// ([`construct_function_object`]) and of the T0 construct of native code (`slow::call`; M8-P1
+/// A2-CONSTRUCT, MC-w36-3). A JS caller of a bytecode constructor has the same check in its
+/// construct stub frame (`interp::construct_return`).
+#[inline(always)]
+pub(crate) fn construct_result(cx: &mut Cx, r: u64, this: u64) -> Res<u64> {
+    if is_object(r) {
+        Ok(r)
+    } else if this != HOLE {
+        Ok(this)
+    } else {
+        let (kind, msg) = interp::derived_result_error(r);
+        Err(throw_error(cx, kind, msg))
+    }
+}
+
+/// [`call_host`] for a call instruction of bytecode (M8-P2 TS-HOSTCALL: `interp/slow/call.rs`
+/// `host_entry` and `host_construct`, which pass the host function `h` of `fi` that they
+/// read). `caller_fp` is the live top frame of that bytecode, and bytecode runs with no
+/// scratch area (the module doc). So the host frame goes right above the caller's registers
+/// (`frame_top`: no [`top_of`] and no scratch top to save), and the return puts the scratch
+/// top back to none, as [`call_host`] does for a caller with no scratch area. Everything else
+/// is the [`call_host`] form, in its order: the native stack check (RangeError), the host
+/// frame on the VM stack (H14), the realm switch (H20 R5), the call, [`host_return`] (the
+/// tail-call request, H20-Q3), the throw protocol in debug builds (H20 R4), and no budget
+/// unit (H23). (At the end of the file, so [`call_host`] and the cited lines keep their
+/// places; `do_call`'s host arms keep [`call_host`], whose lines H14 cites.)
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn call_host_from_bytecode(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    h: crate::host::HostFn,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+    caller_fp: *mut u64,
+    return_pc: *const u8,
+) -> Res<u64> {
+    let rt = cx.rt();
+    debug_assert!(
+        rt.stack().scratch_top().is_null(),
+        "bytecode runs with a scratch area"
+    );
+    debug_assert!(fi.host.is_some_and(|g| core::ptr::fn_addr_eq(g, h)));
+    if !rt.native_stack_ok() {
+        return stack_overflow(cx);
+    }
+    // SAFETY: `frame_top(caller_fp)` is the first free slot above the live top frame, which has
+    // no scratch Values above it; the limit is the stack end.
+    let fp = unsafe {
+        push_frame(
+            frame_top(caller_fp),
+            cx.stack_limit,
+            fi,
+            f,
+            this,
+            argc,
+            arg,
+            caller_fp,
+            return_pc,
+            UNDEFINED,
+            new_target,
+        )
+    };
+    let Some(fp) = fp else {
+        return stack_overflow(cx);
+    };
+    rt.stack().set_fp(fp);
+    // SAFETY: `fp` is the host frame that `push_frame` just wrote; it stays live until `h`
+    // returns.
+    let args = unsafe { Args::from_fp(fp) };
+    // H20 R5: a host function runs in its own realm. Not a GC point.
+    let saved_realm = realm::enter_realm_of(cx, f);
+    let r = {
+        let mut hcx = abi::Cx::new(cx);
+        h(
+            &mut hcx,
+            Local::from_bits(this),
+            args,
+            Local::from_bits(new_target),
+        )
+        .map(|v| v.bits())
+    };
+    realm::leave(cx, saved_realm);
+    // H20-Q3: pops the host frame (the scratch top goes back to none), or makes the call of
+    // `h`'s tail-call request in its place.
+    let r = host_return(cx, r, caller_fp, core::ptr::null_mut());
+    // H20 R4: the throw protocol.
+    debug_assert!(
+        r.is_ok() || rt.pending() != 0,
+        "host function {:?} returned Err without a pending exception",
+        fi.name
+    );
+    debug_assert!(
+        r.is_err() || rt.pending() == 0,
+        "host function {:?} returned Ok with a pending exception",
+        fi.name
+    );
+    r
 }

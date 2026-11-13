@@ -87,6 +87,54 @@ perf-ci-v0.json (schema ep9-perf-ci/v1) + a Markdown table (--md appends; CI: th
 - **Exit status.** 0 every workload has a count; 1 a workload was refused or has no count (the JSON and the table are still written, with null counts); 2 usage error.
 - `--workloads` picks a subset; `--jobs N` limits the parallel workloads (default: the CPU count); `--work DIR` keeps the generated v8-v7 files.
 
+## Bench mode
+
+BENCH-SET on GitHub (plan v13 rule 13 and section 3.2; decision M8-PLAN-D18). The rule-13
+floor of a role reads it: no row worse than +0.5% Ir, head against base, on linux-x64 and
+linux-arm64. A dispatch of `ci.yml` with the input `bench_base` runs only the `scope` job and the
+2 legs of the `bench-set` job; every other job, `lint` too, is skipped. The orchestrator runs it
+(agents do not run BENCH-SET on the Mac):
+
+```bash
+gh workflow run ci.yml --ref <ref with this ci.yml> -f bench_base=<base sha> -f bench_head=<head sha>
+# a subset of rows, or rows outside the BENCH-SET (here the TS workload and deltablue):
+gh workflow run ci.yml --ref <ref with this ci.yml> -f bench_base=<base sha> -f bench_head=<head sha> \
+  -f bench_workloads=octane-typescript,deltablue
+```
+
+```text
+bench_base (full sha) ──┐                       per leg: linux-x64 (--branch-sim), linux-arm64
+bench_head (full sha;   ├─> checkout both trees ─> cargo build --release -p ep9_cli in each
+ empty: the dispatched  │   (each with its own toolchain file, regress and icu4x forks and
+ commit)                │    its own target dir, bench/target-<side>), and the jitless build
+                        │    of each: --no-default-features (bench/target-jitless-<side>);
+                        │    then the head rebuild guard on the 2 head builds
+dispatched commit ──────┘─> the scripts and the workload files (sync-bench.sh bench-v8v7 bench-octane)
+          |
+          v
+.github/scripts/bench-set.mjs, twice per leg: --build jit (19 rows), then --build jitless
+  (12 rows); per workload and side, one run
+  valgrind --tool=cachegrind --cache-sim=no --branch-sim=<yes|no> <ep9> <file>
+  EP9_HASH_SEED=1, EP9_GC_HELPERS=0; output = the expected output, else "no count"
+          |
+          v
+bench-set-<leg>.json and bench-set-<leg>-jitless.json (schema ep9-bench-set/v1) + 2 tables in
+the step summary; artifact bench-set-<leg>-<head sha>: both JSONs and the cachegrind .out and
+.log files (bench/cg/, bench/cg-jitless/)
+```
+
+- **Rows.** The BENCH-SET of rule 13: t0-loop, t0-branchy, t0-call, t0-prop, t0-gen, the 7 v8-v7 kernels (no regexp) and Octane-7: 19 rows (`--workloads` takes other names and `workloads.mjs` set names). Both builds run the same workload text: it comes from the dispatched commit.
+- **The jitless leg** (route MC-w36-4). The jit build (the `ep9_cli` default features: the `jit` feature, preset `jit`, feedback `full`) runs the recording handlers; the jitless build (`--no-default-features`: no `jit` feature, preset `jitless`) runs the `ics` handler table with `skip_next`, which the M2 gate D11 and the A3 FV1 target read. So each leg also builds both sides with `cargo build --release --locked -p ep9_cli --no-default-features` in its own target dir (`bench/target-jitless-<side>`, so the jit artifacts stay) and runs `bench-set.mjs --build jitless` on the JITLESS-SET: t0-loop, t0-branchy, t0-call, t0-prop, t0-gen and the 7 v8-v7 kernels, 12 rows (or the `bench_workloads` rows). Rule 13 is read on both builds: the `count` step runs both legs and fails when either fails. `--build jit|jitless` makes `bench-set.mjs` check each binary's build line (`features <list>; preset <name>`: jit needs the feature `jit` and preset `jit`, jitless neither; else exit 2) and names the build in the JSON (`build`) and the table title. Without `--build` there is no check and `build` is null.
+- **`bench_workloads`.** The dispatch input for `--workloads`: a comma list of `workloads.mjs` names or set names, for example `octane-typescript,deltablue` (`octane-typescript` is the TS workload: the 3 files of the Octane `typescript` kernel, N = 5, with the same output check as the other rows). Empty: the 19 rows. It reaches the scripts through `env` only. The `bench mode` step refuses a value that is not a comma list of names (a-z, 0-9, `-`), and the `bench workloads` step (`bench-set.mjs --list`) refuses an unknown name; both exit 2, before the checkouts and the builds. The input with no `bench_base` is refused too. The concurrency group names it, so 2 dispatches of one pair with other workloads do not replace each other. The rule-13 floor of a role reads the 19 rows and the 12 jitless rows; a run with `bench_workloads` gives only the rows it names, in both legs.
+- **Verdict.** Per row: `pass` when head Ir ≤ base Ir × 1.005, `FAIL` above it, `no count` when a side has none (a wrong output, a failed run, no count in the log). The compare is on integers, so +0.500% passes. The run is PASS (every row passes), FAIL (a row fails) or INCOMPLETE; the leg fails unless PASS. A row that is faster by any amount passes: rule 13 is a floor.
+- **One run per side.** With a fixed seed and no GC helper threads, cachegrind gives the same count on every run (perf CI v0 above; the x86 fixer and S0 boxes), so the job counts each side once.
+- **X86IR.** The linux-x64 leg runs with `--branch-sim=yes`: each row also has Bc, Bcm, Bi and Bim (indirect-branch mispredicts in the cachegrind model, a relative signal only). Every row lists the functions with the largest Ir change and the largest Ir (the out files, summed per function name over all source files; `--top`, default 15; the table shows the 10 largest changes). `--functions LIST` (substrings of function names) keeps those functions in the rows and in the table beside the cut, with `named: true`; the job passes `SetNamedProperty_cold,DefineNamedOwnProperty_cold` (rule 81: a `_cold` handler is judged by its X86IR rows). The .out files are in the artifact for `cg_annotate`.
+- **Target dirs and the head rebuild guard** (route BENCH-STALE-HEAD; decisions log M6-ORCH-560). Base and head never share a target dir: `bench/target-base`, `bench/target-head`, `bench/target-jitless-base`, `bench/target-jitless-head`. Until M8-P2 both sides built in one dir; the checkouts came before the base build, so a head crate whose files were older than the base artifacts was fresh to cargo and the head binary kept base code (only the crates that depend on the re-synced regress and icu4x checkouts compiled again). The readings of a change in `ep9_vm` alone stay valid; a change below it (for example `ep9_frontend`, `ep9_heap`, `ep9_unit`) was not measured. Each head build writes its cargo JSON messages (`--message-format=json-render-diagnostics`) to `bench/build-head.jsonl` and `bench/build-jitless-head.jsonl`, and `bench-set.mjs --rebuild-guard --base-tree bench/base --head-tree bench/head --cargo-json <file>` fails the leg (exit 1, with the package names) when a package of the build whose directory differs from base (any file, `target` and `.git` not read) has a compiler artifact that cargo did not compile (`"fresh": true`; a build script's artifact is not read). Tests: `node --test .github/scripts/bench-set.test.mjs` (the guard and its CLI on fake trees and fake cargo messages).
+- **Commits.** `bench_base` and `bench_head` must be full commit ids. Each binary's `ep9 --version` build line (P0-BUILDID) must name its commit, built clean; else the leg stops with exit 2.
+- **JSON.** `target`, `build` (`jit`, `jitless`, or null with no `--build`), `counter` (`cachegrind-i-refs`), `branch_sim`, `hash_seed`, `gc_helpers`, `limit_pct`, `functions_named`, `valgrind`, `host`, `base` and `head` (`commit`; `ep9`: `version`, `engine_build`, `build`), `notes`, `verdict`, `worst` (per group t0, v8v7, octane: the row with the largest delta), and per row: `name`, `group`, the file's `sha256`, `expect` and source, `base` and `head` (`status`, `error`, `ir`, `bc`, `bcm`, `bi`, `bim`), `delta_pct`, `verdict`, `bim_delta_pct`, `out_rows_match` (the rows of each .out file sum to its summary line) and `functions`.
+- **Push and pull_request.** The `bench-set` job has no `needs` and no job-level `if`, so it is never skipped (the tag gate refuses a skipped job): without `bench_base` its matrix is one leg, `off`, that prints "bench mode off" and runs `node --test .github/scripts/bench-set.test.mjs`.
+- **Local.** On a Linux host with valgrind: build both binaries, then `node .github/scripts/bench-set.mjs --base-ep9 A --head-ep9 B --base <sha> --head <sha> --out bench-set.json` (`--branch-sim`, `--keep DIR`, `--jobs N`, `--limit-pct`).
+
 ## JetStream
 
 Needs `bash scripts/sync-bench.sh` first (`bash scripts/sync-bench.sh bench-jetstream` syncs only

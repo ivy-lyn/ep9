@@ -36,17 +36,21 @@
 #                      (kernels.mjs --check) as an artifact
 #   atomgate ......... the atom-key gate (G2, debug exec)            (Linux x64)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
-#   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
+#   dep-guards ....... cargo tree/metadata guards; deny; cldr-tables (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
 #   fuzz-smoke ....... cargo-fuzz, 60 s per front-end target; prints (Linux x64)
 #                      only the crash count and hashes (V9-A17)
+#   bench-set ........ the bench mode (inputs bench_base, bench_head): (Linux x64,
+#                      cachegrind Ir of ep9 at base and head, BENCH-SET  Linux arm64)
+#                      rows, rule 13 verdict; else one "off" leg (its own tests)
 #
 # 57 jobs: lint 1, scope 1, build-test 4, feature-matrix 4, test262 4, atomgate 1, test262-gc 24,
 # fp-check 1, disasm 4, spikes 4, bench-run 4, miri 1, dep-guards 1, perf-ci-v0 1, sp-tsrs-win 1,
 # fuzz-smoke 1.
 # M6-P0 (plan v11 section 2.9) adds release-tests 4 and no-jit-units 1: 62 jobs.
+# M8-P0 (plan v13 section 3.2) adds bench-set 1 (its "off" leg on push and pull_request): 63 jobs.
 #
 # The dispatch input `only` (plan v10 rule 27, a CI probe of a merge head): windows-x64,linux-x64
 # keeps those two in every 4-target matrix (36 jobs); the one-runner jobs all run. Default `all`.
@@ -56,13 +60,20 @@
 # since M5-P2; `s0` runs them with S0, and their step name then says S0, so the m0-exit and
 # m1-exit readers never take that run for the S1 evidence.
 #
-# Scope (docs/plan/12-governance.md section 3; plan v9 V9-D35, V9-A18): every job except lint and
-# scope `needs: scope` and is skipped when scope says docs_only=true. docs_only is true only when
+# The dispatch inputs `bench_base` and `bench_head` (the bench mode; plan v13 section 3.2,
+# V13-D18): with bench_base set (a full commit id), the run has scope and the 2 bench-set legs
+# (linux-x64 with --branch-sim, linux-arm64) only; scope gives bench=true and every other job,
+# lint too, is skipped. bench_head empty: the dispatched commit. The bench-set job has no
+# job-level `if`: on push and pull_request its one "off" leg runs (its own tests), so it reads
+# success (a skipped job fails the tag gate).
+#
+# Scope (docs/plan/12-governance.md section 3; plan v9 V9-D35, V9-A18): every job except lint,
+# scope and bench-set `needs: scope` and is skipped when scope says docs_only=true. docs_only is true only when
 # every changed path is under docs/ or is a root *.md, and none is docs/adr/README.md or under
 # docs/measurements/ (code reads both); anything else fails closed to docs_only=false. A
-# docs-only change runs scope and lint only (lint stays: its adr-lint step, from M4-P3, must see
+# docs-only change runs scope, lint and bench-set ("off") only (lint stays: its adr-lint step, from M4-P3, must see
 # ADR commits). If scope fails, the other jobs still run (`!cancelled()`). GitHub counts a skipped job as green,
-# so on a code change CI is done only when every one of the 62 jobs ran and none is pending or
+# so on a code change CI is done only when every one of the 63 jobs ran and none is pending or
 # skipped. Timeouts follow the plan v10 section 9.2 budget table (rule 25: >= 1.5x the last
 # measured time).
 #
@@ -101,6 +112,18 @@ on:
         options:
           - s1
           - s0
+      # The bench mode (header; V13-D18; bench-set checks each input, before any build).
+      bench_base:
+        description: "bench mode: base commit, full sha (empty: off; set: only scope and bench-set run)"
+        default: ""
+        type: string
+      bench_head:
+        description: "bench mode: head commit, full sha (empty: the dispatched commit)"
+        default: ""
+        type: string
+      bench_workloads:
+        description: "bench mode: bench-set.mjs --workloads, a comma list (empty: the 19 BENCH-SET rows)"
+        type: string
 
 permissions:
   contents: read
@@ -109,9 +132,9 @@ permissions:
 # pull_request: one group per PR; a new push cancels the PR's running CI.
 # push: one group per commit, so every main commit gets its run (per-commit perf baseline).
 # schedule, workflow_dispatch: one group per event and ref; never cancelled; a newer pending run
-# replaces an older pending one.
+# replaces an older pending one; a bench-mode dispatch: one group per bench_base and bench_head.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || (inputs.bench_base != '' && format('bench-{0}-{1}-{2}', inputs.bench_base, inputs.bench_head || github.sha, inputs.bench_workloads)) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -126,6 +149,8 @@ defaults:
 jobs:
   lint:
     name: fmt + clippy + rustdoc
+    # Skipped in the bench mode only (header): a dispatch with bench_base runs scope and bench-set.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.bench_base == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -190,6 +215,9 @@ jobs:
     timeout-minutes: 10
     outputs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
+      # The bench mode (header): "true" only for a dispatch with bench_base set. From the inputs,
+      # not from a step, so a failed scope step does not turn the full run on in the bench mode.
+      bench: ${{ github.event_name == 'workflow_dispatch' && inputs.bench_base != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,7 +260,7 @@ jobs:
   build-test:
     name: build + test (${{ matrix.name }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -279,6 +307,20 @@ jobs:
       - name: zero text relocations (ep9_masm)
         if: ${{ !cancelled() }}
         run: cargo test -p ep9_masm --no-default-features --features aot --locked
+      # CI-VM-OPT2-DEBUG (plan v13 V13-D41): the ep9_vm tests::calls unit tests in an optimized
+      # build with debug assertions, the build form of Spike C's tests (opt-level 2). There
+      # forwarding_call_handlers_keep_the_sibling_dispatch_flat checks that the forwarding Call*
+      # handlers end in a tail jump; at opt-level 0 it skips (no build has tail calls there). It
+      # found the LEVER-3 forward_frame stack leak only in that build. linux-x64 only (rule 25:
+      # est. +4-6 min, one ep9_vm build). Its own target dir, so the debug cache of this job is
+      # neither rebuilt nor saved with a second profile.
+      - name: ep9_vm tests::calls (opt-level 2, debug assertions)
+        if: ${{ !cancelled() && matrix.name == 'linux-x64' }}
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+          CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: "true"
+          CARGO_TARGET_DIR: ${{ runner.temp }}/opt2
+        run: cargo test -p ep9_vm --locked --lib tests::calls
 
   # H27: the default (jit), jitless and aot feature sets, one package at a time (a --workspace
   # build unifies features and would hide a jitless leak): build, clippy -D warnings and test,
@@ -289,7 +331,7 @@ jobs:
   feature-matrix:
     name: feature matrix (${{ matrix.name }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -313,7 +355,7 @@ jobs:
   test262:
     name: test262 parse + exec (${{ matrix.name }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -446,14 +488,14 @@ jobs:
           echo "m0-exit start: depth_tests" | tee nesting.log
           echo "m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}" | tee -a nesting.log
           echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress third_party/icu4x.commit third_party/patches/icu4x; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
-          rc1=0
+          echo "m1-exit forks: $(sh -c '. "$1/scripts/sync-lib.sh"; root=$1; fork_attest regress icu4x' sh "$PWD")" | tee -a nesting.log
           cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
-          echo "m0-exit status: $rc1" | tee -a nesting.log
+          echo "m0-exit status: ${rc1:-0}" | tee -a nesting.log
           echo "m0-exit start: nesting_caps cli" | tee -a nesting.log
           rc2=0
           cargo test --locked -p ep9_cli --test nesting_caps --test cli 2>&1 | tee -a nesting.log || rc2=$?
           echo "m0-exit status: $rc2" | tee -a nesting.log
-          [ "$rc1" = 0 ] && [ "$rc2" = 0 ]
+          [ "${rc1:-0}" = 0 ] && [ "$rc2" = 0 ]
       # Every failure with its cause; regenerate an expectation file from test262-exec.json
       # (status "fail").
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -496,7 +538,7 @@ jobs:
   test262-gc:
     name: test262 GC-stress (${{ matrix.target.name }}, ${{ matrix.shard }}/${{ matrix.shards }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -560,7 +602,7 @@ jobs:
   fp-check:
     name: fp-check (linux-x64)
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -594,7 +636,7 @@ jobs:
   disasm:
     name: disasm checks (${{ matrix.name }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -625,7 +667,7 @@ jobs:
   spikes:
     name: spike gates (${{ matrix.name }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -822,7 +864,7 @@ jobs:
   bench-run:
     name: bench-run (${{ matrix.name }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -882,7 +924,7 @@ jobs:
   atomgate:
     name: atomgate (linux-x64)
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
     # Plan v10 section 9.2 gave 60 (est.); run 40715227268 measured 57 min, so rule 25 (1.5x) sets 90.
     timeout-minutes: 90
@@ -923,7 +965,7 @@ jobs:
   miri:
     name: Miri (linux-x64)
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -949,7 +991,7 @@ jobs:
   dep-guards:
     name: dependency guards
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -972,6 +1014,16 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - run: cargo deny --locked check licenses bans
+      # The CLDR side tables of ep9_intl (INTL-V2-D5; tools/cldr-tables/README.md): the pinned
+      # CLDR JSON (a sparse fetch from github.com), then the generated crates/ep9_intl/src/cldr/gen
+      # files against the generator (--check), then the tool tests (the tables against the ICU4X
+      # compiled data of the same CLDR release). tools/cldr-tables is its own workspace (the root
+      # `exclude`), so only this step builds it.
+      - name: cldr-tables check and tests
+        run: |
+          { tools/cldr-tables/sync-cldr-json.sh || { echo "::warning::sync-cldr-json.sh failed; one retry in 20 s"; sleep 20; tools/cldr-tables/sync-cldr-json.sh; }; } &&
+            cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- --check &&
+            cargo test --locked --manifest-path tools/cldr-tables/Cargo.toml
 
   # perf CI v0 (docs/plan/10-quality.md section 2; tools/bench/README.md "perf CI v0"): the
   # instructions of t0-loop, t0-branchy, t0-call, t0-prop, ci-v0 and the generated v8-v7
@@ -983,7 +1035,7 @@ jobs:
   perf-ci-v0:
     name: perf CI v0 (linux-x64)
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -992,8 +1044,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install valgrind (cachegrind)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q valgrind
+          apt_valgrind() { sudo apt-get -o Acquire::Retries=5 update -q && sudo apt-get -o Acquire::Retries=5 install -y -q valgrind; }
+          apt_valgrind || { echo "apt-get failed; one more try in 30 s"; sleep 30; apt_valgrind; }
       # richards and deltablue: tools/bench/cross/v8v7.mjs writes them from this pinned checkout.
       - run: bash scripts/sync-bench.sh bench-v8v7
       - run: cargo build --release --locked -p ep9_bench -p ep9_cli
@@ -1015,7 +1067,7 @@ jobs:
   sp-tsrs-win:
     name: SP-tsrs-win (recorded, not blocking)
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: windows-2025
     continue-on-error: true
     timeout-minutes: 120
@@ -1067,7 +1119,7 @@ jobs:
   fuzz-smoke:
     name: fuzz smoke (linux-x64)
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
     # Plan v9 section 9.2: 30 (new job; the fixer re-reads it from the first measured run).
     timeout-minutes: 30
@@ -1122,7 +1174,7 @@ jobs:
   release-tests:
     name: release tests (${{ matrix.name }})
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1132,8 +1184,8 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096): the slowest target took 21 min.
+    timeout-minutes: 75
+    # Rule 25 (M6-ORCH-545): windows-x64 took 38.9 min on m2/m8 (43124645044), 42.6 min with INTL W2 (43003201072), > 45 with W3 (43056384143: the build, +30 INTL crates); 1.5 x about 48 min.
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1155,7 +1207,7 @@ jobs:
   no-jit-units:
     name: no-jit units (linux-x64)
     needs: scope
-    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 95
     # Plan v11 section 2.9; the M6-P0 probe (run 41565402096) took 20 min. Rule 25: run 42135182874
@@ -1176,3 +1228,179 @@ jobs:
         env:
           EP9_EXPECT_NO_JIT: "1"
         run: cargo test --locked -p ep9_vm -p ep9_builtins --no-default-features
+
+  # The bench mode (plan v13 section 3.2, V13-D18; tools/bench/README.md "Bench mode"): BENCH-SET
+  # on GitHub. A dispatch with bench_base (and bench_head; empty: the dispatched commit) builds
+  # ep9 at both commits on one runner and counts the cachegrind Ir of the BENCH-SET rows (t0-*,
+  # the 7 v8-v7 kernels, Octane-7) with EP9_HASH_SEED=1 and EP9_GC_HELPERS=0
+  # (.github/scripts/bench-set.mjs). Per target one JSON artifact (base, head, Ir per row and side,
+  # the delta, the rule-13 verdict, the functions with the largest change, and the cachegrind
+  # files) and the table in the step summary. linux-x64 runs with --branch-sim=yes (the X86IR
+  # rows); linux-arm64 counts the same rows. The scripts and the workload files come from the
+  # dispatched commit, so both builds run the same text. The job fails when a row is worse than
+  # +0.5% or has no count. No `needs` and no job-level `if` (header; tag.sh refuses a skipped
+  # job): on push, pull_request and a dispatch without bench_base the matrix is one "off" leg
+  # that prints "bench mode off" and runs the bench-set.mjs tests. Each side builds in its own
+  # target dirs (route BENCH-STALE-HEAD); no cache (each dispatch builds 2 new commits).
+  # bench_workloads (MC-w36-1; empty: the 19 rows) is a comma list of bench-set.mjs --workloads
+  # names (workloads.mjs names and set names, octane-typescript too). It goes through env only:
+  # the mode step refuses any other character, the workloads step any unknown name (exit 2, both
+  # before the checkouts and builds). The concurrency group names it, so 2 dispatches of one pair
+  # with other workloads do not replace each other.
+  # The jitless leg (MC-w36-4): each side is also built with --no-default-features (the jitless
+  # build: no jit feature, preset jitless, the `ics` handler table with skip_next) in its own
+  # target dir, and counted on the JITLESS-SET (t0-*, the 7 v8-v7 kernels; or bench_workloads).
+  # Rule 13 is read on both builds: the job fails when either leg fails. Its JSON and cachegrind
+  # files go in the same artifact (bench-set-<target>-jitless.json, bench/cg-jitless/).
+  bench-set:
+    name: bench set (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.bench_base != ''
+          && '[{"name":"linux-x64","os":"ubuntu-24.04","branch_sim":true}, {"name":"linux-arm64","os":"ubuntu-24.04-arm","branch_sim":false}]'
+          || '[{"name":"off","os":"ubuntu-24.04","branch_sim":false}]') }}
+    runs-on: ${{ matrix.os }}
+    # Rule 25: no measured time yet (est. 30-50 min: 2 release builds, 38 cachegrind runs, 4 at a
+    # time; the jitless leg adds 2 release builds in their own target dir and 24 runs, est. +20-35
+    # min); the orchestrator sets 1.5x the first measured time.
+    timeout-minutes: 180
+    steps:
+      - name: bench mode
+        id: mode
+        env:
+          LEG: ${{ matrix.name }}
+          BASE: ${{ inputs.bench_base }}
+          HEAD: ${{ inputs.bench_head }}
+          SHA: ${{ github.sha }}
+          WORKLOADS: ${{ inputs.bench_workloads }}
+        run: |
+          if [ "$LEG" = off ]; then
+            if [ -n "$WORKLOADS" ]; then
+              echo "::error::bench mode: bench_workloads needs bench_base"
+              exit 2
+            fi
+            echo "bench mode off"
+            echo "on=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$WORKLOADS" =~ ^([a-z0-9-]+(,[a-z0-9-]+)*)?$ ]]; then
+            echo "::error::bench mode: bench_workloads must be a comma list of workload names (a-z, 0-9, -)"
+            exit 2
+          fi
+          head="${HEAD:-$SHA}"
+          for c in "$BASE" "$head"; do
+            if ! [[ "$c" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::bench mode: '$c' is not a full commit id (40 hex digits)"
+              exit 1
+            fi
+          done
+          { echo "on=true"; echo "base=$BASE"; echo "head=$head"; echo "workloads=$WORKLOADS"; } >> "$GITHUB_OUTPUT"
+          echo "bench mode on ($LEG): base $BASE, head $head, tools $SHA, workloads ${WORKLOADS:-the BENCH-SET}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.1'
+      # Fake valgrind and fake engines: the delta, the +0.5% verdict, the refusals.
+      - name: bench-set.mjs tests
+        run: node --test .github/scripts/bench-set.test.mjs
+      # Unknown workload names stop the leg here (exit 2), before the checkouts and builds.
+      - name: bench workloads
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        env:
+          WORKLOADS: ${{ steps.mode.outputs.workloads }}
+        run: |
+          node .github/scripts/bench-set.mjs --build jit --list ${WORKLOADS:+--workloads "$WORKLOADS"}
+          echo "jitless leg:"
+          node .github/scripts/bench-set.mjs --build jitless --list ${WORKLOADS:+--workloads "$WORKLOADS"}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        with:
+          ref: ${{ steps.mode.outputs.base }}
+          path: bench/base
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        with:
+          ref: ${{ steps.mode.outputs.head }}
+          path: bench/head
+          persist-credentials: false
+      - name: Install valgrind (cachegrind)
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        run: |
+          apt_valgrind() { sudo apt-get -o Acquire::Retries=5 update -q && sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends valgrind; }
+          apt_valgrind || { echo "apt-get failed; try 2 of 3 in 60 s"; sleep 60; apt_valgrind; } || { echo "apt-get failed; try 3 of 3 in 120 s"; sleep 120; apt_valgrind; }
+          valgrind --version
+      # The workload files: v8-v7 and Octane-7 from the pins of the dispatched commit.
+      - name: bench pins
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        run: bash scripts/sync-bench.sh bench-v8v7 bench-octane
+      # Each tree with its own toolchain file and its own regress and icu4x forks (the
+      # setup-rust steps, per tree). Each binary's build line must name its commit, clean
+      # (bench-set.mjs checks it). Each side has its own target dir and its own jitless target
+      # dir (MC-w36-4; route BENCH-STALE-HEAD: with one shared dir, a head crate whose files are
+      # older than the base artifacts was fresh to cargo, so the head binary kept base code).
+      # The head rebuild guard (bench-set.mjs --rebuild-guard) reads the head builds' JSON
+      # messages: each package that differs from base must have been compiled for head.
+      - name: build ep9 at base and head
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        env:
+          BENCH_DIR: ${{ github.workspace }}/bench
+        run: |
+          set -euo pipefail
+          retry() { "$@" || { echo "::warning::$* failed; one retry in 20 s"; sleep 20; "$@"; }; }
+          for side in base head; do
+            target="$BENCH_DIR/target-$side" jitless="$BENCH_DIR/target-jitless-$side"
+            pushd "bench/$side" > /dev/null
+            chan="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+            comps="$(sed -n 's/^components *= *\[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' "')"
+            rustup toolchain install "$chan" --profile minimal ${comps:+--component "$comps"} --no-self-update
+            retry bash scripts/sync-regress.sh
+            if [ -f scripts/sync-icu4x.sh ]; then retry bash scripts/sync-icu4x.sh; fi
+            cargo build --release --locked -p ep9_cli --target-dir "$target" --message-format=json-render-diagnostics > "$BENCH_DIR/build-$side.jsonl"
+            cargo build --release --locked -p ep9_cli --no-default-features --target-dir "$jitless" --message-format=json-render-diagnostics > "$BENCH_DIR/build-jitless-$side.jsonl"
+            popd > /dev/null
+            cp "$target/release/ep9" "bench/ep9-$side"
+            cp "$jitless/release/ep9" "bench/ep9-jitless-$side"
+            "bench/ep9-$side" --version
+            "bench/ep9-jitless-$side" --version
+          done
+          for b in build build-jitless; do
+            node .github/scripts/bench-set.mjs --rebuild-guard --base-tree bench/base --head-tree bench/head --cargo-json "bench/$b-head.jsonl"
+          done
+      - name: count
+        id: count
+        if: ${{ steps.mode.outputs.on == 'true' }}
+        env:
+          BASE: ${{ steps.mode.outputs.base }}
+          HEAD: ${{ steps.mode.outputs.head }}
+          LEG: ${{ matrix.name }}
+          BRANCH_SIM: ${{ matrix.branch_sim }}
+          WORKLOADS: ${{ steps.mode.outputs.workloads }}
+          # Rule 81: a _cold handler is judged by its X86IR rows, so the 2 store cold bodies are
+          # always in the function table (TS-STORE), not only when they are in the top cut.
+          FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold
+        run: |
+          sim=()
+          if [ "$BRANCH_SIM" = true ]; then sim=(--branch-sim); fi
+          wl=()
+          if [ -n "$WORKLOADS" ]; then wl=(--workloads "$WORKLOADS"); fi
+          # Both legs run; the step fails when either fails (rule 13 on both builds, MC-w36-4).
+          rc=0 rc2=0
+          node .github/scripts/bench-set.mjs --base-ep9 bench/ep9-base --head-ep9 bench/ep9-head \
+            --base "$BASE" --head "$HEAD" --target "$LEG" "${sim[@]}" "${wl[@]}" --keep bench/cg \
+            --functions "$FUNCTIONS" --out "bench-set-$LEG.json" --md "$GITHUB_STEP_SUMMARY" --build jit || rc=$?
+          node .github/scripts/bench-set.mjs --base-ep9 bench/ep9-jitless-base --head-ep9 bench/ep9-jitless-head \
+            --base "$BASE" --head "$HEAD" --target "$LEG" "${sim[@]}" "${wl[@]}" --keep bench/cg-jitless \
+            --functions "$FUNCTIONS" --out "bench-set-$LEG-jitless.json" --md "$GITHUB_STEP_SUMMARY" --build jitless || rc2=$?
+          exit $((rc > rc2 ? rc : rc2))
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && steps.count.outcome != 'skipped' && steps.mode.outputs.on == 'true' }}
+        with:
+          name: bench-set-${{ matrix.name }}-${{ steps.mode.outputs.head }}
+          path: |
+            bench-set-${{ matrix.name }}.json
+            bench-set-${{ matrix.name }}-jitless.json
+            bench/cg/
+            bench/cg-jitless/
+          if-no-files-found: error

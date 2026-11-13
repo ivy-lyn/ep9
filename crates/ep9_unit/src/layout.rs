@@ -231,7 +231,8 @@ pub fn layout_text() -> String {
     s.push_str(
         "\nlayout: each section starts at align_up(end of the previous section or of the table, \
          2^align_log2); padding bytes are 0; flags and reserved bytes are 0; the last section \
-         ends at total_size\n",
+         ends at total_size. The text is 64 KiB-aligned in the file; a loader maps it in place \
+         only from a 64 KiB-aligned address and copies it otherwise\n",
     );
     s.push_str(
         "hash: hash_alg 1 = SHA-256 of the whole unit with content_hash and the signature \
@@ -246,8 +247,8 @@ pub fn layout_text() -> String {
     );
     let _ = writeln!(s, "header_flags: bit 0 signed");
     s.push_str(
-        "compat_flags: no bit defined; an unknown bit is ignored. incompat_flags: no bit \
-         defined; an unknown bit -> bytecode\n",
+        "compat_flags: an unknown bit is ignored. incompat_flags: an unknown bit -> bytecode. \
+         The defined bits are in the code tables\n",
     );
     let _ = writeln!(
         s,
@@ -261,18 +262,15 @@ pub fn layout_text() -> String {
         "source_flags: defined mask {SOURCE_FLAGS_DEFINED:#x}; bits 0-1 code kind (0 script, \
          1 module, 2 eval), bit 2 strict, bit 8 typescript, bits 9-11 TS flags only with bit 8"
     );
+    let (lines, sha) = CODE_TABLES_V4;
     let _ = writeln!(
         s,
-        "target_arch: 0 unknown (never matches), {} x86_64, {} aarch64",
-        target_arch::X86_64,
-        target_arch::AARCH64
-    );
-    let _ = writeln!(
-        s,
-        "target_abi: 0 unknown (never matches), {} linux, {} apple, {} windows",
-        target_abi::LINUX,
-        target_abi::APPLE,
-        target_abi::WINDOWS
+        "code tables (append-only; the H35 Freeze table): the target_arch and target_abi codes, \
+         the cpu bits and the compat and incompat bits are the lines of \
+         tests/golden/code-tables.txt (<table> <value> <name>), which only append: a value keeps \
+         its number and its meaning. A target code that the engine does not know never matches \
+         (0 = unknown), and a cpu bit that it does not know counts as missing: bytecode. The \
+         first {lines} lines are the tables of container version 4 (SHA-256 {sha})"
     );
     let native: Vec<&str> = Contract::ALL
         .iter()
@@ -291,14 +289,56 @@ pub fn layout_text() -> String {
          codegen_flags, unit_data_slot, target, heap_page_log2, cpu_required, version 0 with a \
          text section, a reserved section, an extension that native code needs\n",
     );
-    s.push_str("cpu bits: bit name arch (a bit not listed counts as missing on every host)\n");
+    s
+}
+
+/// The lines of the code tables at container version 4 (MC-w29-2; the H35 Freeze-table part
+/// "code tables (append-only)"): how many lines `tests/golden/code-tables.txt` held then, and
+/// the SHA-256 of those lines (each with its newline). [`layout_text`] prints both, so an edit
+/// of one of these lines changes the layout text and needs a container version bump; a line
+/// appended after them changes neither.
+pub const CODE_TABLES_V4: (usize, &str) = (
+    22,
+    "ec077908730576ea7073e9de138a490683095c4c3f476c263afab8ba97ff6c27",
+);
+
+/// The code tables, one line per defined value, `<table> <value> <name>`: the target
+/// architecture and ABI codes, the CPU feature bits (with their architecture) and the
+/// `compat_flags` and `incompat_flags` bits (with their meaning). An engine meets an unknown
+/// value of each table safely (H35 Freeze table), so a new value is one appended line of
+/// `tests/golden/code-tables.txt` and moves no container version (MC-w29-2).
+pub fn code_table_lines() -> Vec<String> {
+    let mut v = Vec::new();
+    for (code, name) in [
+        (target_arch::X86_64, "x86_64"),
+        (target_arch::AARCH64, "aarch64"),
+    ] {
+        v.push(format!("target_arch {code} {name}"));
+    }
+    for (code, name) in [
+        (target_abi::LINUX, "linux"),
+        (target_abi::APPLE, "apple"),
+        (target_abi::WINDOWS, "windows"),
+    ] {
+        v.push(format!("target_abi {code} {name}"));
+    }
     for (bit, name, arch) in cpu::BITS {
         let arch = if arch == target_arch::X86_64 {
             "x86_64"
         } else {
             "aarch64"
         };
-        let _ = writeln!(s, "{} {name} {arch}", bit.trailing_zeros());
+        v.push(format!("cpu {} {name} {arch}", bit.trailing_zeros()));
     }
-    s
+    let compat: [(u32, &str); 1] = [(
+        crate::header::compat_flags::HAS_PADS,
+        "has_pads: each function entry and each adr target is bti c or bti jc, each br goes \
+         through x16 or x17, and each br and blr target is proven a pad or code outside the \
+         text: a loader may map the text with BTI",
+    )];
+    for (bit, text) in compat {
+        v.push(format!("compat {} {text}", bit.trailing_zeros()));
+    }
+    // incompat_flags: no bit defined (an unknown bit gives bytecode).
+    v
 }

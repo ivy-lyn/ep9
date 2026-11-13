@@ -7,16 +7,18 @@
 #
 # The repo is public (plan v9 rule 14, V9-A17): fuzz/scripts/run.sh sends the fuzzer output
 # to a file inside the job and prints only the crash count, the hashes and numeric stats. The
-# job uploads only the record JSON (names, numbers, hashes: commit, dirty, CPU-h, executed
-# units, crash ids): no crash input, no corpus, no log. A crash fails the job with a fixed text;
-# the input is reproduced off GitHub (on a fuzz box, plan v10 V10-D26), never from this job.
+# job uploads the record JSON (names, numbers, hashes: commit, dirty, CPU-h, executed units,
+# crash ids) and, when it fails, each crash file sealed by run.sh (openssl cms, AES-256, to the
+# public cert fuzz/crash-recipient.pem; only the orchestrator holds the private key; route
+# FUZZ-CRASH-SEAL, decisions log M6-ORCH-544): no readable crash input, no corpus, no log. A
+# crash fails the job with a fixed text; a sealed file is opened only off GitHub.
 # The self-test step proves the output rule and the record rule before each campaign.
 #
 # The record (plan v10 §2.7, CX6-1): campaign gh<run id>-<attempt>-<target>; commit = the
 # checked-out HEAD; dirty = a tracked file differed from HEAD before the build or after the run
 # (`git status --porcelain --untracked-files=no`); cpu_hours = the MEASURED run seconds x jobs /
 # 3600 (the fork workers run all the time), so a run cut short counts what it ran; counted =
-# the `counted` input. Default: 3 targets x 2 h x 4 workers = 24 CPU-h. A counted run is
+# the `counted` input. Default: 4 targets x 2 h x 4 workers = 32 CPU-h. A counted run is
 # pre-registered: a decisions-log row names the tool, campaign and tree before the dispatch
 # (plan v10 rule 41); a bug-finding run keeps the default `counted: false`.
 name: fuzz
@@ -75,7 +77,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [frontend_compile, function_ctor, eval_context]
+        target: [frontend_compile, function_ctor, eval_context, regexp]
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 360
     steps:
@@ -128,7 +130,16 @@ jobs:
           FUZZ_FORK: ${{ inputs.jobs }}
           FUZZ_MAX_LEN: ${{ inputs.max_len }}
           FUZZ_SUMMARY: fuzz-summary.json
+          FUZZ_SEAL_TO: fuzz/crash-recipient.pem
         run: bash fuzz/scripts/run.sh "$TARGET" "$SECONDS_IN" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET"
+      # The sealed crash files only (.p7m: CMS enveloped data). run.sh deletes the plain file of each sealed one; a file that does not seal stays in fuzz/artifacts/<target>/, which no step uploads.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() }}
+        with:
+          name: fuzz-sealed-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}.sealed/*.p7m
+          if-no-files-found: ignore
+          retention-days: 7
       # The ep9-fuzz/v1 record: names, numbers and hashes only (record.sh refuses any other
       # string). With no run summary (the campaign step did not end) the record says 0 s and
       # counted false, and it still lists the crash files of this campaign: run.sh wrote

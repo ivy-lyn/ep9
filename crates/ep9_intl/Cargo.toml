@@ -14,7 +14,7 @@ license.workspace = true
 [dependencies]
 ep9_temporal = { path = "../ep9_temporal" }
 ep9_vm = { path = "../ep9_vm" }
-# The ICU4X 2.3.x components (INTL-I1-D5); the features are in the root Cargo.toml.
+# The ICU4X 2.4.x components (INTL-I1-D5, INTL-V2-D4); the features are in the root Cargo.toml.
 icu_calendar = { workspace = true }
 icu_casemap = { workspace = true }
 icu_collator = { workspace = true }

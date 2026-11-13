@@ -318,11 +318,41 @@ pub enum IntrinsicId {
     IntlCollator,
     /// `%Intl.Collator.prototype%` (ECMA-402 §10.3, an ordinary object; made by `ep9_intl` collator.rs).
     IntlCollatorPrototype,
+    // ---- INTL W2 (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Intl.PluralRules%` (ECMA-402 §17.1; made by `ep9_intl` plural_rules.rs, block 33).
+    IntlPluralRules,
+    /// `%Intl.PluralRules.prototype%` (ECMA-402 §17.3, an ordinary object; made by `ep9_intl` plural_rules.rs).
+    IntlPluralRulesPrototype,
+    /// `%Intl.NumberFormat%` (ECMA-402 §16.1; made by `ep9_intl` number_format.rs, block 34).
+    IntlNumberFormat,
+    /// `%Intl.NumberFormat.prototype%` (ECMA-402 §16.3, an ordinary object; made by `ep9_intl` number_format.rs).
+    IntlNumberFormatPrototype,
+    /// `%Intl.ListFormat%` (ECMA-402 §14.1; made by `ep9_intl` list_format.rs, block 35).
+    IntlListFormat,
+    /// `%Intl.ListFormat.prototype%` (ECMA-402 §14.3, an ordinary object; made by `ep9_intl` list_format.rs).
+    IntlListFormatPrototype,
+    /// `%Intl.Segmenter%` (ECMA-402 §19.1; made by `ep9_intl` segmenter.rs, block 36).
+    IntlSegmenter,
+    /// `%Intl.Segmenter.prototype%` (ECMA-402 §19.3, an ordinary object; made by `ep9_intl` segmenter.rs).
+    IntlSegmenterPrototype,
+    /// `%IntlSegmentsPrototype%` (ECMA-402 §19.5.2, an ordinary object; made by `ep9_intl` segmenter.rs).
+    IntlSegmentsPrototype,
+    /// `%IntlSegmentIteratorPrototype%` (ECMA-402 §19.6.2, an ordinary object; made by `ep9_intl` segmenter.rs).
+    IntlSegmentIteratorPrototype,
+    /// `%Intl.DisplayNames%` (ECMA-402 §12.1; made by `ep9_intl` display_names.rs, block 37).
+    IntlDisplayNames,
+    /// `%Intl.DisplayNames.prototype%` (ECMA-402 §12.3, an ordinary object; made by `ep9_intl` display_names.rs).
+    IntlDisplayNamesPrototype,
+    // ---- INTL W3 (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Intl.RelativeTimeFormat%` (ECMA-402 §18.1; made by `ep9_intl` relative_time_format.rs, block 38).
+    IntlRelativeTimeFormat,
+    /// `%Intl.RelativeTimeFormat.prototype%` (ECMA-402 §18.3, an ordinary object; made by `ep9_intl` relative_time_format.rs).
+    IntlRelativeTimeFormatPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 109] = [
+    pub const ALL: [IntrinsicId; 123] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -432,6 +462,20 @@ impl IntrinsicId {
         IntrinsicId::IntlLocalePrototype,
         IntrinsicId::IntlCollator,
         IntrinsicId::IntlCollatorPrototype,
+        IntrinsicId::IntlPluralRules,
+        IntrinsicId::IntlPluralRulesPrototype,
+        IntrinsicId::IntlNumberFormat,
+        IntrinsicId::IntlNumberFormatPrototype,
+        IntrinsicId::IntlListFormat,
+        IntrinsicId::IntlListFormatPrototype,
+        IntrinsicId::IntlSegmenter,
+        IntrinsicId::IntlSegmenterPrototype,
+        IntrinsicId::IntlSegmentsPrototype,
+        IntrinsicId::IntlSegmentIteratorPrototype,
+        IntrinsicId::IntlDisplayNames,
+        IntrinsicId::IntlDisplayNamesPrototype,
+        IntrinsicId::IntlRelativeTimeFormat,
+        IntrinsicId::IntlRelativeTimeFormatPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -547,6 +591,20 @@ impl IntrinsicId {
             IntrinsicId::IntlLocalePrototype => "%Intl.Locale.prototype%",
             IntrinsicId::IntlCollator => "%Intl.Collator%",
             IntrinsicId::IntlCollatorPrototype => "%Intl.Collator.prototype%",
+            IntrinsicId::IntlPluralRules => "%Intl.PluralRules%",
+            IntrinsicId::IntlPluralRulesPrototype => "%Intl.PluralRules.prototype%",
+            IntrinsicId::IntlNumberFormat => "%Intl.NumberFormat%",
+            IntrinsicId::IntlNumberFormatPrototype => "%Intl.NumberFormat.prototype%",
+            IntrinsicId::IntlListFormat => "%Intl.ListFormat%",
+            IntrinsicId::IntlListFormatPrototype => "%Intl.ListFormat.prototype%",
+            IntrinsicId::IntlSegmenter => "%Intl.Segmenter%",
+            IntrinsicId::IntlSegmenterPrototype => "%Intl.Segmenter.prototype%",
+            IntrinsicId::IntlSegmentsPrototype => "%IntlSegmentsPrototype%",
+            IntrinsicId::IntlSegmentIteratorPrototype => "%IntlSegmentIteratorPrototype%",
+            IntrinsicId::IntlDisplayNames => "%Intl.DisplayNames%",
+            IntrinsicId::IntlDisplayNamesPrototype => "%Intl.DisplayNames.prototype%",
+            IntrinsicId::IntlRelativeTimeFormat => "%Intl.RelativeTimeFormat%",
+            IntrinsicId::IntlRelativeTimeFormatPrototype => "%Intl.RelativeTimeFormat.prototype%",
         }
     }
 
@@ -662,7 +720,21 @@ impl IntrinsicId {
             | IntrinsicId::IntlLocale
             | IntrinsicId::IntlLocalePrototype
             | IntrinsicId::IntlCollator
-            | IntrinsicId::IntlCollatorPrototype => return None,
+            | IntrinsicId::IntlCollatorPrototype
+            | IntrinsicId::IntlPluralRules
+            | IntrinsicId::IntlPluralRulesPrototype
+            | IntrinsicId::IntlNumberFormat
+            | IntrinsicId::IntlNumberFormatPrototype
+            | IntrinsicId::IntlListFormat
+            | IntrinsicId::IntlListFormatPrototype
+            | IntrinsicId::IntlSegmenter
+            | IntrinsicId::IntlSegmenterPrototype
+            | IntrinsicId::IntlSegmentsPrototype
+            | IntrinsicId::IntlSegmentIteratorPrototype
+            | IntrinsicId::IntlDisplayNames
+            | IntrinsicId::IntlDisplayNamesPrototype
+            | IntrinsicId::IntlRelativeTimeFormat
+            | IntrinsicId::IntlRelativeTimeFormatPrototype => return None,
         })
     }
 
@@ -746,6 +818,20 @@ impl IntrinsicId {
             IntrinsicId::IntlLocalePrototype => Some(73),
             IntrinsicId::IntlCollator => Some(74),
             IntrinsicId::IntlCollatorPrototype => Some(75),
+            IntrinsicId::IntlPluralRules => Some(76),
+            IntrinsicId::IntlPluralRulesPrototype => Some(77),
+            IntrinsicId::IntlNumberFormat => Some(78),
+            IntrinsicId::IntlNumberFormatPrototype => Some(79),
+            IntrinsicId::IntlListFormat => Some(80),
+            IntrinsicId::IntlListFormatPrototype => Some(81),
+            IntrinsicId::IntlSegmenter => Some(82),
+            IntrinsicId::IntlSegmenterPrototype => Some(83),
+            IntrinsicId::IntlSegmentsPrototype => Some(84),
+            IntrinsicId::IntlSegmentIteratorPrototype => Some(85),
+            IntrinsicId::IntlDisplayNames => Some(86),
+            IntrinsicId::IntlDisplayNamesPrototype => Some(87),
+            IntrinsicId::IntlRelativeTimeFormat => Some(88),
+            IntrinsicId::IntlRelativeTimeFormatPrototype => Some(89),
             _ => None,
         }
     }
@@ -1424,7 +1510,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 76;
+const INTRINSIC_SLOTS: usize = 90;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

@@ -1045,3 +1045,98 @@ fn nested_plan(fi: &FunctionInfo, k: u32) -> Option<NestedPlan> {
         arrays: arrays.into_boxed_slice(),
     })
 }
+
+// ---- the native entries (M8-P2 A2-CUT, MC-w20-4 (3); doc 13:349) --------------------------
+
+/// The feedback slot of the instruction at `pc` of `fi` if it is one of `ops`. `pc` comes from
+/// native code, so it must be an instruction start: the walk from offset 0 must land on it
+/// (else `None`; an operand byte can decode as a site of another slot, Codex M8-P2 r1 H2).
+/// O(code length) per call (no emitter calls the hooks yet).
+fn site_slot(fi: &FunctionInfo, pc: *const u8, ops: &[Opcode]) -> Option<u32> {
+    let off = fi.offset_of(pc)?;
+    // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified bytecode.
+    let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let mut at = 0;
+    while at < off {
+        at = ep9_bytecode::decode_at(code, at).ok()?.next_offset();
+    }
+    if at != off {
+        return None;
+    }
+    let insn = ep9_bytecode::decode_at(code, off).ok()?;
+    if !ops.contains(&insn.opcode) {
+        return None;
+    }
+    slot_at(fi, pc).map(|(i, _)| i)
+}
+
+/// The object-model part of [`miss`] at an array-literal site, for native code
+/// (`RuntimeTable::alloc_site`): the site is (`fi`, `slot`), and the instruction at `pc` must
+/// be a `CreateArrayLiteral` or `CreateEmptyArrayLiteral` that names `slot`, and `result` an
+/// array, and a cell in the slot's value half an ALLOC_SITE handler (else false: the caller
+/// throws an internal error). With a vector and a slot that
+/// this site alone uses, [`array_site`] runs as on T0's cold path (the birth kind, the count,
+/// ARRAY +32); with no vector it does nothing, as T0 does (one feedback threshold for every
+/// preset, M5-P3-ORCH-1). It writes no key half: native code records no shape feedback
+/// (MC-w15-6). GC point: `result` lives in a Rust local of the caller.
+pub(crate) fn native_alloc_site(
+    rt: &Runtime,
+    fi: &FunctionInfo,
+    pc: *const u8,
+    slot: u64,
+    result: u64,
+) -> bool {
+    let ops = [Opcode::CreateArrayLiteral, Opcode::CreateEmptyArrayLiteral];
+    let Some(i) = site_slot(fi, pc, &ops).filter(|&i| u64::from(i) == slot) else {
+        return false;
+    };
+    if !kind::is_array(result) {
+        return false;
+    }
+    let Some(v) = feedback::vector(fi) else {
+        return true;
+    };
+    if i < feedback::slot_count(v) && !shared_slot(fi, i) {
+        // A cell in the value half must be this site's ALLOC_SITE handler (array_site writes
+        // its fields).
+        let value = feedback::value(v, i);
+        if is_cell_bits(value) && site_of(value).is_none() {
+            return false;
+        }
+        // GC point: `result` lives in a Rust local; `v` is rooted by the unit.
+        array_site(rt, v, i, result);
+    }
+    true
+}
+
+/// The object-model part of [`miss_clone`], for native code (`RuntimeTable::clone_widen`):
+/// the site is (`fi`, `slot`), and the instruction at `pc` must be a `CloneObject` that names
+/// `slot` (else false: the caller throws an internal error). Under the conditions of
+/// [`miss_clone`] (a vector, two objects, a clonable pair, a slot that is not megamorphic)
+/// the result shape's fields are widened to any value (`field_rep::widen_all`); the case is
+/// not recorded (MC-w15-6). Not a GC point.
+pub(crate) fn native_clone_widen(
+    rt: &Runtime,
+    fi: &FunctionInfo,
+    pc: *const u8,
+    slot: u64,
+    source: u64,
+    result: u64,
+) -> bool {
+    let Some(i) = site_slot(fi, pc, &[Opcode::CloneObject]).filter(|&i| u64::from(i) == slot)
+    else {
+        return false;
+    };
+    let Some(v) = feedback::vector(fi) else {
+        return true;
+    };
+    if i >= feedback::slot_count(v) || !kind::is_object(source) || !kind::is_object(result) {
+        return true;
+    }
+    let (ss, rs) = (shape::shape_of(source), shape::shape_of(result));
+    let mega = feedback::key(v, i) == HOLE && feedback::value(v, i) == ic::MEGA;
+    if clonable(ss, rs) && !mega {
+        crate::field_rep::widen_all(rt, rs);
+    }
+    true
+}

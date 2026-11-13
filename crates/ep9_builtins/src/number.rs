@@ -12,7 +12,8 @@
 //! %Number.prototype% toExponential, toFixed, toPrecision: exact digits, rounded half up
 //!                    (`exact_decimal`, `round_half_up`); toString(radix): radix 10 is
 //!                    ToString; 2-36 is V8's DoubleToRadixCString (`radix_string`); valueOf;
-//!                    toLocaleString (= ToString: no ECMA-402 yet, as BigInt's).
+//!                    toLocaleString (ECMA-402: an Intl.NumberFormat of locales and options,
+//!                    `ep9_intl::number_format`).
 //!                    All read thisNumberValue (Cx::this_primitive_value)
 //! global             Number, parseFloat, parseInt {w, c} (node's order: right after Number)
 //! ```
@@ -242,18 +243,20 @@ fn to_string<'s>(
     Ok(cx.new_string(&text)?.value())
 }
 
-/// Number.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] ) (§21.1.3.4): ep9 has
-/// no ECMA-402 yet, so the "conventions of the host environment's current locale" are the
-/// ones of `toString()` (BigInt's form, design SPEC-T-D9). node with ICU prints "1,234.5"
-/// for 1234.5; ep9 prints "1234.5". The INTL workflow replaces it (ECMA-402 §16.4.1).
+/// Number.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.2.1; INTL
+/// W2 NF-CORE): the Intl.NumberFormat of `locales` and `options` formats the number.
 fn to_locale_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    // 1. Let x be ? thisNumberValue(this value).
     let x = this_number_value(cx, this)?;
-    Ok(cx.to_string(Local::number(x))?.value())
+    // 2-3. Let numberFormat be ? Construct(%Intl.NumberFormat%, « locales, options »);
+    //      return FormatNumeric(numberFormat, ! ToIntlMathematicalValue(x)).
+    let mv = ep9_intl::number_format::decimal::mv_of_number(cx, x)?;
+    ep9_intl::number_format::to_locale_string(cx, &mv, args.get(0), args.get(1))
 }
 
 /// Number.prototype.valueOf ( ) (§21.1.3.7).

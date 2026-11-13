@@ -152,7 +152,7 @@ type Registration = ep9_platform::unwind::FunctionTableRegistration;
 /// every function of every isolate that loaded the same text and unwind bytes (module doc).
 pub(crate) struct SharedText {
     /// Declared first, so it drops (deregisters) before the text pages go back.
-    _unwind: Registration,
+    _unwind: Option<Registration>,
     text: UnitText<'static>,
     key: [u8; 32],
 }
@@ -404,12 +404,12 @@ fn make_rw_copy(
 /// The process text map (module doc): weak entries, pruned at each lookup.
 static TEXTS: Mutex<Vec<Weak<SharedText>>> = Mutex::new(Vec::new());
 
-/// The map key of a text and its unwind data: SHA-256 over a tag, the text length, the text
-/// and the unwind bytes.
-fn text_key(text: &[u8], unwind: &[u8]) -> [u8; 32] {
+/// The map key of a text and its unwind data: SHA-256 over a tag, the text length (bit 63: BTI
+/// pages, [`load_and_install_with_pads`]), the text and the unwind bytes.
+fn text_key(text: &[u8], unwind: &[u8], pads: bool) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"ep9 unit text key v1\0");
-    h.update(&(text.len() as u64).to_le_bytes());
+    h.update(&((text.len() as u64) | (u64::from(pads) << 63)).to_le_bytes());
     h.update(text);
     h.update(unwind);
     h.finish()
@@ -419,12 +419,12 @@ fn text_key(text: &[u8], unwind: &[u8]) -> [u8; 32] {
 /// entry has the same key, else mapped and registered now. `Err(NoText)` if the text does
 /// not map (empty, larger than the process code range, no room); `Err(NoUnwind)` if the
 /// unwind data is empty, does not lie inside the text or does not register.
-fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
+fn shared_text(text: &[u8], unwind: &[u8], pads: bool) -> Result<Arc<SharedText>, Reason> {
     let range = CodeRange::process().map_err(|_| Reason::NoText)?;
     if text.is_empty() || text.len() > range.size() {
         return Err(Reason::NoText);
     }
-    let key = text_key(text, unwind);
+    let key = text_key(text, unwind, pads);
     // One lock for the lookup and the map: two isolates that load one unit at once map it
     // once.
     let mut texts = TEXTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -443,10 +443,10 @@ fn shared_text(text: &[u8], unwind: &[u8]) -> Result<Arc<SharedText>, Reason> {
     // The unwind mode first: its probe needs a free page, which a text may fill (Codex A2).
     #[cfg(unix)]
     ep9_platform::unwind::choose_mode().map_err(|_| Reason::NoUnwind)?;
-    let mapped = UnitText::map(range, text).map_err(|_| Reason::NoText)?;
+    let mapped = UnitText::map_with_pads(range, text, pads).map_err(|_| Reason::NoText)?;
     let reg = register_unwind(&mapped, unwind).map_err(|_| Reason::NoUnwind)?;
     let t = Arc::new(SharedText {
-        _unwind: reg,
+        _unwind: Some(reg),
         text: mapped,
         key,
     });
@@ -802,17 +802,17 @@ pub(crate) unsafe fn load_and_install(
     policy: Option<&Policy>,
     cpu: u64,
 ) -> Report {
-    let native = Native { unwind, rw, slot };
+    let native = native(unwind, rw, slot, false);
     load_inner(rt, lu, text, Some(native), functions, policy, cpu)
 }
 
-/// The native part of an installing load beyond the text: the unwind section, the RW
-/// template (empty: no RW data) and the unit-data slot (H35-Q9).
+/// The native part of an installing load beyond the text: unwind, RW template, slot, pads.
 #[derive(Clone, Copy)]
 struct Native<'a> {
     unwind: &'a [u8],
     rw: &'a [u8],
     slot: u8,
+    pads: bool,
 }
 
 /// [`load`]; with `unwind` (only [`load_and_install`] passes it; its caller contract stands
@@ -973,7 +973,7 @@ fn link_and_map(
     {
         return Err(Reason::Slot);
     }
-    let t = shared_text(text, n.unwind)?;
+    let t = linked_or_shared_text(text, n.unwind, n.pads)?;
     let copy = match &tpl {
         Some(tpl) => Some(make_rw_copy(rt, lu, tpl, n.slot)?),
         None => None,
@@ -986,13 +986,13 @@ fn link_and_map(
 /// [`Reason::Installed`] and [`Reason::NotInstallable`]; a pick with no mapped text is not
 /// counted (its load counted it).
 ///
-/// A function with `[[Construct]]` (`fi.is_constructor()`: an ordinary `function`, a class
-/// constructor) is not installable: its slot stays Interp, so every construct path (`new`,
-/// `super()`, `Reflect.construct` from Rust) runs its bytecode. The construct paths refuse a
-/// native slot (route MC-w29-8; Frozen H04:52 keeps the default build with no non-Interp
-/// construct path), so an installed constructor would change JS results (JIT review F1 of
-/// M7-P5, M6-ORCH-386). Every install of unit code comes here: also a later installing load
-/// of the same unit and a load that takes a shared text.
+/// A class constructor (`fi.is_class_constructor()`) is not installable: its slot stays
+/// Interp, so `new`, `super()` and `Reflect.construct` run its bytecode (the MC-w33-6 result
+/// contract is step 2, A2-GATE). An ordinary `function` is installable since M8-P1
+/// A2-CONSTRUCT (M8-PLAN-D25, MC-w29-8 step 1; form 2 of M6-ORCH-386 refused it): every
+/// construct path enters its native code through `native::native_callee` with new.target in
+/// its frame (`slow::call`, `call::call_native_from_rust`). Every install of unit code comes
+/// here: also a later installing load of the same unit and a load that takes a shared text.
 ///
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
@@ -1012,8 +1012,8 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
             continue;
         };
         let obj = &uc.set.objects[i];
-        let kind = DispatchKind::from_u8(obj.kind);
-        if kind != Some(DispatchKind::AotBaseline) || !obj.deps.is_empty() || fi.is_constructor() {
+        let aot = DispatchKind::from_u8(obj.kind) == Some(DispatchKind::AotBaseline);
+        if !aot || !obj.deps.is_empty() || fi.is_class_constructor() {
             r.add(Reason::NotInstallable, 1);
             continue;
         }
@@ -1029,4 +1029,97 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
 /// The code set of `fi`, if the loader gave it one.
 pub(crate) fn code_of(fi: &crate::unit::FunctionInfo) -> Option<&UnitCode> {
     fi.code_set.get().map(|b| &**b)
+}
+
+/// [`Native`] (`unwind` the unwind section, `rw` the RW template (empty: no RW data), `slot`
+/// the unit-data slot (H35-Q9), `pads` the text maps with BTI).
+fn native<'a>(unwind: &'a [u8], rw: &'a [u8], slot: u8, pads: bool) -> Native<'a> {
+    Native {
+        unwind,
+        rw,
+        slot,
+        pads,
+    }
+}
+
+/// [`load_and_install`] for a unit with the container compat flag `has_pads` (MC-w23-15):
+/// with `pads`, the shared text maps as BTI guarded pages where the target has them
+/// (`UnitText::map_with_pads`; Linux and Android AArch64), if every variant entry inside the
+/// text starts with a landing pad (`bti c` or `bti jc`). If one does not, the flag is not
+/// trusted and the text maps plain RX, as [`load_and_install`] maps it: a call into a guarded
+/// page with no pad would fault. The text map keys a BTI text apart from a plain one.
+///
+/// The `Cx` API (`abi/unit_code.rs`) does not pass the header compat flags yet, so only the
+/// tests call this (a request of M8-P2 A2-CUT: the API needs the flag).
+///
+/// # Safety
+/// As [`load_and_install`].
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) unsafe fn load_and_install_with_pads(
+    rt: &Runtime,
+    lu: &LoadedUnit,
+    text: &[u8],
+    unwind: &[u8],
+    rw: &[u8],
+    slot: u8,
+    functions: &[FunctionCode],
+    policy: Option<&Policy>,
+    cpu: u64,
+    pads: bool,
+) -> Report {
+    let pads = pads && entries_have_pads(text, functions);
+    let n = native(unwind, rw, slot, pads);
+    load_inner(rt, lu, text, Some(n), functions, policy, cpu)
+}
+
+/// True if this is an AArch64 build and every variant entry of `functions` that lies inside
+/// `text` starts with `bti c` or `bti jc` (an entry outside the text is skipped by the load
+/// as "range"). Other targets have no BTI pages: false.
+#[cfg_attr(not(test), allow(dead_code))]
+fn entries_have_pads(text: &[u8], functions: &[FunctionCode]) -> bool {
+    const BTI_C: u32 = 0xd503_245f;
+    const BTI_JC: u32 = 0xd503_24df;
+    cfg!(target_arch = "aarch64")
+        && functions.iter().flat_map(|f| &f.variants).all(|v| {
+            let at = v.entry as usize;
+            match text.get(at..at + 4) {
+                Some(w) if v.len != 0 => {
+                    let w = u32::from_le_bytes(w.try_into().expect("4 bytes"));
+                    matches!(w, BTI_C | BTI_JC)
+                }
+                _ => true,
+            }
+        })
+}
+
+/// The BTI state of the mapped text of `uc` (`UnitText::bti`); `None` without a mapped text.
+#[cfg(test)]
+pub(crate) fn text_bti(uc: &UnitCode) -> Option<bool> {
+    uc.text.as_ref().map(|t| t.text.bti())
+}
+
+/// Steps 5 and 7 for the text of an installing load: a linked text in place (the `.o` unit
+/// form, H35 S1 and H35-Q3; route MC-w34-5), else [`shared_text`].
+///
+/// A text is linked when it is exactly the text of a unit that the embedder registered
+/// (`ep9_platform::linked::register`, static registration): the static linker put it in the
+/// binary's executable pages and its unwind entries in the binary's own unwind tables. So
+/// nothing is mapped, copied or protected, no unwind data is registered (`unwind` is not
+/// read: the binary's tables cover the text), the process text map is not used (the binary
+/// holds the text once), and no context sync is needed (the text was never written). `pads`
+/// is not used either: the binary's pages are guarded or not by the binary's own note.
+fn linked_or_shared_text(
+    text: &[u8],
+    unwind: &[u8],
+    pads: bool,
+) -> Result<Arc<SharedText>, Reason> {
+    match UnitText::linked(text) {
+        Some(linked) => Ok(Arc::new(SharedText {
+            _unwind: None,
+            key: text_key(text, &[], false),
+            text: linked,
+        })),
+        None => shared_text(text, unwind, pads),
+    }
 }

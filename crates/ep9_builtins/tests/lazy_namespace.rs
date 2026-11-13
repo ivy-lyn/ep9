@@ -46,7 +46,28 @@ fn print<'s>(
 }
 
 /// The host functions of every realm.
-const HOST: [(&str, u32, HostFn); 2] = [("print", 1, print), ("createRealm", 0, create_realm)];
+const HOST: [(&str, u32, HostFn); 3] = [
+    ("print", 1, print),
+    ("createRealm", 0, create_realm),
+    ("intrinsic", 1, intrinsic),
+];
+
+/// `intrinsic(name)`: the intrinsic of the current realm whose spec name is `name` (INTL W2:
+/// for a group intrinsic with no path from `globalThis`, such as `%IntlSegmentsPrototype%`).
+/// The use of a group intrinsic installs its group first (C3).
+fn intrinsic<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let name = cx.to_rust_string(args.get(0))?;
+    let id = IntrinsicId::ALL
+        .into_iter()
+        .find(|id| id.name() == name)
+        .unwrap_or_else(|| panic!("{name} is an intrinsic name"));
+    Ok(cx.intrinsic(id).into())
+}
 
 /// `createRealm()`: a new realm with the host functions, made in it; returns its global.
 fn create_realm<'s>(
@@ -574,11 +595,12 @@ fn group_is_complete(modules: &[BuiltinModule]) {
     let mut want = Vec::new();
     for m in modules {
         for d in m.intrinsics {
+            // An intrinsic with no path from `globalThis` (INTL W2: %IntlSegmentsPrototype%,
+            // %IntlSegmentIteratorPrototype%) is read with the host function `intrinsic`.
             let path = &paths
                 .iter()
                 .find(|(id, _)| *id == d.id)
-                .unwrap_or_else(|| panic!("{} has a path", d.id.name()))
-                .1;
+                .map_or_else(|| format!("intrinsic({:?})", d.id.name()), |p| p.1.clone());
             let mut keys = Vec::new();
             if let IntrinsicValue::Builtin(_) = d.value {
                 keys.push("length:d--c".to_string());
@@ -609,13 +631,27 @@ fn group_is_complete(modules: &[BuiltinModule]) {
     assert_eq!(r, Ok(want));
 }
 
-/// The Intl ids of INTL W1 (the group of the key `Intl`).
-const INTL_IDS: [IntrinsicId; 5] = [
+/// The Intl ids of INTL W1, W2 and W3 (the group of the key `Intl`).
+const INTL_IDS: [IntrinsicId; 19] = [
     IntrinsicId::Intl,
     IntrinsicId::IntlLocale,
     IntrinsicId::IntlLocalePrototype,
     IntrinsicId::IntlCollator,
     IntrinsicId::IntlCollatorPrototype,
+    IntrinsicId::IntlPluralRules,
+    IntrinsicId::IntlPluralRulesPrototype,
+    IntrinsicId::IntlNumberFormat,
+    IntrinsicId::IntlNumberFormatPrototype,
+    IntrinsicId::IntlListFormat,
+    IntrinsicId::IntlListFormatPrototype,
+    IntrinsicId::IntlSegmenter,
+    IntrinsicId::IntlSegmenterPrototype,
+    IntrinsicId::IntlSegmentsPrototype,
+    IntrinsicId::IntlSegmentIteratorPrototype,
+    IntrinsicId::IntlDisplayNames,
+    IntrinsicId::IntlDisplayNamesPrototype,
+    IntrinsicId::IntlRelativeTimeFormat,
+    IntrinsicId::IntlRelativeTimeFormatPrototype,
 ];
 
 /// Design §4.6 case 1 for the Intl ids (INTL W1, C1): realm init makes no object of the Intl
@@ -636,7 +672,10 @@ fn realm_init_makes_no_intl_object() {
         .iter()
         .flat_map(|m| m.intrinsics.iter().map(|d| d.id))
         .collect();
-    assert_eq!(made, INTL_IDS, "the Intl group makes the W1 Intl ids");
+    assert_eq!(
+        made, INTL_IDS,
+        "the Intl group makes the W1, W2 and W3 Intl ids"
+    );
     let after = common::on_big_stack(|| {
         let mut iso = isolate(false);
         let r = iso.with_cx(|cx| {
