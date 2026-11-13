@@ -469,6 +469,77 @@ fn a_kept_limit_is_the_fatal_heap_limit_panic() {
     std::mem::forget(iso);
 }
 
+/// The H23 OOM panic payloads that are a `String`, pinned (M8-P4 fixer r1 checker A1):
+/// fuzz/fuzz_targets/unit_loader.rs `out_of_memory()` depends on this text. It ends a run on a
+/// payload that ends with " allocation failed: OutOfMemory" (and on the `&str` "ep9: heap
+/// limit reached" of `Runtime::alloc`, the test above) and calls any other panic a crash, so a
+/// change to one of these texts must change that filter too.
+///
+/// 1. A feedback vector (feedback.rs, `make`: "ep9: heap allocation failed: {e:?}"), run: `f`
+///    has 2^17 feedback slots (no instruction uses them), so its vector is more than 2 MiB,
+///    above the 1 MiB of room. With a feedback threshold of 1 the first call of `f` makes the
+///    vector, and that allocation is the one that fails (every other cell fits).
+/// 2. A shape (shape.rs, `new_shape`: "ep9: shape allocation failed: {e:?}"), as text: no
+///    cheap input fills the shape space (256 MiB by default; at the 1 MiB minimum the builtins
+///    use part of it, and each new shape needs a new key), so the test reads the `panic!` line
+///    in the source and formats its text as `panic!` does.
+#[test]
+fn the_string_oom_panic_payloads_are_the_fuzz_filter_text() {
+    const SLOTS: usize = 1 << 17;
+    let mut f = Asm::new(super::meta("f", 0, 0, 0, 0));
+    for _ in 0..SLOTS {
+        f.b.feedback_slot(ep9_bytecode::FeedbackSlotKind::BinaryOp);
+    }
+    f.b.lda_undefined().return_();
+    let mut s = Asm::script(0);
+    let r = s.b.new_register();
+    let k = s.b.function_constant(ep9_bytecode::FunctionId(1));
+    s.b.create_closure(k, s.closure, 0).star(r);
+    s.b.call_undefined_receiver0(r, s.call);
+    s.b.lda_undefined().return_();
+    let u = unit("", vec![s.finish(), f.finish()]);
+    let room = 1 << 20;
+    assert!(crate::feedback::fv::SLOTS + crate::feedback::fv::SLOT_SIZE * SLOTS > 2 * room);
+    let mut iso = isolate(IsolateConfig {
+        heap: HeapConfig {
+            max_heap_bytes: committed_after_init() + room,
+            ..HeapConfig::default()
+        },
+        feedback_threshold: 1,
+        ..IsolateConfig::default()
+    });
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = iso.with_cx(|cx| cx.run_script(u, "oom.js").map(|_| ()));
+    }));
+    let payload = r.expect_err("the feedback vector must not fit");
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|t| format!("&str {t:?}"))
+        .or_else(|| {
+            payload
+                .downcast_ref::<String>()
+                .map(|t| format!("String {t:?}"))
+        });
+    assert_eq!(
+        text.as_deref(),
+        Some(r#"String "ep9: heap allocation failed: OutOfMemory""#)
+    );
+    // The panic left the isolate in the middle of a call: do not use or drop it.
+    std::mem::forget(iso);
+
+    let src = include_str!("../shape.rs");
+    assert_eq!(
+        src.matches(r#"Err(e) => panic!("ep9: shape allocation failed: {e:?}"),"#)
+            .count(),
+        1,
+        "shape.rs new_shape: the OOM panic line changed; change the fuzz filter too"
+    );
+    let e = ep9_heap::AllocError::OutOfMemory;
+    let shape = format!("ep9: shape allocation failed: {e:?}");
+    assert_eq!(shape, "ep9: shape allocation failed: OutOfMemory");
+    assert!(shape.ends_with(" allocation failed: OutOfMemory"));
+}
+
 /// H23-Q3: no default heap limit below the cage.
 #[test]
 fn the_default_heap_limit_is_the_cage() {
