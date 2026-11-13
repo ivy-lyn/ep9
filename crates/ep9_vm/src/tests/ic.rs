@@ -2107,3 +2107,85 @@ fn the_store_key_half_with_views_keeps_the_cold_miss_rule() {
         black_box(v);
     });
 }
+
+/// A StoreKeyed site whose view store goes cold (TA-SETKEYED-VIEW): a SharedArrayBuffer view
+/// (fixed, and auto on a growable one: TA-ORCH-12, -13), a Float16 view and a BigInt64 view
+/// with a BigInt. The cold body (`property::set_keyed`) stores the element with the view as the
+/// receiver (§10.4.5.5) and makes no key string: N stores add no atom (without GC stress: the
+/// table is weak; before, one atom per index past 9). Each store is the spec path's value; an
+/// out-of-bounds store throws nothing in strict code; the key half stays undefined (no view
+/// shape is cached) and each store records `INDEX | OBJECT`.
+#[test]
+fn a_cold_view_store_makes_no_key() {
+    use crate::array_buffer as ab;
+    use crate::profile::keyed;
+    use crate::typed_array as ta;
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = view_t(c, crate::Feedback::FULL);
+        const N: i32 = 600;
+        let rt = t.rt();
+        let sab = ab::allocate_shared(rt, NULL, N as u64 * 8, None).unwrap();
+        let gsab = ab::allocate_shared(rt, NULL, N as u64 * 2, Some(N as u64 * 4)).unwrap();
+        let views = [
+            (
+                ta::new_view(rt, NULL, 5, sab, 0, Some(N as u64)).unwrap(),
+                5u8,
+            ),
+            (ta::new_view(rt, NULL, 3, gsab, 0, None).unwrap(), 3),
+            (fixed_view(rt, 9, N as u64 * 2, 0, N as u64), 9),
+            (
+                ta::new_view(rt, NULL, 7, sab, 0, Some(N as u64)).unwrap(),
+                7,
+            ),
+        ];
+        let big = crate::bigint::from_i128(rt, -5);
+        let keep = t.keep_all(&[sab, gsab, big]);
+        for (v, ty) in views {
+            // The first call makes the vector; then N stores.
+            assert_eq!(
+                t.view_store(v, int(0), if ty == 7 { big } else { int(0) }),
+                [0, 0]
+            );
+            let before = t.rt().atoms.borrow().len();
+            for i in 0..N {
+                let x = if ty == 7 { big } else { int(i * 3) };
+                assert_eq!(t.view_store(v, int(i), x), [0, 0], "type {ty} [{i}]");
+            }
+            for k in [N, N * 4, i32::MAX] {
+                let (r, h) = t.view_call(2, &[v, int(k), if ty == 7 { big } else { int(1) }]);
+                assert_eq!((r.map_err(|e| e.message), h), (Ok(UNDEFINED), [0, 0]));
+            }
+            if !stress {
+                assert_eq!(t.rt().atoms.borrow().len(), before, "type {ty}: atoms");
+            }
+            for i in [0, 9, 10, 255, N - 1] {
+                let got = ta::get_element(t.rt(), v, f64::from(i));
+                let want = if ty == 7 {
+                    big
+                } else {
+                    let raw = ab::number_to_raw(ty, f64::from(i * 3));
+                    ab::raw_to_value(t.rt(), ty, raw)
+                };
+                assert!(same_element(got, want), "type {ty} [{i}]: {got:#x}");
+            }
+            assert_eq!(t.key_half(1), UNDEFINED, "type {ty}: no view shape cached");
+            t.take_value_half(1);
+            t.view_store(v, int(1), if ty == 7 { big } else { int(1) });
+            assert_eq!(
+                t.take_value_half(1),
+                keyed::INDEX | keyed::OBJECT,
+                "type {ty}"
+            );
+            black_box(v);
+        }
+        // A grow: the auto view takes the new indices (the bound is read at each store).
+        ab::grow_shared(t.rt(), gsab, N as u64 * 4).unwrap();
+        assert_eq!(t.view_store(views[1].0, int(N * 2 - 1), int(-2)), [0, 0]);
+        let got = ta::get_element(t.rt(), views[1].0, f64::from(N * 2 - 1));
+        assert_eq!(got, int(-2));
+        t.release_all(keep);
+        black_box(views);
+        t.collect();
+    });
+}

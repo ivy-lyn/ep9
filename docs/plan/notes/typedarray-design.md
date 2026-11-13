@@ -273,7 +273,7 @@ S3 (03:152) moves cells of sparse blocks. A view caches a raw address into a BYT
 ```
 
 - The key half of a StoreKeyed slot keeps its meaning (a shape, or the hole for megamorphic; `crates/ep9_vm/src/keyed_ic.rs:16-22`). A view shape is just another shape. [2026-11-11, TA-2 TA-KEYED as built (246b2d5c): a view store hit leaves the key half alone (BENCH-SET: a view shape in the key half cost +0.72% crypto); `ops_of` gives the view lists only with a view shape as the case key, so no T0 case reaches them until a writer of the element type exists (route TA-KEYED-VIEW-CARRIER, owner TA-3, TA-ORCH-11)]
-- A hit never allocates and never calls (`crates/ep9_vm/src/keyed_ic.rs:65`). So a BigInt view load (a new BIGINT cell) and a store that needs ToNumber stay cold.
+- A hit never allocates and never calls (`crates/ep9_vm/src/keyed_ic.rs:65`). So a BigInt view load (a new BIGINT cell) and a store that needs ToNumber stay cold. [2026-11-13, TA-SETKEYED-VIEW: the cold body's `property::set_keyed` takes an int32 key `>= 0` on a view to TypedArraySetElement with no key string (§10.4.5.5, the view is the receiver), as `set_index` does (TA-3 fixer r1). Before, each cold view store (every SharedArrayBuffer view store) made the atom of its index]
 - The kinds set records bit 17 or 18 for a view receiver on the cold path (the bit rule of H16:234). No new record kind.
 - An inline view path in `ops.rs` is a later lever with BENCH data. It must keep the DISASM count and plan rule 72.
 

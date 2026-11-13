@@ -12,6 +12,7 @@
 //! | `out_of_bounds_keys_are_not_properties` | §10.4.5.1-6 for an index past the length: no own property, no prototype walk, no store |
 //! | `canonical_numeric_keys` | "-0", "1.5", "Infinity", "NaN", "-1" are view keys; "1e3", "01", " 1" are ordinary keys; the key order of `[[OwnPropertyKeys]]` |
 //! | `a_set_converts_first_and_a_detach_in_valueof_stores_nothing` | TypedArraySetElement order: valueOf runs once, also out of bounds; a detach in it leaves length 0 and no store |
+//! | `a_keyed_store_on_a_view_makes_no_key` | `property::set_keyed` with the view as the receiver (TA-SETKEYED-VIEW): no atom for N stores into shared, non-shared and BigInt64 views; ToNumber or ToBigInt first; a detach in valueOf; the key path for "-0", "1.5", 1.5, -0 and another receiver |
 //! | `detached_views_read_undefined_and_store_nothing` | after DetachArrayBuffer: length none, every element undefined, stores and defines change nothing |
 //! | `length_tracking_on_resize` | fixed and auto views on a resizable buffer: out of bounds after a shrink, back after a grow; the data address stays |
 //! | `elements_kind_7_or_8_at_birth_and_kept` | IsTypedArrayFixedLength gives 7 or 8; stores, defines, deletes, a named key and a new prototype keep it (N2, N3, N4) |
@@ -541,6 +542,148 @@ fn a_set_converts_first_and_a_detach_in_valueof_stores_nothing() {
                 assert!(property::define_own_property(icx, v2, k, d).unwrap());
                 assert_eq!(get(icx, v2, "0"), UNDEFINED);
                 TARGET.with(|t| t.set(0));
+                Ok(())
+            });
+            assert_eq!(r, Ok(()));
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// The atoms in the table now (weak: a collection can drop the unused ones).
+fn atom_count(rt: &Runtime) -> usize {
+    rt.atoms.borrow().len()
+}
+
+/// `property::set_keyed` (the cold body of every StoreKeyed site) on a view, with the view as
+/// the receiver (TA-SETKEYED-VIEW): §10.4.5.5 is TypedArraySetElement for the canonical key
+/// of an int32 index, and the store makes no key string (as `set_index`, TA-3 fixer r1).
+/// Before, each index past 9 made its atom: one allocation per store, and every store into a
+/// SharedArrayBuffer view is cold (TA-ORCH-12, -13), so `sort_large_countingsort.js` made
+/// 65,604 collections under `--gc-stress 1` for 65,536 stores. Checks, on non-shared views, a
+/// SharedArrayBuffer view, a growable one and BigInt64: N stores make no atom (without GC
+/// stress: the table is weak) and store the element type's value; ToNumber or ToBigInt runs
+/// before the bounds check (valueOf runs once, also out of bounds; a BigInt view refuses a
+/// Number); a detach in valueOf stores nothing; out of bounds or detached throws nothing in
+/// strict code. The key path stays for the other keys: "-0", "1.5" and the Number 1.5 store
+/// nothing, the Number -0 is the key "0"; another receiver (a view on the chain) gets its
+/// own property for a valid index (OrdinarySet) and nothing for an invalid one.
+#[test]
+fn a_keyed_store_on_a_view_makes_no_key() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let o = valueof_object(&mut iso);
+            let r = iso.with_cx(|cx| {
+                let icx = cx.inner();
+                let rt = icx.rt();
+                const N: u32 = 2_000;
+                let b = buffer(rt, u64::from(N) * 4, None);
+                let rab = buffer(rt, u64::from(N), Some(u64::from(N) * 2));
+                let sab = ab::allocate_shared(rt, NULL, u64::from(N) * 4, None).unwrap();
+                let gsab = ab::allocate_shared(rt, NULL, u64::from(N) * 2, Some(u64::from(N) * 4))
+                    .unwrap();
+                let sab64 = ab::allocate_shared(rt, NULL, u64::from(N) * 8, None).unwrap();
+                // (view, element type): Float32 and Uint8 (auto, resizable) non-shared;
+                // Int32 and Int16 (auto, growable) shared; BigInt64 shared.
+                let views = [
+                    (view(rt, 10, b, 0, Some(u64::from(N))), 10u8),
+                    (view(rt, 1, rab, 0, None), 1),
+                    (view(rt, 5, sab, 0, Some(u64::from(N))), 5),
+                    (view(rt, 3, gsab, 0, None), 3),
+                    (view(rt, 7, sab64, 0, Some(u64::from(N))), 7),
+                ];
+                let big = crate::bigint::from_i128(rt, -3);
+                for (v, t) in views {
+                    let before = atom_count(icx.rt());
+                    for i in 0..N as i32 {
+                        let x = if t == 7 {
+                            big
+                        } else {
+                            crate::conv::num(f64::from(i) + 0.5)
+                        };
+                        property::set_keyed(icx, v, int(i), x, true).unwrap();
+                    }
+                    // Out of bounds: true, nothing stored, no throw in strict code.
+                    for i in [N as i32, 4 * N as i32, i32::MAX] {
+                        let x = if t == 7 { big } else { int(1) };
+                        property::set_keyed(icx, v, int(i), x, true).unwrap();
+                    }
+                    if !stress {
+                        assert_eq!(atom_count(icx.rt()), before, "type {t}: a store made atoms");
+                    }
+                    for i in [0, 9, 10, 255, 256, N - 1] {
+                        let got = ta::get_element(icx.rt(), v, f64::from(i));
+                        let want = if t == 7 {
+                            Out::B(-3)
+                        } else {
+                            let n = f64::from(i) + 0.5;
+                            out_of(ab::raw_to_value(icx.rt(), t, ab::number_to_raw(t, n)))
+                        };
+                        assert!(same(out_of(got), want), "type {t} [{i}]: {got:#x}");
+                    }
+                    assert_eq!(ta::get_element(icx.rt(), v, f64::from(N)), UNDEFINED);
+                    assert_eq!(own_keys(icx, v).len(), N as usize, "type {t}: no named key");
+                }
+                // ToNumber before the bounds check, on a shared and a non-shared view.
+                let (shared, plain) = (views[2].0, views[0].0);
+                for v in [shared, plain] {
+                    CALLS.with(|c| c.set(0));
+                    property::set_keyed(icx, v, int(N as i32 + 5), o, true).unwrap();
+                    property::set_keyed(icx, v, int(1), o, false).unwrap();
+                    assert_eq!(CALLS.with(Cell::get), 2);
+                    assert_eq!(ta::get_element(icx.rt(), v, 1.0), crate::conv::num(7.0));
+                }
+                // A BigInt64 view: ToBigInt of a Number is a TypeError, also out of bounds.
+                let b64 = views[4].0;
+                for (k, strict) in [(0, true), (N as i32, false)] {
+                    assert!(property::set_keyed(icx, b64, int(k), int(1), strict).is_err());
+                    let e = icx.rt().take_pending();
+                    let name = get(icx, e, "name");
+                    assert_eq!(crate::string::to_rust_string(name), "TypeError");
+                }
+                assert!(same(
+                    out_of(ta::get_element(icx.rt(), b64, 0.0)),
+                    Out::B(-3)
+                ));
+                // A valueOf that detaches: nothing stored, no throw; then detached stores.
+                let rt = icx.rt();
+                let b2 = buffer(rt, 4, None);
+                let v2 = view(rt, 1, b2, 0, Some(4));
+                TARGET.with(|t| t.set(b2));
+                CALLS.with(|c| c.set(0));
+                property::set_keyed(icx, v2, int(2), o, true).unwrap();
+                TARGET.with(|t| t.set(0));
+                assert_eq!(CALLS.with(Cell::get), 1);
+                assert!(ab::is_detached(b2));
+                assert_eq!(get(icx, v2, "2"), UNDEFINED);
+                property::set_keyed(icx, v2, int(0), int(1), true).unwrap();
+                assert_eq!(own_keys(icx, v2), Vec::<String>::new());
+                // Other keys take the key path: "-0", "1.5" and 1.5 are canonical numeric and
+                // invalid; the Number -0 is the key "0".
+                let rt = icx.rt();
+                let v3 = view(
+                    rt,
+                    5,
+                    ab::allocate_shared(rt, NULL, 8, None).unwrap(),
+                    0,
+                    None,
+                );
+                for k in [key(rt, "-0"), key(rt, "1.5"), crate::conv::num(1.5)] {
+                    property::set_keyed(icx, v3, k, int(9), true).unwrap();
+                }
+                property::set_keyed(icx, v3, crate::conv::num(-0.0), int(4), true).unwrap();
+                assert_eq!(own_keys(icx, v3), ["0", "1"]);
+                assert_eq!(get(icx, v3, "0"), int(4));
+                assert_eq!(get(icx, v3, "1"), int(0));
+                // Another receiver: an object whose prototype is the shared view.
+                let p = object::new_object(icx.rt(), v3);
+                property::set_keyed(icx, p, int(1), int(5), true).unwrap();
+                property::set_keyed(icx, p, int(9), int(5), true).unwrap();
+                assert_eq!(own_keys(icx, p), ["1"]);
+                assert_eq!(get(icx, v3, "1"), int(0), "the view is unchanged");
+                black_box((b, rab, sab, gsab, sab64, views, p, v3));
                 Ok(())
             });
             assert_eq!(r, Ok(()));

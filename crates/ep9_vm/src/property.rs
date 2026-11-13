@@ -751,8 +751,8 @@ fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
 }
 
 /// `base[k] = v` for any key value (keyed store). An int32 index `>= 0` stores a dense array
-/// element ([`array_store`]) or a writable arguments element (its parameter too while it is
-/// mapped, §10.4.4.4) without a string key (M4-P3 KEYED); every other case takes the key.
+/// element ([`array_store`]), a view element or a writable arguments element (its parameter
+/// too while mapped, §10.4.4.4) without a string key (M4-P3 KEYED); else the key path.
 pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) -> Res<()> {
     if let Some(i) = val(k).as_int32()
         && i >= 0
@@ -760,6 +760,11 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
         let kd = kind::cell_kind(base);
         if kd == kind::ARRAY.get() && array_store(cx.rt(), base, i as u32, v) {
             return Ok(());
+        }
+        // A view with itself as the receiver (§10.4.5.5): TypedArraySetElement, no key (as
+        // `set_index`; a SharedArrayBuffer view is always cold in the keyed IC).
+        if kind::is_view_kind(kd) {
+            return crate::typed_array::set_element(cx, base, f64::from(i), v);
         }
         if elements::plain_elements_kind(kd) && plain_store(cx.rt(), base, i as u32, v) {
             return Ok(());
