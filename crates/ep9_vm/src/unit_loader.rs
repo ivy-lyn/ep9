@@ -981,24 +981,24 @@ fn link_and_map(
     Ok((t, copy))
 }
 
-/// Step 8: installs each AotBaseline pick of `lu` with no fuse dependency and a mapped text
-/// into its dispatch slot and the code registry (`native::install_code`). Counts
+/// Step 8: installs each AotBaseline pick of `lu` with only GuardFuse fuse refs and a mapped
+/// text into its dispatch slot and the code registry (`native::install_code`). Counts
 /// [`Reason::Installed`] and [`Reason::NotInstallable`]; a pick with no mapped text is not
-/// counted (its load counted it).
+/// counted (its load counted it). The fuse rule is [`guard_fuse_reads_only`] (MC-w35-5).
 ///
-/// A class constructor (`fi.is_class_constructor()`) is not installable: its slot stays
-/// Interp, so `new`, `super()` and `Reflect.construct` run its bytecode (the MC-w33-6 result
-/// contract is step 2, A2-GATE). An ordinary `function` is installable since M8-P1
-/// A2-CONSTRUCT (M8-PLAN-D25, MC-w29-8 step 1; form 2 of M6-ORCH-386 refused it): every
-/// construct path enters its native code through `native::native_callee` with new.target in
-/// its frame (`slow::call`, `call::call_native_from_rust`). Every install of unit code comes
-/// here: also a later installing load of the same unit and a load that takes a shared text.
+/// A class constructor is installable since M8-P4 A2-GATE (MC-w29-8 step 2, the MC-w33-6
+/// result contract; `native::installs_class_code`: never in a `spike-native` build), and an
+/// ordinary `function` since M8-P1 A2-CONSTRUCT (M8-PLAN-D25, step 1). `new`, `super()` and
+/// `Reflect.construct` enter its native code through `native::native_construct_callee` with
+/// new.target in its frame (`slow::call`, `call::call_native_from_rust`); a call of a class
+/// constructor throws its TypeError first (`native_callee` refuses it). Every install of unit
+/// code comes here: also a later installing load of the same unit and a load of a shared text.
 ///
 /// # Safety
 /// The code of each picked object follows the `install_code` contract: the `NativeEntry`
-/// ABI, it runs the bytecode of its function (the digest binds them), and it follows the
-/// `RuntimeTable` rules. Its text lives as long as the isolate (`UnitCode::text`), and its
-/// unwind data is registered.
+/// ABI, it runs the bytecode of its function (the digest binds them), it follows the
+/// `RuntimeTable` rules, and it reads each fuse it names as a GuardFuse at each use (H31:138).
+/// Its text lives as long as the isolate (`UnitCode::text`); its unwind data is registered.
 pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
     let mut r = Report::default();
     for fi in lu.infos.iter() {
@@ -1013,7 +1013,7 @@ pub(crate) unsafe fn install_picked(rt: &Runtime, lu: &LoadedUnit) -> Report {
         };
         let obj = &uc.set.objects[i];
         let aot = DispatchKind::from_u8(obj.kind) == Some(DispatchKind::AotBaseline);
-        if !aot || !obj.deps.is_empty() || fi.is_class_constructor() {
+        if !aot || !guard_fuse_reads_only(&obj.deps) {
             r.add(Reason::NotInstallable, 1);
             continue;
         }
@@ -1122,4 +1122,19 @@ fn linked_or_shared_text(
         })),
         None => shared_text(text, unwind, pads),
     }
+}
+
+/// True if every fuse ref in `deps` is a GuardFuse read (MC-w35-5; the H31 gated part "Compiled
+/// fuse reads (gated)", H31:138): a static fuse that this build knows and that holds. Until the
+/// H29 part "A4-built (gated)" proves dependency marking and the lazy swap of every live frame,
+/// compiled code reads a static fuse as a GuardFuse at each use (and again after a call in the
+/// same operation), so a later pop sends that code to its slow path and no frame needs a swap.
+/// A dynamic fuse ([`Dep::Dynamic`]) is an invalidation dependency: not installable until H29
+/// A4. A pick names only fuses that held at its load (`select()` skips the rest); this test
+/// runs again at the install, so a fuse that popped in between keeps the bytecode. The function
+/// table names only static fuse ids (`ep9_unit::functions` form 1), so the loader makes no
+/// dynamic dependency today. (At the end of the file, so no cited line moves.)
+pub(crate) fn guard_fuse_reads_only(deps: &[Dep]) -> bool {
+    deps.iter()
+        .all(|&d| matches!(d, Dep::Static { .. }) && d.holds())
 }

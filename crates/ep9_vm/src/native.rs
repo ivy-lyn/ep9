@@ -1627,22 +1627,22 @@ pub(crate) fn call_native(
 /// first byte is the entry) of kind `kind` for the bytecode function `fi`, as one dispatch
 /// slot write (every closure of the function shares the slot) plus one [`CodeEntry`] in the
 /// isolate's code registry (the pc lookup of stack walks, Error.stack, the profiler and the
-/// deoptimizer). From then on [`native_callee`] names the function, so `call_any` and the Rust
-/// entry ([`call_native`]) enter the code. Refused before the slot or the registry changes:
-/// a kind other than Baseline or AotBaseline (Opt is the spike's placement (b) marker; the
-/// optimizing tiers come with T2), a function that is not bytecode (a host function), a class
-/// constructor, a generator, async function or async generator function, a function that
-/// already has native code, and an empty range or one that overlaps a registered range.
-/// Returns the new entry.
+/// deoptimizer). From then on [`native_callee`] names the function (a class constructor: only
+/// [`native_construct_callee`]), so `call_any` and the Rust entry enter the code. Refused
+/// before the slot or the registry changes: a kind other than Baseline or AotBaseline (Opt is
+/// the spike's placement (b) marker), a function that is not bytecode (a host function), a
+/// class constructor that [`installs_class_code`] refuses (M8-P4, MC-w29-8 step 2), a generator,
+/// async function or async generator function, a function that already has native code, and an
+/// empty range or one that overlaps a registered range. Returns the new entry.
 ///
 /// The check trusts `code` and `kind`: it reads no byte of the code. The unwind information of
 /// the code is the installer's (`ep9_platform::unwind`; H28): this entry only names the range.
 ///
 /// # Safety
-/// `code.start` is the entry of a function with the [`NativeEntry`] ABI that runs the
-/// bytecode of `fi` against its VM frame and follows the [`RuntimeTable`] rules (0 only with a
-/// pending exception, valid Value bits otherwise). The code stays mapped and unchanged until
-/// [`uninstall_code`] or the isolate drops.
+/// `code.start` is the entry of a function with the [`NativeEntry`] ABI that runs the bytecode
+/// of `fi` against its VM frame and follows the [`RuntimeTable`] rules (0 only with a pending
+/// exception, valid Value bits otherwise: from a derived constructor also the HOLE, MC-w33-6).
+/// The code stays mapped and unchanged until [`uninstall_code`] or the isolate drops.
 // Its first caller: the A2 unit loader (`unit_loader::install_picked`, M7-P4).
 pub(crate) unsafe fn install_code(
     rt: &Runtime,
@@ -1656,7 +1656,7 @@ pub(crate) unsafe fn install_code(
     if fi.host.is_some() || !fi.is_bytecode() || fi.code.is_null() {
         return Err(InstallError::NotBytecode);
     }
-    if fi.is_class_constructor() {
+    if fi.is_class_constructor() && !installs_class_code(kind) {
         return Err(InstallError::ClassConstructor);
     }
     if fi.is_generator() || fi.is_async_function() || fi.is_async_generator() {
@@ -1712,9 +1712,9 @@ mod entry_tests;
 // `enter_from_rust` and their callers keep their form.
 
 /// [`enter_native`] with `new_target`: a `[[Construct]]` (`new_target` is not undefined;
-/// M8-PLAN-D25, MC-w29-8 step 1) or a call (`new_target` undefined), and with the entry count
+/// M8-PLAN-D25, MC-w29-8 steps 1 and 2) or a call (`new_target` undefined), with the entry count
 /// of a Rust entry when `count` is set (M8-PLAN-D26). The callee `callee` (`fi`, from
-/// [`native_callee`]: an ordinary function, never a class constructor) gets its frame at `base`:
+/// [`native_callee_for`]: a class constructor only for a construct) gets its frame at `base`:
 ///
 /// - a construct: the receiver `this` is the one the caller made (§10.2.2 step 5: no
 ///   OrdinaryCallBindThis), new.target goes into `slot::NEW_TARGET` (fp - 3, H14-Q1) and the
@@ -1924,5 +1924,50 @@ native_fns! {
         } else {
             bad_site(cx, off, slot)
         }
+    }
+}
+
+// ---- class constructors (M8-P4 A2-GATE; MC-w29-8 step 2, the MC-w33-6 contract) -------------
+//
+// At the end of the file, so no cited line above moves. `native_callee` keeps its form: every
+// call path keeps refusing a class constructor, so `[[Call]]` of one throws its TypeError first.
+
+/// True if [`install_code`] takes a class constructor with code of kind `kind`: AotBaseline
+/// unit code (the A2 loader, `unit_loader::install_picked`), in a build without the feature
+/// `spike-native`. Such code runs the bytecode of the constructor and returns as the MC-w33-6
+/// contract says (M7-P5-D7): a derived constructor returns its `this` binding, the HOLE before
+/// `super()`, and the caller of `new` checks it (`call::construct_result`, in its realm).
+/// Refused: a Baseline slot (no writer of T1 code has the contract yet; T1, M5), and every
+/// class constructor in a `spike-native` build: its T0 `call_fast` sends an AotBaseline slot to
+/// `hot_stub` with no class-constructor check (`interp/ops.rs` `call_fast` of that build and its
+/// doc: "never class constructors (the installs refuse them)"), so `C()` would run the body.
+pub(crate) const fn installs_class_code(kind: DispatchKind) -> bool {
+    !cfg!(feature = "spike-native") && matches!(kind, DispatchKind::AotBaseline)
+}
+
+/// The FunctionInfo of `callee` if a `[[Construct]]` enters it natively: [`native_callee`], or
+/// a class constructor (not a host function) with an AotBaseline slot, which only
+/// [`install_code`] writes for one ([`installs_class_code`]). The construct paths use it:
+/// `slow::call` (`construct_native_cold`) and the Rust entry (`call::call_native_from_rust`
+/// through [`native_callee_for`]). A call path never does.
+pub(crate) fn native_construct_callee<'a>(callee: u64) -> Option<&'a FunctionInfo> {
+    if let Some(fi) = native_callee(callee) {
+        return Some(fi);
+    }
+    if !object::is_function(callee) {
+        return None;
+    }
+    let fi = object::function_info(callee);
+    let aot = fi.slot.kind_byte() == DispatchKind::AotBaseline as u8;
+    (aot && fi.host.is_none() && fi.is_class_constructor()).then_some(fi)
+}
+
+/// [`native_callee`] for a call (`new_target` undefined), [`native_construct_callee`] for a
+/// construct: the callee finder of an entry that serves both (`call::call_native_from_rust`).
+pub(crate) fn native_callee_for<'a>(callee: u64, new_target: u64) -> Option<&'a FunctionInfo> {
+    if new_target == UNDEFINED {
+        native_callee(callee)
+    } else {
+        native_construct_callee(callee)
     }
 }

@@ -5,13 +5,13 @@
 //! |---|---|
 //! | `unit_loader_*_preset*` | MC-p0-cx-1: a unit variant with lowering `jit` is skipped under every preset (JIT, jitless, hybrid), before `select()`; `select()` alone would pick it under hybrid |
 //! | `unit_loader_counts_*` | each skip reason, the digest binding (MC-w31-8), one load per function |
-//! | `unit_loader_*_fuse*` | steps 6-7: a popped or unknown fuse makes the object a dependency that does not hold |
+//! | `unit_loader_*_fuse*` | steps 6-7: a popped or unknown fuse makes the object a dependency that does not hold; MC-w35-5 (M8-P4): step 8 installs a pick whose fuse refs are GuardFuse reads |
 //! | `unit_loader_api_*` | the Cx API: the isolate's policy (MC-w24-3 form), no install in M7-P4 (MC-w30-2), the bytecode runs; one intern table (MC-w25-9) |
 //! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered by the loader (JIT review O3), installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
 //! | `unit_loader_installs_nothing_*`, `unit_loader_maps_*`, `unit_loader_a_text_larger_*` | O3: no unwind data, no install; A2-UNIT-SHARE and MC-w34-4: one text per process keyed by its bytes, mapped only on a pick, and a text that cannot fit gives "no-text" |
 //! | `unit_loader_build_*` | SHSTK-ENGINE: the ep9_vm build script runs the shadow-stack refusal |
 //! | `unit_loader_a_text_from_*`, `unit_loader_a_whole_*`, `unit_loader_a_full_*` | M7-P5 Codex A1: a shared text is synced on the thread that runs it; Codex A2 (child processes, `unit_loader_child_case`): the unwind mode is chosen before a text maps, and a probe that could not run is not cached |
-//! | `unit_loader_a_constructor_*`, `unit_loader_construct_*` | M7-P5 JIT review F1 (M6-ORCH-386) form 2, then M8-P1 A2-CONSTRUCT (M8-PLAN-D25, D26): step 8 installs an ordinary function (not a class constructor), and `new`, the Rust construct path (`Reflect.construct`), `super()`, a bound target and a construct of another realm enter its unit code with the results, receiver, errors and stacks of its bytecode; the caller counts a call or a construct of unit code (the vector at call 8) |
+//! | `unit_loader_a_constructor_*`, `unit_loader_construct_*`, `class_ctors::*` | M7-P5 JIT review F1 (M6-ORCH-386) form 2, then M8-P1 A2-CONSTRUCT (M8-PLAN-D25, D26): step 8 installs an ordinary function, and `new`, the Rust construct path (`Reflect.construct`), `super()`, a bound target and a construct of another realm enter its unit code with the results, receiver, errors and stacks of its bytecode; the caller counts a call or a construct of unit code (the vector at call 8). M8-P4 A2-GATE (MC-w29-8 step 2, MC-w33-6): a class constructor too (not with `spike-native`), and a call of one throws its TypeError |
 //!
 //! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit)
 //! are in `crates/ep9_unit/tests/loader.rs`: ep9_vm tests cannot compile JS.
@@ -320,8 +320,8 @@ fn unit_loader_counts_one_string_table_pass_per_load() {
 
 // ---- steps 6-7: fuse refs --------------------------------------------------------------------
 
-/// A variant that names a fuse: picked while the fuse is wired and intact; not picked after
-/// the fuse pops, and never for an index this build does not know.
+/// A variant that names a fuse: picked while the fuse is wired and intact; not picked after the
+/// fuse pops, never for an unknown index. Since MC-w35-5 (M8-P4) step 8 installs the pick.
 #[test]
 fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     let with_fuse = |index: u32| FunctionCode {
@@ -347,14 +347,14 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     let iso = defs_isolate(ExecOptions::jitless());
     let r = load(&iso, &Policy::JITLESS, &[with_fuse(1000)]);
     assert_eq!(r.count(Reason::Bytecode), 1);
-    // A wired fuse is a dependency: step 8 does not install it (no pop path re-selects yet).
+    // MC-w35-5 (M8-P4): a wired static fuse is a GuardFuse read (H31:138): step 8 installs it.
     let iso = defs_isolate(ExecOptions::jitless());
     iso.rt.fuses.wire(&iso.rt, 0).unwrap();
     let lu = info(&iso, "g").loaded_unit().unwrap();
     let mut f = with_fuse(0);
     f.variants[0].len = call0_bytes().0.len() as u32;
-    // SAFETY: the dependency refusal comes before `install_code`; no code is installed (the
-    // text and its unwind data are the frame stub's).
+    // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g` and reads no
+    // fuse), and `stub_unwind` describes it.
     let r = unsafe {
         unit_loader::load_and_install(
             &iso.rt,
@@ -370,9 +370,9 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     };
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
-        (0, 1)
+        (1, 0)
     );
-    assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::AotBaseline));
 }
 
 /// One variant of the Cx API: (kind, lowering, entry, len, cpu, fuse ids).
@@ -1588,8 +1588,8 @@ fn unit_loader_install_refuses_aot_opt_and_a_class_constructor() {
         },
     ];
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    // SAFETY: both picks are refused before any slot write (AotOpt; a class constructor); the
-    // text and its unwind data are the frame stub's.
+    // SAFETY: the AotOpt pick is refused before any slot write; `K` (a class constructor) is
+    // installed over the frame stub only where `installs_class_code` holds, and never runs.
     let r = unsafe {
         unit_loader::load_and_install(
             &iso.rt,
@@ -1603,17 +1603,24 @@ fn unit_loader_install_refuses_aot_opt_and_a_class_constructor() {
             0,
         )
     };
+    // MC-w29-8 step 2 (M8-P4 A2-GATE): the class-constructor half flips on purpose: step 8
+    // installs `K` as AotBaseline unit code, except in a `spike-native` build, whose T0
+    // `call_fast` has no class-constructor check for an AotBaseline slot. AotOpt: never.
+    let class_code = crate::native::installs_class_code(DispatchKind::AotBaseline);
+    assert_eq!(class_code, !cfg!(feature = "spike-native"));
     assert_eq!(r.count(Reason::Picked), 2);
+    let want = if class_code { (1, 1) } else { (0, 2) };
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
-        (0, 2)
+        want
     );
-    for name in ["id", "K"] {
-        assert_eq!(
-            info(&iso, name).slot.kind_byte(),
-            DispatchKind::Interp as u8
-        );
-    }
+    let k = if class_code {
+        DispatchKind::AotBaseline
+    } else {
+        DispatchKind::Interp
+    };
+    assert_eq!(info(&iso, "id").slot.kind(), Some(DispatchKind::Interp));
+    assert_eq!(info(&iso, "K").slot.kind(), Some(k));
 }
 
 // ---- SHSTK-ENGINE ------------------------------------------------------------------------------
@@ -2761,4 +2768,496 @@ fn unit_loader_a_registered_linked_text_runs_in_place() {
         "{:?}",
         r.rows()
     );
+}
+
+// ---- M8-P4 A2-GATE: MC-w35-5, the GuardFuse-only install rule -------------------------------
+
+/// MC-w35-5 (H31:138): step 8 installs a pick only when each fuse ref is a GuardFuse read: a
+/// static fuse that this build knows and that holds. A dynamic fuse is an invalidation
+/// dependency (not installable until H29 A4); a popped or unknown static fuse keeps the
+/// bytecode, also when it popped after the pick.
+#[test]
+fn unit_loader_install_takes_only_guard_fuse_reads() {
+    use crate::select::Dep;
+    let ok = |index| Dep::Static {
+        index,
+        intact: true,
+    };
+    assert!(unit_loader::guard_fuse_reads_only(&[]));
+    assert!(unit_loader::guard_fuse_reads_only(&[ok(0), ok(1)]));
+    let popped = Dep::Static {
+        index: 0,
+        intact: false,
+    };
+    let unknown = ok(u32::MAX);
+    let dynamic = Dep::Dynamic {
+        kind: 1,
+        intact: true,
+    };
+    for d in [popped, unknown, dynamic] {
+        assert!(!unit_loader::guard_fuse_reads_only(&[d]), "{d:?}");
+        assert!(!unit_loader::guard_fuse_reads_only(&[ok(0), d]), "{d:?}");
+    }
+}
+
+/// MC-w35-5: the unit code of a pick with a static fuse ref runs, and a pop after the install
+/// leaves it installed: its GuardFuse reads take the slow path at each use (H31:138), so no
+/// frame needs a swap. A fuse that popped before the load keeps the bytecode (no pick).
+#[test]
+fn unit_loader_a_guard_fuse_pick_runs_and_stays_after_a_pop() {
+    let install = |iso: &Isolate| {
+        let lu = info(iso, "g").loaded_unit().unwrap();
+        let mut f = g_stub();
+        f.variants[0].fuses = vec![0];
+        // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g` and reads
+        // no fuse), and `stub_unwind` describes it.
+        unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &stub_text(),
+                &stub_unwind(),
+                &[],
+                0,
+                &[f],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        }
+    };
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    iso.rt.fuses.wire(&iso.rt, 0).unwrap();
+    let r = install(&iso);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    g_walk_gives_42(&mut iso);
+    iso.rt.fuses.pop(&iso.rt, FuseRef::Static(0));
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::AotBaseline));
+    g_walk_gives_42(&mut iso);
+    // Popped before the load: no pick, nothing installed, the bytecode runs.
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    iso.rt.fuses.wire(&iso.rt, 0).unwrap();
+    iso.rt.fuses.pop(&iso.rt, FuseRef::Static(0));
+    let r = install(&iso);
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (0, 0)
+    );
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::Interp));
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
+    );
+}
+
+// ---- M8-P4 A2-GATE: class constructors (MC-w29-8 step 2, the MC-w33-6 contract) -------------
+
+/// The installs of class constructors: not in a `spike-native` build, where `install_code`
+/// keeps refusing them (`native::installs_class_code`; that refusal is a `tests::native` test).
+#[cfg(not(feature = "spike-native"))]
+mod class_ctors {
+    use super::*;
+
+    /// The source of the class unit (positions for stack traces).
+    const SRC: &str = "class B { constructor(f) { return f(); } }\n\
+class D extends B { constructor(f) { return f(); } }\n\
+class S extends B { constructor(f) { super(f); } }\n";
+
+    /// Function 1 `B` (a base class constructor), function 2 `D extends B` (a derived
+    /// constructor that never calls `super()`), function 3 `S extends B` (T0 only).
+    const B: u32 = 1;
+    const D: u32 = 2;
+
+    /// The position of the first `f()` after `from` in [`SRC`].
+    fn call_at(from: &str) -> u32 {
+        let start = pos(SRC, from) as usize;
+        (start + SRC[start..].find("f()").unwrap()) as u32
+    }
+
+    /// The class unit: `B` and `D` are `return f();` (the call at bytecode offset 0, the
+    /// offset the frame stub passes; for `D` an undefined result is the ReferenceError of a
+    /// `this` binding that `super()` never set, and 1 the TypeError, as the MC-w33-6 contract
+    /// says); `S` is `super(f);` (a construct of `B` with new.target `S`). The script makes
+    /// each a global (`D` and `S` by DefineClass with the heritage `B`) and sets
+    /// `<C>.prototype.tag` to the class name.
+    fn class_defs() -> VerifiedUnit {
+        use ep9_bytecode::{RegisterList, RuntimeId};
+        let ctor = |name: &str, kind: FunctionKind, from: &str, to: Option<&str>| {
+            let end = to.map_or(SRC.len() as u32, |t| pos(SRC, t) - 1);
+            let mut m = meta(name, 1, 0, pos(SRC, from), end);
+            m.kind = kind;
+            m.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+            Asm::new(m)
+        };
+        let return_f = |a: &mut Asm, from: &str| {
+            let a0 = a.b.parameter(0);
+            a.b.set_expression_position(call_at(from));
+            let slot = a.call;
+            a.b.call_undefined_receiver0(a0, slot).return_();
+        };
+        let mut b = ctor(
+            "B",
+            FunctionKind::ClassConstructor,
+            "class B",
+            Some("class D"),
+        );
+        return_f(&mut b, "class B");
+        let mut d = ctor(
+            "D",
+            FunctionKind::DerivedConstructor,
+            "class D",
+            Some("class S"),
+        );
+        return_f(&mut d, "class D");
+        let mut s3 = ctor("S", FunctionKind::DerivedConstructor, "class S", None);
+        let a0 = s3.b.parameter(0);
+        let (this, sup) = (s3.b.new_register(), s3.b.new_register());
+        let l = s3.b.new_register_list(1);
+        s3.b.lda_the_hole().star(this);
+        s3.b.lda_current_function().get_super_constructor(sup);
+        s3.b.throw_if_not_super_constructor(sup);
+        s3.b.ldar(a0).star(l.get(0));
+        let slot = s3.call;
+        s3.b.lda_new_target().construct(sup, l, 1, slot);
+        s3.b.star(this);
+        s3.b.ldar(this).throw_super_not_called_if_hole().return_();
+        let mut s = Asm::script(SRC.len());
+        let kb = s.b.function_constant(FunctionId(B));
+        s.b.create_closure(kb, s.closure, 0);
+        s.sta_global("B");
+        for (i, name) in [(D, "D"), (3, "S")] {
+            let (cls, heritage) = (s.b.new_register(), s.b.new_register());
+            let def = RegisterList::new(cls.local_index().unwrap(), 2);
+            assert_eq!(heritage.local_index(), Some(cls.local_index().unwrap() + 1));
+            let k = s.b.function_constant(FunctionId(i));
+            s.b.create_closure(k, s.closure, 0).star(cls);
+            s.lda_global("B");
+            s.b.star(heritage)
+                .call_runtime(RuntimeId::DefineClass, def, 2);
+            s.b.ldar(cls);
+            s.sta_global(name);
+        }
+        let (o, p) = (s.b.new_register(), s.b.new_register());
+        for name in ["B", "D", "S"] {
+            s.lda_global(name);
+            s.b.star(o);
+            s.get_named(o, "prototype");
+            s.b.star(p);
+            s.lda_str(name);
+            s.set_named(p, "tag");
+        }
+        s.b.lda_undefined().return_();
+        let fns = vec![s.finish(), b.finish(), d.finish(), s3.finish()];
+        unit(SRC, fns)
+    }
+
+    /// `one()`: 1 (a derived constructor's result that is not an object). Records the native
+    /// stack.
+    fn one<'s>(
+        _cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        _args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        record_walk();
+        Ok(Local::from_bits(Value::int32(1).to_bits()))
+    }
+
+    /// The host functions of this section and their arity.
+    const HOSTS: [(&str, u32, crate::host::HostFn); 6] = [
+        ("walk", 0, walk),
+        ("mkobj", 0, mkobj),
+        ("undef", 0, undef),
+        ("one", 0, one),
+        ("boom", 0, boom),
+        ("rconstruct3", 3, rconstruct3),
+    ];
+
+    /// A jitless isolate (GC stress `stress`) with the forwarders, the host functions and the
+    /// realm `other` (with `B`, `D`, `S` and the host functions of this realm), that ran
+    /// [`class_defs`]. With `install` the frame stubs of `B` (text offset 0) and `D` (64) are
+    /// installed. Returns the isolate and the return address of the call in each stub.
+    fn class_isolate(install: bool, stress: bool) -> (Isolate, Option<[usize; 2]>) {
+        let config = IsolateConfig {
+            builtins: Some(&FORWARDERS),
+            heap: ep9_heap::HeapConfig {
+                gc_stress: u32::from(stress),
+                verify_after_gc: stress,
+                ..ep9_heap::HeapConfig::default()
+            },
+            ..IsolateConfig::default()
+        };
+        let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+        for (name, n, f) in HOSTS {
+            iso.register_host_function(name, n, f);
+        }
+        iso.with_cx_checkpoint(|cx| cx.run_script(class_defs(), "classes.js").map(|_| ()))
+            .unwrap();
+        iso.with_cx(|cx| {
+            let a = cx.global();
+            let b = cx.create_realm()?;
+            cx.set(a, "other", b, true)?;
+            for name in ["B", "D", "S"].into_iter().chain(HOSTS.map(|h| h.0)) {
+                let v = cx.get(a, name)?;
+                cx.set(b, name, v, true)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        if !install {
+            return (iso, None);
+        }
+        let starts = [0, 64];
+        let stub = |function: u32, at: usize| FunctionCode {
+            function,
+            digest: unit_function_digest(&class_defs(), function).unwrap(),
+            variants: vec![variant(
+                DispatchKind::AotBaseline,
+                lowering::JITLESS,
+                at as u32,
+                call0_bytes().0.len() as u32,
+            )],
+        };
+        let lu = info(&iso, "B").loaded_unit().unwrap();
+        // SAFETY: the text holds the frame stub at offsets 0 and 64 (each runs the call at
+        // bytecode offset 0 of `B` and of `D` and returns its result: the bytecode of each,
+        // whose `return` gives the call's result), and `stub_unwind_at` describes both.
+        let r = unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &stub_text_at(&starts),
+                &stub_unwind_at(&starts),
+                &[],
+                0,
+                &[stub(B, starts[0]), stub(D, starts[1])],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        };
+        assert_eq!(
+            (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
+            (2, 0),
+            "{:?}",
+            r.rows()
+        );
+        let ret = |name: &str| {
+            let fi = info(&iso, name);
+            assert_eq!(fi.slot.kind(), Some(DispatchKind::AotBaseline), "{name}");
+            code_of(fi).unwrap().code_at(0).unwrap().start + call0_bytes().1
+        };
+        let rets = [ret("B"), ret("D")];
+        (iso, Some(rets))
+    }
+
+    /// `return rconstruct3(<f>, <a>, <nt>).tag;` (`Reflect.construct(f, [a], nt)`, the Rust
+    /// construct path).
+    fn reflect_tag(f: &str, a: &str, nt: &str) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(3);
+        let o = s.b.new_register();
+        for (i, name) in [f, a, nt].into_iter().enumerate() {
+            s.lda_global(name);
+            s.b.star(l.get(i as u32));
+        }
+        s.lda_global("rconstruct3");
+        s.b.star(s.f);
+        let (fr, slot) = (s.f, s.call);
+        s.b.call_undefined_receiver(fr, l, 3, slot);
+        s.b.star(o);
+        s.get_named(o, "tag");
+        s.b.return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// `return <f>(walk);` (a T0 call: `call_fast` sends a class constructor cold).
+    fn call_walk(f: &str) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let a = s.a.get(0);
+        s.lda_global("walk");
+        s.b.star(a);
+        s.lda_global(f);
+        s.b.star(s.f);
+        let (fr, slot) = (s.f, s.call);
+        s.b.call_undefined_receiver1(fr, a, slot).return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// `return fcall.call(<f>, undefined, walk);` (the forwarder form of
+    /// `Function.prototype.call`).
+    fn fcall_walk(f: &str) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(3);
+        s.lda_global(f);
+        s.b.star(l.get(0)).lda_undefined().star(l.get(1));
+        s.lda_global("walk");
+        s.b.star(l.get(2));
+        s.lda_global("fcall");
+        s.b.star(s.f);
+        let (fr, slot) = (s.f, s.call);
+        s.b.call_property(fr, l, 3, slot).return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// MC-w29-8 step 2 under the MC-w33-6 contract (M7-P5-D7): step 8 installs the class
+    /// constructors `B` (base) and `D` (derived), and each construct case gives the result,
+    /// receiver and error of an isolate with no install, with and without GC stress, and runs
+    /// the unit code (the stub's return address is on the native stack). `B`: a primitive
+    /// result, an object, nothing, from another realm, `super()` from `S` (a T0 derived
+    /// class: the receiver's prototype is `S`'s), and `Reflect.construct(B, [walk], D)`. `D`
+    /// (the HOLE is its `this` binding: it never calls `super()`): an object result; nothing
+    /// gives the caller's ReferenceError and 1 its TypeError (`call::construct_result`), also
+    /// from another realm and through `Reflect.construct`. On the code before M8-P4 nothing is
+    /// installed (both picks are not installable).
+    #[test]
+    fn unit_loader_class_constructors_install_and_construct_gives_the_bytecode_results() {
+        type Case = (
+            &'static str,
+            VerifiedUnit,
+            bool,
+            Result<&'static str, &'static str>,
+            usize,
+        );
+        let cases = || -> Vec<Case> {
+            vec![
+                ("B primitive", new_tag("B", "walk"), false, Ok("B"), 0),
+                ("B object", new_tag("B", "mkobj"), false, Ok("own"), 0),
+                ("B nothing", new_tag("B", "undef"), false, Ok("B"), 0),
+                ("B other realm", new_tag("B", "walk"), true, Ok("B"), 0),
+                ("super() into B", new_tag("S", "walk"), false, Ok("S"), 0),
+                (
+                    "Reflect B nt D",
+                    reflect_tag("B", "walk", "D"),
+                    false,
+                    Ok("D"),
+                    0,
+                ),
+                (
+                    "B throw",
+                    new_tag("B", "boom"),
+                    false,
+                    Err("Error: boom"),
+                    0,
+                ),
+                ("D object", new_tag("D", "mkobj"), false, Ok("own"), 1),
+                (
+                    "D no super",
+                    new_tag("D", "undef"),
+                    false,
+                    Err("ReferenceError"),
+                    1,
+                ),
+                (
+                    "D result 1",
+                    new_tag("D", "one"),
+                    false,
+                    Err("TypeError"),
+                    1,
+                ),
+                (
+                    "D other realm no super",
+                    new_tag("D", "undef"),
+                    true,
+                    Err("ReferenceError"),
+                    1,
+                ),
+                (
+                    "D other realm 1",
+                    new_tag("D", "one"),
+                    true,
+                    Err("TypeError"),
+                    1,
+                ),
+                (
+                    "Reflect D",
+                    reflect_tag("D", "mkobj", "D"),
+                    false,
+                    Ok("own"),
+                    1,
+                ),
+                (
+                    "Reflect D no super",
+                    reflect_tag("D", "undef", "D"),
+                    false,
+                    Err("ReferenceError"),
+                    1,
+                ),
+            ]
+        };
+        for stress in [false, true] {
+            let (mut plain, _) = class_isolate(false, stress);
+            let (mut iso, rets) = class_isolate(true, stress);
+            let rets = rets.unwrap();
+            let mut wrong = Vec::new();
+            for ((name, u, in_b, want, ran), (_, u2, ..)) in cases().into_iter().zip(cases()) {
+                let before = shown_in(&mut plain, u, in_b);
+                WALKED.with(|x| x.borrow_mut().take());
+                let after = shown_in(&mut iso, u2, in_b);
+                let ips = WALKED.with(|x| x.borrow_mut().take()).unwrap_or_default();
+                let label = format!("{name} stress={stress}");
+                match (&before, want) {
+                    (Ok(v), Ok(w)) if v == w => {}
+                    (Err(e), Err(w)) if e.starts_with(w) => {}
+                    _ => wrong.push(format!(
+                        "{label}: with no install {before:?}, want {want:?}"
+                    )),
+                }
+                if after != before {
+                    wrong.push(format!(
+                        "{label}: no install {before:?}, installed {after:?}"
+                    ));
+                }
+                if !ips.contains(&rets[ran]) {
+                    wrong.push(format!("{label}: the unit code did not run"));
+                }
+            }
+            assert!(wrong.is_empty(), "{wrong:#?}");
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        }
+    }
+
+    /// A class constructor with unit code keeps the TypeError of `[[Call]]` (§10.2.1 step 2)
+    /// on every call path, as with no install: a T0 call (`slow::call` throws before its
+    /// native arms), a forwarded `Function.prototype.call`, a call from Rust (`Cx::call`:
+    /// `call_bytecode` throws first) and the Rust native entry (`native_callee` refuses it, so
+    /// `call_native` does not enter it). Its unit code never runs on these paths.
+    #[test]
+    fn unit_loader_a_class_constructor_with_unit_code_still_throws_when_called() {
+        let (mut plain, _) = class_isolate(false, false);
+        let (mut iso, _) = class_isolate(true, false);
+        for name in ["B", "D"] {
+            for u in [call_walk as fn(&str) -> VerifiedUnit, fcall_walk] {
+                let before = shown_in(&mut plain, u(name), false);
+                WALKED.with(|x| x.borrow_mut().take());
+                let after = shown_in(&mut iso, u(name), false);
+                assert!(WALKED.with(|x| x.borrow_mut().take()).is_none(), "{name}");
+                assert_eq!(after, before, "{name}");
+                let e = after.unwrap_err();
+                assert!(
+                    e.starts_with(&format!(
+                        "TypeError: Class constructor {name} cannot be invoked without 'new'"
+                    )),
+                    "{name}: {e}"
+                );
+            }
+            let (f, w) = (
+                iso.global_raw(name).unwrap(),
+                iso.global_raw("walk").unwrap(),
+            );
+            let e = iso.call_raw(f, Value::UNDEFINED, &[w]).unwrap_err();
+            assert!(
+                e.message.contains("cannot be invoked without 'new'"),
+                "{name}"
+            );
+            assert!(call_through_entry(&mut iso, f, &[w]).is_none(), "{name}");
+            assert!(
+                crate::native::native_callee(f.to_bits()).is_none(),
+                "{name}"
+            );
+            assert!(
+                crate::native::native_construct_callee(f.to_bits()).is_some(),
+                "{name}"
+            );
+        }
+    }
 }

@@ -40,8 +40,8 @@
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
-#   fuzz-smoke ....... cargo-fuzz, 60 s per front-end target; prints (Linux x64)
-#                      only the crash count and hashes (V9-A17)
+#   fuzz-smoke ....... cargo-fuzz, 60 s per target (front end, unit  (Linux x64)
+#                      loader); prints only the crash count and hashes (V9-A17)
 #   bench-set ........ the bench mode (inputs bench_base, bench_head): (Linux x64,
 #                      cachegrind Ir of ep9 at base and head, BENCH-SET  Linux arm64)
 #                      rows, rule 13 verdict; else one "off" leg (its own tests)
@@ -1106,16 +1106,16 @@ jobs:
           path: sp-tsrs-win.log
           if-no-files-found: warn
 
-  # Front-end fuzz smoke (plan v9 M4-P2 FE-FUZZ; docs/plan/10-quality.md section 4): the 3
-  # cargo-fuzz targets of fuzz/ (its own nightly workspace, fuzz/README.md), seeded from
+  # Fuzz smoke (plan v9 M4-P2 FE-FUZZ; docs/plan/10-quality.md section 4): the 5 cargo-fuzz
+  # targets of fuzz/ (front end, regexp, unit_loader; its own nightly workspace, README), from
   # fuzz/seeds and a test262 sample, FUZZ_SMOKE seconds of mutation each. The repo is public
   # (plan v9 rule 14, V9-A17): fuzz/scripts/run.sh sends the fuzzer output to a file inside the
   # job and prints only the crash count, the SHA-256 of each crash file and numeric stats; the
   # job uploads nothing. The self-test step first proves that rule on a fixture crash. A CI
   # probe of the 10-minute smoke sets frontend_compile=600 (and the timeout to 45).
-  # Rule 25: the Mac run of every step except the mutation is 172 s (cold build in the
-  # self-test 102 s, test262 seeds 57 s, seed replay 11 s) + 180 s mutation = 5.9 min; on
-  # ubuntu-24.04 (4 vCPU, cold cache, cargo-fuzz install) about 12-15 min (est.).
+  # Rule 25: the Mac run of every step except the mutation was 172 s with 3 targets (cold build in
+  # the self-test 102 s, test262 seeds 57 s, replay 11 s); unit_loader adds ep9_vm to the build
+  # (Mac 155 s) and 60 s; 300 s mutation in all. ubuntu-24.04: re-read from the first run.
   fuzz-smoke:
     name: fuzz smoke (linux-x64)
     needs: scope
@@ -1126,7 +1126,7 @@ jobs:
     env:
       CARGO_FUZZ_VERSION: 0.12.0
       # <target>=<seconds of mutation>, one per target.
-      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60 regexp=60
+      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60 regexp=60 unit_loader=60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The +toolchain of fuzz/rust-toolchain.toml (the Miri pin); the root stable pin builds
