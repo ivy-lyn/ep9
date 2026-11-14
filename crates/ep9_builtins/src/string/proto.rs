@@ -699,13 +699,45 @@ pub(super) fn trim_start<'s>(
     trim_string(cx, this, Where::Start, "trimStart")
 }
 
-/// String.prototype.normalize ( \[ form \] ) (§22.1.3.15): a TypeError until INTL W4 NORMALIZE
-/// writes the body (over `ep9_intl::normalize`).
+/// String.prototype.normalize ( \[ form \] ) (§22.1.3.15). The normalization is
+/// `ep9_intl::normalize` (ICU4X; only `ep9_intl` depends on `icu_normalizer`, dep-guards check
+/// 25); lone surrogates pass through. A string that is normal already is returned as it is.
 pub(super) fn normalize<'s>(
     cx: &mut Cx<'s>,
-    _this: Local<'s>,
-    _args: Args<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    Err(cx.throw_type_error("String.prototype.normalize is not implemented"))
+    // Function-local imports: the lines above this function keep their numbers (docs cite them).
+    use ep9_intl::normalize::{Form, normalize};
+    use std::borrow::Cow;
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
+    let s = this_string(cx, this, "normalize")?;
+    let form = args.get(0);
+    let f = if form.is_undefined() {
+        // 3. If form is undefined, let f be "NFC".
+        Form::Nfc
+    } else {
+        // 4. Else, let f be ? ToString(form).
+        let f = to_units(cx, form)?;
+        // 5. If f is not one of "NFC", "NFD", "NFKC", or "NFKD", throw a RangeError exception.
+        match Form::from_units(&f) {
+            Some(f) => f,
+            None => {
+                return Err(cx.throw_range_error(
+                    "The normalization form should be one of NFC, NFD, NFKC, NFKD.",
+                ));
+            }
+        }
+    };
+    // 6. Let ns be the String value that is the result of normalizing S into the normalization
+    //    form named by f as specified in the latest Unicode Standard, Normalization Forms.
+    // 7. Return ns.
+    let units = units(cx, s)?;
+    match normalize(&units, f) {
+        Cow::Borrowed(_) => Ok(s.value()),
+        Cow::Owned(ns) => new_str(cx, &ns),
+    }
 }
