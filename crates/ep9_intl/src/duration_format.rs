@@ -580,14 +580,14 @@ impl Record {
 }
 
 /// ToIntegerIfIntegral ( argument ): ? ToNumber, a RangeError for a Number that is not
-/// integral; -0 becomes +0.
+/// integral; -0 becomes +0 (a compare and a constant, no `f64` add on the field: INTL-V2-FP4).
 fn to_integer_if_integral<'s>(cx: &mut Cx<'s>, v: Local<'s>, name: &str) -> JsResult<f64> {
     let x = cx.to_number(v)?;
     if !is_integral(x) {
         let text = cx.to_rust_string(Local::number(x))?;
         return Err(cx.throw_range_error(&format!("{name} must be an integer, not {text}")));
     }
-    Ok(x + 0.0)
+    Ok(if x == 0.0 { 0.0 } else { x })
 }
 
 /// The field reads of ToDurationRecord, in their order (alphabetical, as Temporal's
