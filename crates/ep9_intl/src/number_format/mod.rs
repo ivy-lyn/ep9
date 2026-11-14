@@ -1048,6 +1048,28 @@ fn resolved_options<'s>(
     Ok(o.into())
 }
 
+// ---- INTL W4 DURATION: the NumberFormat of a duration unit ------------------------------------
+
+/// The resolved options of the NumberFormat that PartitionDurationFormatPattern (ECMA-402
+/// §13.5) makes for a unit with a long, short or narrow style: `new Intl.NumberFormat(locale,
+/// { numberingSystem, style: "unit", unit, unitDisplay })`, so the NumberFormat defaults with
+/// `[[Style]]` "unit" (0 to 3 fraction digits, the defaults of a style that is not "currency"
+/// or "percent"). `unit` is a sanctioned simple unit ("hour"), `unit_display` one of
+/// "short", "narrow", "long". The caller sets the fraction digits, the rounding mode and the
+/// sign display that the duration needs.
+pub(crate) fn unit_defaults(
+    locale: &str,
+    numbering_system: &str,
+    unit: &str,
+    unit_display: &str,
+) -> Resolved {
+    let mut r = decimal_defaults(locale, numbering_system);
+    r.style = index_of(&STYLES, &"unit");
+    r.unit = Some(unit.to_string());
+    r.unit_display = index_of(&UNIT_DISPLAYS, &unit_display);
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,3 +2,7 @@
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
 0x5000   40.0         constructor  0       "DurationFormat"  (%Intl.DurationFormat%)
+0x5001   40.1         method       1       "supportedLocalesOf"  (%Intl.DurationFormat%.supportedLocalesOf w-c)
+0x5002   40.2         method       1       "format"  (%Intl.DurationFormat.prototype%.format w-c)
+0x5003   40.3         method       1       "formatToParts"  (%Intl.DurationFormat.prototype%.formatToParts w-c)
+0x5004   40.4         method       0       "resolvedOptions"  (%Intl.DurationFormat.prototype%.resolvedOptions w-c)
