@@ -62,9 +62,9 @@ pub(crate) enum ObjectState {
     Invalidated,
 }
 
-/// One InvalidatingFuse dependency of a code object, with the per-isolate fuse state the
-/// caller read (doc 13 §3.5). A GuardFuse read is not a dependency: its code stays Active and
-/// takes the slow path after a pop (T6, jitless).
+/// One fuse ref of a code object, with the per-isolate fuse state the caller read (doc 13 §3.5).
+/// For a unit (`unit_loader`, MC-w35-5) a `Static` ref is a GuardFuse read at each use; for T2/A4
+/// code, and for a `Dynamic` ref, an InvalidatingFuse dependency (H29 "A4-built (gated)" item (5)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dep {
     /// A builtin fuse by stable index (`fuse::STATIC`).

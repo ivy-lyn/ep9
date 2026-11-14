@@ -31,7 +31,7 @@ use crate::header::{le_u32, le_u64};
 
 /// The magic of a function table.
 pub const FT_MAGIC: [u8; 4] = *b"EPFT";
-/// The function-table form version (inside container version 3; the same since version 2).
+/// The function-table form version (inside container version 4; the same since version 2).
 pub const FT_VERSION: u32 = 1;
 /// The table header: magic, version, entry count, variant count.
 pub const FT_HEADER_SIZE: usize = 16;

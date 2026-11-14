@@ -5245,3 +5245,46 @@ fn the_frame_record_walk_runs_on_apple_aarch64_only() {
         assert!(returns.is_empty(), "{returns:x?}");
     }
 }
+
+/// M8-P4 A2-GATE (MC-w29-8 step 2; the W-pre check K1): in this build `install_code` keeps
+/// refusing a class constructor for every kind, because this build's T0 `call_fast` enters an
+/// AotBaseline slot through `hot_stub` with no class-constructor check (`interp/ops.rs`: "never
+/// class constructors (the installs refuse them)"), so `K()` would run the body with no
+/// TypeError. The default build installs one as AotBaseline unit code
+/// (`tests::unit_loader::class_ctors`).
+#[test]
+fn spike_native_install_code_still_refuses_a_class_constructor() {
+    use ep9_bytecode::{FunctionFlags, FunctionKind};
+    assert!(!crate::native::installs_class_code(
+        DispatchKind::AotBaseline
+    ));
+    assert!(!crate::native::installs_class_code(DispatchKind::Baseline));
+    let mut m = meta("K", 0, 0, 0, 0);
+    m.kind = FunctionKind::ClassConstructor;
+    m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
+    let mut k = Asm::new(m);
+    k.b.lda_undefined().return_();
+    let mut s = Asm::script(0);
+    let c = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(c, s.closure, 0);
+    s.sta_global("K");
+    s.b.lda_undefined().return_();
+    let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(unit("", vec![s.finish(), k.finish()]), "k.js")
+            .map(|_| ())
+    })
+    .unwrap();
+    let f = iso.global_raw("K").unwrap().to_bits();
+    let fi = crate::object::function_info(f);
+    // A range no entry holds (never run: every install below is refused first).
+    static NEVER: [u8; 16] = [0; 16];
+    let at = NEVER.as_ptr().addr();
+    for kind in [DispatchKind::AotBaseline, DispatchKind::Baseline] {
+        // SAFETY: refused before the slot or the registry changes.
+        let r = unsafe { crate::native::install_code(&iso.rt, fi, kind, at..at + 4) };
+        assert_eq!(r, Err(InstallError::ClassConstructor), "{kind:?}");
+    }
+    assert_eq!(fi.slot.kind(), Some(DispatchKind::Interp));
+    assert!(crate::native::native_construct_callee(f).is_none());
+}
