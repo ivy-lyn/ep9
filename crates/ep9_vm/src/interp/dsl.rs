@@ -337,9 +337,9 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 /// slot operand is a volatile read, so LLVM does not load it at the handler entry). Three
 /// opcodes keep the plain tail call: with the test, x86-64 `Div` and `DivSmi` got 2 more
 /// instructions on their int32 path (LLVM merged two dispatch tails), and aarch64
-/// `ForInPrepare` built a frame on entry. The `Flow::RecordPair` arm has no such test: its
-/// bits (`profile::compare_bits`) read the kind of a cell operand, too much code for a fast
-/// handler ([`record_pair_exit`]).
+/// `ForInPrepare` built a frame on entry. Of the `Flow::RecordPair` arms only `TestEqual` has a
+/// test (a pair form, M8-P5 LEVER-8): the whole `profile::compare_bits` of a pair is too much
+/// code for a fast handler ([`record_pair_exit`]).
 macro_rules! record_exit {
     (return, ics_only, $name:ident, $st:ident, $r:ident) => {{
         let _ = $r;
@@ -416,6 +416,16 @@ pub(crate) use skip_exit;
 /// The `Flow::RecordPair` arm of a threaded fast handler: as [`record_exit`], with the operand
 /// pair as the last two arguments of [`record_pair_next`] and the slot place as its const
 /// parameter. `ics_only`: no record, as in [`record_exit`].
+///
+/// **The pair no-change test (M8-P5 LEVER-8).** `TestEqual` gives a pair only with null or
+/// undefined on a side (`interp/ops.rs`). The bits of such a pair need one kind read at most
+/// (`profile::nullish_pair_bits`), so its `full` (b) arm finds them and runs the test of
+/// `profile::adds_bit` (no store): with no new bit it tail-calls [`skip_next`], as
+/// [`record_exit`] does; with a new bit it tail-calls [`record_next`] with those bits, which
+/// tests again and stores them (`profile::record`), so every slot gets the same bits as
+/// `profile::record_pair` gives (FACT_SCHEMA 2). A pair with no nullish side (none from
+/// `TestEqual` today) takes [`record_pair_next`]. The other opcodes keep the plain tail call:
+/// `TestEqualStrict` gives pairs of any classes, too much code for a fast handler.
 macro_rules! record_pair_exit {
     (return, ics_only, $name:ident, $st:ident, $p:ident) => {{
         let _ = $p;
@@ -425,21 +435,46 @@ macro_rules! record_pair_exit {
         let _ = $p;
         $st.next
     }};
-    (return, full, $name:ident, $st:ident, $p:ident) => {{
-        let St {
-            cx, pc, fp, acc, ..
-        } = $st;
+    (return, full, TestEqual, $st:ident, $p:ident) => {{
+        const PLACE: u64 = $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::TestEqual);
         let (l, r) = $p.operands();
-        // SAFETY: as in `record_exit`.
-        unsafe {
-            return $crate::interp::dsl::record_pair_next::<
-                { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) },
-            >(cx, pc, fp, acc, l, r);
+        if let Some(bits) = $crate::profile::nullish_pair_bits(l, r) {
+            // SAFETY: as in `record_exit`: the one-byte slot operand is at `PLACE & 0xFF`. A
+            // volatile read, so LLVM does not move it to the handler entry.
+            let slot = unsafe { core::ptr::read_volatile($st.pc.add((PLACE & 0xFF) as usize)) };
+            // The pair no-change test: no new bit, so no record; the tail call of `skip_next`.
+            if !$crate::profile::adds_bit(
+                &$st,
+                $crate::interp::dsl::FSlot(u32::from(slot)),
+                bits,
+            ) {
+                $crate::interp::dsl::skip_exit!(TestEqual, $st)
+            }
+            // A new bit: the record of these bits (`record_next`, as for a `Flow::Record`), so
+            // the pair is dead here and the handler needs no more registers.
+            let rec = $crate::profile::Rec::new($crate::interp::dsl::FSlot(u32::from(slot)), bits);
+            $crate::interp::dsl::record_exit!(@call TestEqual, $st, rec)
         }
+        $crate::interp::dsl::record_pair_exit!(@call TestEqual, $st, l, r)
+    }};
+    (return, full, $name:ident, $st:ident, $p:ident) => {{
+        let (l, r) = $p.operands();
+        $crate::interp::dsl::record_pair_exit!(@call $name, $st, l, r)
     }};
     (become, full, $name:ident, $st:ident, $p:ident) => {{
         $crate::profile::record_pair(&$st, $p);
         $st.next
+    }};
+    (@call $name:ident, $st:ident, $l:ident, $r:ident) => {{
+        let St {
+            cx, pc, fp, acc, ..
+        } = $st;
+        // SAFETY: as in `record_exit`.
+        unsafe {
+            return $crate::interp::dsl::record_pair_next::<
+                { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) },
+            >(cx, pc, fp, acc, $l, $r);
+        }
     }};
 }
 pub(crate) use record_pair_exit;
@@ -589,6 +624,8 @@ macro_rules! record_next_fn {
             debug_native_stack_check(cx);
             let (off, len) = ((PLACE & 0xFF) as usize, ((PLACE >> 8) & 0xFF) as usize);
             debug_assert!(off != 0, "Flow::Record from an opcode without a slot operand");
+            #[cfg(test)]
+            exit_count::RECORD.with(|n| n.set(n.get() + 1));
             // SAFETY: caller contract: the one-byte slot operand is at `pc + off` and the
             // instruction is `len` bytes long, in verified code.
             let (slot, next) = unsafe { (u32::from(*pc.add(off)), pc.add(len)) };
@@ -631,6 +668,8 @@ macro_rules! record_pair_next_fn {
             debug_native_stack_check(cx);
             let (off, len) = ((PLACE & 0xFF) as usize, ((PLACE >> 8) & 0xFF) as usize);
             debug_assert!(off != 0, "Flow::RecordPair from an opcode without a slot operand");
+            #[cfg(test)]
+            exit_count::RECORD_PAIR.with(|n| n.set(n.get() + 1));
             // SAFETY: caller contract.
             let (slot, next) = unsafe { (u32::from(*pc.add(off)), pc.add(len)) };
             let slot = $crate::interp::dsl::FSlot(slot);
@@ -701,6 +740,20 @@ skip_next_fn! {
 /// The instruction length of `op` at one-byte scale, for [`skip_next`].
 pub(crate) const fn one_byte_len(op: ep9_bytecode::Opcode) -> usize {
     op.info().size(OperandScale::Single)
+}
+
+/// Test builds only: the runs of [`record_next`] and [`record_pair_next`] on this thread, for
+/// the tests of the no-change exits (M8-P5 LEVER-8: a `TestEqual` pair with no new bit runs
+/// neither).
+#[cfg(test)]
+pub(crate) mod exit_count {
+    use core::cell::Cell;
+    thread_local! {
+        /// The runs of `record_next`.
+        pub(crate) static RECORD: Cell<u32> = const { Cell::new(0) };
+        /// The runs of `record_pair_next`.
+        pub(crate) static RECORD_PAIR: Cell<u32> = const { Cell::new(0) };
+    }
 }
 
 /// The cold handler of opcode `$name` in an [`expand_threaded`] expansion. `full`: the cold
