@@ -1,17 +1,17 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 60 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2 and
-# 1 INTL W3 tests. 8 of them also fail without GC-stress and are listed in every
+# 63 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2,
+# 1 INTL W3 and 3 INTL W4 tests. 9 of them also fail without GC-stress and are listed in every
 # expectations/test262.<triple>.jit.txt: the 5 month-2 tco-* tests, the M3-P1 test
-# two-digit-years.js and the 2 INTL W2 supportedLocalesOf-* tests (they also need
-# Intl.DateTimeFormat). Since M7-P2 (the
+# two-digit-years.js, the 2 INTL W2 supportedLocalesOf-* tests (they also needed
+# Intl.DateTimeFormat) and the INTL W4 test compare-to-temporal-lunisolar.js. Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
-# 42331111457), and ownkeys-linear.js passes too. The other 52 pass without GC-stress: the
+# 42331111457), and ownkeys-linear.js passes too. The other 54 pass without GC-stress: the
 # other 6 month-2 tests, the other 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test, the 7
-# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the 2 INTL W2 NumberFormat tests and the
-# INTL W3 test.
+# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the 2 INTL W2 NumberFormat tests, the
+# INTL W3 test and the other 2 INTL W4 tests.
 # The 8 month-2 tests that failed without GC-stress when they were listed:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists). They failed at the first lone surrogate, 0xD800, until the M7-P2 shim; now they
@@ -108,6 +108,27 @@
 # exit 2, 0 new failures) it hit the hard timeout (no result after 125 s; the worker was
 # killed) on all 4 targets, so that shard compared no expectations.
 # No local GC-stress run (light rule, M6-ORCH-429); route GCSKIP-BFO re-reads these times.
+# INTL W4 (Intl.DateTimeFormat): before W4 these 3 intl402 files failed fast (no
+# Intl.DateTimeFormat); now they run longer. In CI 43693625283 on f5f47570 (GC-stress shard
+# 2/6; exit 2, so the expectations were not compared). Alone, 2 runs, mac a64 release at
+# f5f47570 plus the W4 doc fix, --gc-stress 1 --feedback-threshold 0 --timeout 300
+# --threads 1, host load 2.1-3.8 (W4 fixer r4, 2026-11-15):
+# - DateTimeFormat/prototype/formatToParts/compare-to-temporal.js: hard timeout (no result
+#   after 125 s) on all 4 targets. It passes without GC-stress (0.4 s). Alone under GC-stress
+#   324.9 s (about 162 s per run). Each run makes 12 x 101 x 12 = 14,544 formatToParts calls.
+#   The same calls alone take 40.8 s (1 run); the test with the parts made in JS from the
+#   Temporal date (no formatToParts call) takes 244.8 s (2 runs). Thus most collections come
+#   from the rest of each step (Temporal.PlainDate.from, withCalendar, toZonedDateTime, the 3
+#   find calls and the assert message strings), not from the W4 code, and no W4 change can
+#   bring the test under the timeout;
+# - DateTimeFormat/prototype/formatToParts/compare-to-temporal-lunisolar.js: both runs past
+#   the 60 s timeout on windows-x64 only. It fails without GC-stress (Test262Error: the
+#   hebrew year "I 5809" is not numeric) and stays in every jit file. Alone under GC-stress
+#   48.1 s (about 24 s per run);
+# - fallback-locales-are-supported.js: both runs past the 60 s timeout on windows-x64 only. It
+#   passes without GC-stress (0.3 s). Alone under GC-stress 34.4 s (about 17 s per run).
+# The last 2 take more than 25 s alone on mac a64 and timed out on windows-x64: a slow test is
+# a flaky gate. Route GCSKIP-BFO re-reads these times.
 # Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
 # head; the M4-P3 tests: on x86_64-unknown-linux-gnu). Paths are relative to the test262 root.
 test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js
@@ -138,9 +159,12 @@ test/built-ins/decodeURIComponent/S15.1.3.2_A2.4_T1.js
 test/built-ins/decodeURIComponent/S15.1.3.2_A2.5_T1.js
 test/built-ins/encodeURI/S15.1.3.3_A2.3_T1.js
 test/built-ins/encodeURIComponent/S15.1.3.4_A2.3_T1.js
+test/intl402/DateTimeFormat/prototype/formatToParts/compare-to-temporal-lunisolar.js
+test/intl402/DateTimeFormat/prototype/formatToParts/compare-to-temporal.js
 test/intl402/NumberFormat/constructor-unit.js
 test/intl402/NumberFormat/test-option-roundingPriority-mixed-options.js
 test/intl402/Temporal/ZonedDateTime/prototype/equals/canonical-not-equal.js
+test/intl402/fallback-locales-are-supported.js
 test/intl402/supportedLocalesOf-consistent-with-resolvedOptions.js
 test/intl402/supportedLocalesOf-unicode-extensions-ignored.js
 test/language/comments/S7.4_A5.js
