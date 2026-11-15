@@ -226,7 +226,7 @@ impl<'s> Cx<'s> {
             ));
         }
         loop {
-            if rt.jobs.queue_head() == UNDEFINED {
+            if self.queue_head_after_async_waiters() == UNDEFINED {
                 // The queue is empty: ClearKeptObjects, then the FinalizationRegistry cleanup
                 // jobs (07-runtime.md "Job order"; `abi/weakref.rs`), as HTML's microtask
                 // checkpoint and node do: a target stays alive through every job of the

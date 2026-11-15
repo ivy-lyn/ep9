@@ -2,10 +2,10 @@
 //! `delete_index`, the ObjectOps of the key `! ToString(𝔽(index))` for an integer index.
 //!
 //! ```text
-//! cx.get_index(o, k)  ──> property::get_index: a dense element, a String wrapper index or a
-//!                         missing index answers without a key (no atom); a stored integer key
-//!                         is found by a scan of a small object; else the key path (an atom)
-//! cx.set_index(o, k, v, throw) ──> a dense array element in place, else Set(O, key, V, throw)
+//! cx.get_index(o, k)  ──> property::get_index: a dense element, a view element, a String
+//!                         wrapper index or a missing index answers without a key (no atom); a
+//!                         stored integer key: a scan of a small object; else the key path
+//! cx.set_index(o, k, v, throw) ──> an array or view element in place, else Set(O, key, V, throw)
 //! ```
 //!
 //! An index is a `u64`, as `length_of_array_like` gives it (at most 2^53 - 1 from ToLength);
@@ -20,8 +20,8 @@ use super::{Cx, JsObject, Local};
 use crate::{interp, property};
 
 impl<'s> Cx<'s> {
-    /// Get(O, ! ToString(𝔽(index))) (§7.3.2). Makes no atom for a dense element or a missing
-    /// index.
+    /// Get(O, ! ToString(𝔽(index))) (§7.3.2). Makes no atom for a dense element, a
+    /// TypedArray element or a missing index.
     pub fn get_index(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -41,7 +41,7 @@ impl<'s> Cx<'s> {
 
     /// Set(O, ! ToString(𝔽(index)), V, Throw) (§7.3.4). `Ok(false)` if the assignment failed
     /// and `throw` is false; a TypeError if it failed and `throw` is true. A dense array
-    /// element is stored without a key.
+    /// element and a TypedArray element are stored without a key.
     pub fn set_index(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,

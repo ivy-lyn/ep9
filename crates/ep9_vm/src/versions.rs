@@ -66,7 +66,18 @@
 /// the dictionary shape of a non-extensible Array with a dense elements kind, so a dense kind
 /// alone no longer means that the elements are writable: native code that stores an element
 /// tests the level bits too. No cell layout changes.
-pub const OBJECT_LAYOUT_VERSION: u32 = 8;
+///
+/// 9 (TypedArray TA-0 TA-DECL, design `docs/plan/notes/typedarray-design.md` §2, §3.2; TA-D13:
+/// the one bump of the TypedArray workflow): the 12 view kinds 29-40 (spec Table 71 order) and
+/// the internal kind BYTES 85 (`kinds.rs`); the view cell (+24 buffer, +32 data: an
+/// `ExternalRef<u8>` native word, null when detached or empty; +40 length: an int32 Value below
+/// 2^31, a double from 2^31 on, 0 when detached, the "auto" int32 -1 for a length-tracking
+/// view; +48 byteOffset; the in-object slots from +56; +16 always undefined); the BYTES cell
+/// (+8 byte length, +16 the bytes, nothing traced); the elements kind values 7 TYPED_FIXED and
+/// 8 TYPED_VARIABLE (`elements::kind`, storage form `Typed`); `layout::VIEW_*`, `KIND_*_VIEW`,
+/// `KIND_BYTES`, `BYTES_*` and `ELEMENTS_KIND_TYPED_*`. Declared: no cell of these kinds exists
+/// until TA-1 TA-VM builds them.
+pub const OBJECT_LAYOUT_VERSION: u32 = 9;
 /// Inline-cache and feedback data layout (H16). 2 (M4-P0): the feedback slot table of
 /// `profile.rs` (one writer module per slot kind) and the IC_HANDLER layout of `ic.rs` (+8
 /// handler kind, +16 validity cell or int32, +24 weak ref, +32 int32; new handler kinds

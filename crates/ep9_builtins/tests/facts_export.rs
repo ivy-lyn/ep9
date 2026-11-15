@@ -744,6 +744,7 @@ var sparse = [1, 2];
 sparse[1e6] = 1;
 var vals = [1, 1.5, undefined, null, true, "s", sym, {}, [], g, new Error("e")];
 var big = 0x7fffffff;
+var view = new Int8Array(4);
 function writers(i, s, d, o) {
   if (i < 0) {
     g();                              // Call: uninitialized
@@ -781,6 +782,7 @@ function writers(i, s, d, o) {
   var nw = new Number(1).x;           // ObjectKind primitive-wrapper
   var bn = bound.name;                // ObjectKind bound-function
   var fnm = g.name;                   // ObjectKind function
+  var vl = view.length;               // ObjectKind typed-array (a getter case's receiver)
   var k = 0;
   for (var j = 0; j < 6; j++) k = kinds6[j][1];  // LoadKeyed: each elements kind of kinds6
   kinds6[i & 1][1] = 2;               // StoreKeyed: megamorphic
@@ -886,10 +888,9 @@ fn dead_key_cleared(iso: &mut Isolate, hash: &[u8; 32]) -> bool {
 /// The H16 "Declared, no writer" items, each with the words that the H16 paragraph names it
 /// by. No code writes them, so a corpus record never holds one (`ep9_vm`
 /// `tests::facts_export::the_fields_declared_with_no_writer_have_none` scans the code).
-const NO_WRITER_ITEMS: [(&str, &str); 17] = [
+const NO_WRITER_ITEMS: [(&str, &str); 16] = [
     ("RecordFlags::ran", "`RecordFlags::RAN`"),
     ("RecordFlags::exited", "`RecordFlags::EXITED`"),
-    ("ObjectKind::typed-array", "`ObjectKind::TypedArray`"),
     ("Access::getter", "the Access tags getter and setter"),
     ("Access::setter", "the Access tags getter and setter"),
     ("Access::string-length", "`Access::StringLength`"),

@@ -300,6 +300,59 @@ fn set_and_delete_index() {
     });
 }
 
+/// `set_index` and `get_index` on a TypedArray view (§10.4.5.4, §10.4.5.5 with the view as the
+/// receiver) make no atom: the TypedArray constructors, `from` and `of` fill a new view with
+/// them, one call per element (TA-3 fixer r1: before, each index past 9 made its key, one
+/// allocation per element). The values are the element type's (ToUint8, ToFloat32); an index
+/// past the length reads undefined and stores nothing; a detached view reads undefined.
+#[test]
+fn index_ops_on_a_view_make_no_atom() {
+    with_cx(false, |cx, rt| {
+        const N: u64 = 10_000;
+        let null = Local::null();
+        let buf = cx.allocate_array_buffer(null, N * 4, None).unwrap();
+        let u8v = cx.new_typed_array(null, 1, buf, 0, None).unwrap();
+        let f32v = cx.new_typed_array(null, 10, buf, 0, Some(N)).unwrap();
+        let before = atom_count(rt);
+        for i in 0..N {
+            assert!(
+                cx.set_index(f32v, i, Local::number(i as f64 + 0.1), true)
+                    .unwrap()
+            );
+        }
+        for i in 0..N {
+            let v = cx.get_index(f32v, i).unwrap().as_number().unwrap();
+            assert_eq!(v, f64::from((i as f64 + 0.1) as f32), "{i}");
+        }
+        for i in 0..N {
+            assert!(
+                cx.set_index(u8v, i, Local::number(i as f64 + 256.5), true)
+                    .unwrap()
+            );
+        }
+        for i in 0..N {
+            let v = cx.get_index(u8v, i).unwrap().as_number().unwrap();
+            assert_eq!(v, (i % 256) as f64, "{i}");
+        }
+        // Past the length: undefined, and a store is true with nothing stored.
+        for i in 4 * N..5 * N {
+            assert!(cx.get_index(u8v, i).unwrap().is_undefined());
+            assert!(cx.set_index(u8v, i, Local::int32(1), true).unwrap());
+        }
+        assert!(
+            cx.get_index(u8v, 9_007_199_254_740_991)
+                .unwrap()
+                .is_undefined()
+        );
+        cx.detach_array_buffer(buf, Local::undefined()).unwrap();
+        for i in 0..N {
+            assert!(cx.get_index(u8v, i).unwrap().is_undefined());
+            assert!(cx.set_index(u8v, i, Local::int32(1), true).unwrap());
+        }
+        assert_eq!(atom_count(rt), before, "index access on a view made atoms");
+    });
+}
+
 /// Values stored and read by index survive a collection before every allocation.
 #[test]
 fn index_ops_under_gc_stress() {

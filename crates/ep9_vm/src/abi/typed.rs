@@ -1,0 +1,1390 @@
+//! ArrayBuffer, SharedArrayBuffer, TypedArrays, DataView and Atomics on the builtin ABI (H20
+//! part 2; TypedArray workflow, design `docs/plan/notes/typedarray-design.md` §8.1). TA-0
+//! TA-DECL declared the `Cx` method list with stub bodies (plan rule 4 form, `m8-stub`); TA-1
+//! TA-VM filled the bodies over `array_buffer.rs` and `typed_array.rs`, and TA-4 R2 ATOMICS the
+//! three waiter methods ([`Cx::atomics_wait`], [`Cx::atomics_wait_async`],
+//! [`Cx::atomics_notify`]) over the process waiter list `ep9_platform::waiters` (design §5.6).
+//! The builtins of TA-2 to TA-4 (`ep9_builtins` array_buffer.rs, data_view.rs, typed_array/,
+//! atomics.rs) call them.
+//!
+//! ```text
+//! ArrayBuffer / SharedArrayBuffer: SLOT_OBJECT, ObjectClass::ArrayBuffer (5) / SharedArrayBuffer
+//!   allocate_*  byte_length  detach  copy_and_detach  resize  grow  copy_buffer_bytes
+//!   get_value_from_buffer / set_value_in_buffer           (GetValueFromBuffer, SetValueInBuffer)
+//! TypedArray: a view kind 29-40 (kind - 29 = its element type, below)
+//!   new_typed_array  typed_array_element  _buffer  _byte_offset  _fixed_length  _length
+//! DataView: SLOT_OBJECT, ObjectClass::DataView         new_data_view (+ the buffer methods)
+//! Atomics: atomic_load  atomic_store  atomic_read_modify_write  atomic_compare_exchange
+//!          atomics_wait  atomics_wait_async  atomics_notify
+//! ```
+//!
+//! **Element types.** An `element: u8` is the row of spec Table 71 ("The TypedArray
+//! Constructors"), counted from 0, and the order of the view kind ids (`kinds::INT8_VIEW` + the
+//! row; `layout::VIEW_ELEMENT_SIZES` gives each size):
+//!
+//! | Row | Element type | Size | Row | Element type | Size |
+//! |---|---|---|---|---|---|
+//! | 0 | Int8 | 1 | 6 | Uint32 | 4 |
+//! | 1 | Uint8 | 1 | 7 | BigInt64 | 8 |
+//! | 2 | Uint8Clamped | 1 | 8 | BigUint64 | 8 |
+//! | 3 | Int16 | 2 | 9 | Float16 | 2 |
+//! | 4 | Uint16 | 2 | 10 | Float32 | 4 |
+//! | 5 | Int32 | 4 | 11 | Float64 | 8 |
+//!
+//! Rows 7 and 8 hold BigInts (`[[ContentType]]` bigint); the others hold Numbers. A row above 11
+//! is a bug in the caller: the filled methods panic on it.
+//!
+//! **Read-modify-write ops** (`op: u8` of [`Cx::atomic_read_modify_write`]): 0 add, 1 and,
+//! 2 exchange, 3 or, 4 sub, 5 xor (the Atomics functions of the same names).
+//!
+//! | Rule | Statement |
+//! |---|---|
+//! | Values are converted by the caller | No method here runs JS. The builtin does the spec's ToIndex, ToNumber, ToBigInt and species steps first, in spec order; a value argument is then a Number, or a BigInt for rows 7 and 8, else a TypeError |
+//! | Memory safety does not trust the caller | A method checks its byte range against the buffer's current length before it reads or writes: a range past it (a builtin bug, or a buffer that a conversion detached or shrank) is a TypeError or a RangeError, never an access. The slots that bound an access (a buffer's store, byte length, flags and table index; a DataView's data address) are written here only. A buffer or a DataView made here owns a table entry from its birth (the brand; `array_buffer` module doc): each method takes a buffer only if it owns the entry that its slot 5 names, so an object of a buffer class that the generic slot API makes is a TypeError here; the generic slot API refuses every slot of a buffer or a DataView made here ([`Cx::set_slot`]) |
+//! | GC (plan rule 8) | No Value lives in Rust memory: a buffer's store and view list are held through its slots and the isolate's buffer table (one weak source; design §5.1). R3 of the ABI holds: every `&mut` method may allocate |
+//! | Shared memory | A SharedArrayBuffer's bytes are read and written only through `ep9_platform::shared_mem` (inline asm outside the Rust model; Rust atomics under Miri): unordered access is a racy access of the element width (bytes for a DataView or a copy), the Atomics methods are SeqCst (TA-D11; TA-SHARED-MIXED-WIDTH, V13-D8) |
+//! | Waiters | The waiter list holds Rust values only (block serial, byte index, waiter ids). A `waitAsync` promise lives in the isolate's async-waiter record chain (`jobs::async_waiter`, a root); a notify on any thread puts the waiter's id into the isolate's inbox, and the isolate resolves the promise at its next microtask checkpoint, between jobs (no JS runs on another thread, H22). A sync wait wakes every 10 ms to read the terminate word |
+
+use core::sync::atomic::Ordering;
+use std::time::Duration;
+
+use ep9_platform::waiters::{AsyncWait, Outcome, SyncWait};
+use ep9_value::{JsResult, Throw};
+
+use super::{Cx, JsObject, Local, ObjectClass};
+use crate::array_buffer::{self as ab, Fail};
+use crate::frame::{NULL, UNDEFINED};
+use crate::jobs::async_waiter;
+use crate::kinds;
+use crate::object;
+use crate::typed_array as ta;
+
+/// The prototype argument of a maker: an object or null (a builtin bug otherwise).
+fn proto_bits(p: Local<'_>) -> u64 {
+    let b = p.bits();
+    assert!(
+        b == NULL || kinds::is_object(b),
+        "a prototype is an object or null"
+    );
+    b
+}
+
+impl<'s> Cx<'s> {
+    /// The pending error of `f` (ABI rule R4).
+    fn buffer_fail(&mut self, f: Fail) -> Throw {
+        match f {
+            Fail::Type(m) => self.throw_type_error(m),
+            Fail::Range(m) => self.throw_range_error(m),
+        }
+    }
+
+    /// `r` with its failure thrown.
+    fn buffer_result<T>(&mut self, r: Result<T, Fail>) -> JsResult<T> {
+        r.map_err(|f| self.buffer_fail(f))
+    }
+
+    /// The TypedArray `v` (its bits), or a TypeError.
+    fn typed_array_bits(&mut self, v: Local<'s>) -> JsResult<u64> {
+        let b = v.bits();
+        if kinds::is_view(b) {
+            return Ok(b);
+        }
+        Err(self.throw_type_error("this is not a typed array."))
+    }
+
+    /// The row of `element`, or a panic (a builtin bug, the module docs).
+    fn element_row(element: u8) -> u8 {
+        assert!(
+            element < kinds::VIEW_KINDS,
+            "element type {element} is not a Table 71 row"
+        );
+        element
+    }
+
+    // ---- ArrayBuffer and SharedArrayBuffer (§25.1, §25.2) ----
+
+    /// AllocateArrayBuffer (sec-allocatearraybuffer) after OrdinaryCreateFromConstructor: a new
+    /// ArrayBuffer with prototype `proto` (an object: the caller ran
+    /// GetPrototypeFromConstructor) and `byte_length` zero bytes. With `Some(max)` it is
+    /// resizable up to `max` bytes. A RangeError if `byte_length` is above `max`, `max` is above
+    /// the reservation cap (2^32, design §2.3), or the bytes cannot be allocated
+    /// (CreateByteDataBlock).
+    pub fn allocate_array_buffer(
+        &mut self,
+        proto: impl Into<Local<'s>>,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let p = proto_bits(proto.into());
+        let r = ab::allocate(self.rt(), p, byte_length, max_byte_length);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// AllocateSharedArrayBuffer (sec-allocatesharedarraybuffer): a new SharedArrayBuffer with
+    /// prototype `proto` and `byte_length` zero bytes, growable up to `max` bytes with
+    /// `Some(max)`. A RangeError as [`Cx::allocate_array_buffer`].
+    pub fn allocate_shared_array_buffer(
+        &mut self,
+        proto: impl Into<Local<'s>>,
+        byte_length: u64,
+        max_byte_length: Option<u64>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let p = proto_bits(proto.into());
+        let r = ab::allocate_shared(self.rt(), p, byte_length, max_byte_length);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// ArrayBufferByteLength (sec-arraybufferbytelength) of an ArrayBuffer or a
+    /// SharedArrayBuffer (whose length is read with order seq-cst): 0 when detached. A TypeError
+    /// if `buffer` is neither.
+    pub fn array_buffer_byte_length(&mut self, buffer: impl Into<Local<'s>>) -> JsResult<u64> {
+        let b = buffer.into().bits();
+        if ab::buffer_class(self.rt(), b).is_none() {
+            return Err(self.throw_type_error("Receiver is not an ArrayBuffer"));
+        }
+        Ok(ab::byte_length(self.rt(), b) as u64)
+    }
+
+    /// IsDetachedBuffer (sec-isdetachedbuffer): true if `buffer` is a detached ArrayBuffer;
+    /// false for any other value (a SharedArrayBuffer is never detached). Never throws.
+    pub fn is_detached_buffer(&self, buffer: impl Into<Local<'s>>) -> bool {
+        let b = buffer.into().bits();
+        ab::buffer_class(self.rt(), b).is_some() && ab::is_detached(b)
+    }
+
+    /// DetachArrayBuffer (sec-detacharraybuffer): every view of `buffer` gets length 0 and no
+    /// data (TA-D5), then the buffer drops its bytes and its byte length is 0. A TypeError if
+    /// `buffer` is not an ArrayBuffer (a SharedArrayBuffer included) or if its
+    /// `[[ArrayBufferDetachKey]]` is not `key` (SameValue). Detaching a detached buffer does
+    /// nothing.
+    pub fn detach_array_buffer(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        key: impl Into<Local<'s>>,
+    ) -> JsResult<()> {
+        let r = ab::detach(self.rt(), buffer.into().bits(), key.into().bits());
+        self.buffer_result(r)
+    }
+
+    /// ArrayBufferCopyAndDetach (sec-arraybuffercopyanddetach) after its ToIndex step, for
+    /// `transfer` and `transferToFixedLength`: a new ArrayBuffer with prototype `proto` (the
+    /// current realm's %ArrayBuffer.prototype%) and `new_byte_length` bytes, resizable with the
+    /// old maximum if `preserve_resizability` and `buffer` is resizable; it takes the first
+    /// min(old, new) bytes of `buffer` (the store itself when the length is the same, or when a
+    /// resizable buffer stays resizable), and `buffer` is detached. A TypeError if `buffer` is
+    /// not an ArrayBuffer, is detached, or has a detach key that is not undefined; a RangeError
+    /// if `new_byte_length` is above the new maximum or cannot be allocated.
+    pub fn array_buffer_copy_and_detach(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        proto: impl Into<Local<'s>>,
+        new_byte_length: u64,
+        preserve_resizability: bool,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let b = buffer.into().bits();
+        let p = proto_bits(proto.into());
+        let r = ab::copy_and_detach(self.rt(), b, p, new_byte_length, preserve_resizability);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// The resize of `ArrayBuffer.prototype.resize` (sec-arraybuffer.prototype.resize) after
+    /// its ToIndex step: the byte length of the resizable ArrayBuffer `buffer` becomes
+    /// `new_byte_length`; new bytes are 0. The store keeps its base address, so the views keep
+    /// their data address (design §5.2). A TypeError if `buffer` is not a resizable
+    /// ArrayBuffer or is detached; a RangeError if `new_byte_length` is above its maximum.
+    pub fn array_buffer_resize(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        new_byte_length: u64,
+    ) -> JsResult<()> {
+        let r = ab::resize(self.rt(), buffer.into().bits(), new_byte_length);
+        self.buffer_result(r)
+    }
+
+    /// The grow of `SharedArrayBuffer.prototype.grow` (sec-sharedarraybuffer.prototype.grow)
+    /// after its ToIndex step: the byte length of the growable SharedArrayBuffer `buffer`
+    /// becomes `new_byte_length` (a SeqCst store in the shared block; new bytes are 0). A
+    /// TypeError if `buffer` is not a growable SharedArrayBuffer; a RangeError if
+    /// `new_byte_length` is below its byte length or above its maximum.
+    pub fn shared_array_buffer_grow(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        new_byte_length: u64,
+    ) -> JsResult<()> {
+        let r = ab::grow_shared(self.rt(), buffer.into().bits(), new_byte_length);
+        self.buffer_result(r)
+    }
+
+    /// CopyDataBlockBytes (sec-copydatablockbytes) on the stores of two buffers: `count` bytes
+    /// of `from` at `from_index` to `to` at `to_index`. The buffers may be the same and the
+    /// ranges may overlap (`copyWithin`): the bytes are copied as if through a temporary
+    /// copy. A TypeError if either value is not a buffer or is detached; a RangeError if a
+    /// range is past its buffer's byte length (nothing is copied then).
+    pub fn copy_buffer_bytes(
+        &mut self,
+        to: impl Into<Local<'s>>,
+        to_index: u64,
+        from: impl Into<Local<'s>>,
+        from_index: u64,
+        count: u64,
+    ) -> JsResult<()> {
+        let (t, f) = (to.into().bits(), from.into().bits());
+        let r = ab::copy_bytes(self.rt(), t, to_index, f, from_index, count);
+        self.buffer_result(r)
+    }
+
+    /// GetValueFromBuffer (sec-getvaluefrombuffer) with order unordered: the element of type
+    /// `element` (a Table 71 row, the module docs) at byte `byte_index` of `buffer`, little endian
+    /// if `little_endian`: a Number, or a BigInt for rows 7 and 8. A TypeError if `buffer` is not a
+    /// buffer or is detached; a RangeError if the element is past its byte length. isTypedArray
+    /// true (a TypedArray): on shared bytes an index that is a multiple of the element size is one
+    /// racy `ep9_platform::shared_mem` access of the element width (`load_racy`, `store_racy`; no
+    /// tear); another index goes byte by byte. A DataView uses [`Cx::data_view_get_value`].
+    pub fn get_value_from_buffer(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        little_endian: bool,
+    ) -> JsResult<Local<'s>> {
+        let t = Self::element_row(element);
+        let r = ab::get_value(
+            self.rt(),
+            buffer.into().bits(),
+            byte_index,
+            t,
+            little_endian,
+        );
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// SetValueInBuffer (sec-setvalueinbuffer) with order unordered: stores `value` (a Number, or a
+    /// BigInt for rows 7 and 8: the caller converted it) as the element of type `element` at byte
+    /// `byte_index` of `buffer` (NumericToRawBytes: Uint8Clamped rounds half to even and clamps;
+    /// Float16 and Float32 round to nearest, ties to even; a NaN is one pattern). An error as
+    /// [`Cx::get_value_from_buffer`], or a TypeError if `value` has the wrong type. isTypedArray
+    /// true (a TypedArray): on shared bytes an index that is a multiple of the element size is one
+    /// racy `ep9_platform::shared_mem` access of the element width (`load_racy`, `store_racy`; no
+    /// tear); another index goes byte by byte. A DataView uses [`Cx::data_view_set_value`].
+    pub fn set_value_in_buffer(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        value: impl Into<Local<'s>>,
+        little_endian: bool,
+    ) -> JsResult<()> {
+        let t = Self::element_row(element);
+        let (b, v) = (buffer.into().bits(), value.into().bits());
+        let r = ab::set_value(self.rt(), b, byte_index, t, v, little_endian);
+        self.buffer_result(r)
+    }
+
+    // ---- TypedArrays (§23.2, §10.4.5) ----
+
+    /// A new TypedArray of element type `element` with prototype `proto`, on `buffer` (an
+    /// ArrayBuffer or a SharedArrayBuffer) from `byte_offset`: `Some(length)` elements, or
+    /// `None` for a length that is undefined: on a resizable ArrayBuffer or a growable
+    /// SharedArrayBuffer a length-tracking view (`[[ArrayLength]]` auto), on a fixed-length
+    /// buffer (byte length - `byte_offset`) / element size elements (step 9.a). The caller ran
+    /// the checks of InitializeTypedArrayFromArrayBuffer
+    /// (sec-initializetypedarrayfromarraybuffer; the alignment of `byte_offset`, detach and
+    /// bounds) in spec order; the view's elements kind is TYPED_FIXED or TYPED_VARIABLE by
+    /// IsTypedArrayFixedLength (design §3.2). A TypeError if `buffer` is not a buffer or is
+    /// detached; a RangeError if `byte_offset` is not a multiple of the element size, the range
+    /// is not inside the buffer, or (`None` on a fixed-length buffer) the byte length is not a
+    /// multiple of the element size.
+    pub fn new_typed_array(
+        &mut self,
+        proto: impl Into<Local<'s>>,
+        element: u8,
+        buffer: impl Into<Local<'s>>,
+        byte_offset: u64,
+        length: Option<u64>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let t = Self::element_row(element);
+        let p = proto_bits(proto.into());
+        let r = ta::new_view(self.rt(), p, t, buffer.into().bits(), byte_offset, length);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// The element type (a Table 71 row) of `v` if it is a TypedArray (its
+    /// `[[TypedArrayName]]`; rows 7 and 8 have `[[ContentType]]` bigint), else `None`. Never
+    /// throws.
+    pub fn typed_array_element(&self, v: impl Into<Local<'s>>) -> Option<u8> {
+        let b = v.into().bits();
+        kinds::is_view(b).then(|| ta::element_type(b))
+    }
+
+    /// `[[ViewedArrayBuffer]]` of the TypedArray `ta` (also when it is detached). A TypeError if
+    /// `ta` is not a TypedArray.
+    pub fn typed_array_buffer(
+        &mut self,
+        ta: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let o = self.typed_array_bits(ta.into())?;
+        Ok(Self::local(ta::buffer_of(o)))
+    }
+
+    /// `[[ByteOffset]]` of the TypedArray `ta` as stored (the `byteOffset` getter gives 0 when
+    /// `ta` is out of bounds: the caller tests [`Cx::typed_array_length`] first). A TypeError
+    /// if `ta` is not a TypedArray.
+    pub fn typed_array_byte_offset(&mut self, ta: impl Into<Local<'s>>) -> JsResult<u64> {
+        let o = self.typed_array_bits(ta.into())?;
+        Ok(ta::byte_offset(o))
+    }
+
+    /// `[[ArrayLength]]` of the TypedArray `ta`: `Some(n)`, or `None` when it is auto (a
+    /// length-tracking view). A detached fixed-length view gives `Some(0)` (design §5.2: its
+    /// length field is its bound); IsTypedArrayOutOfBounds is [`Cx::typed_array_length`]'s. A
+    /// TypeError if `ta` is not a TypedArray.
+    pub fn typed_array_fixed_length(&mut self, ta: impl Into<Local<'s>>) -> JsResult<Option<u64>> {
+        let o = self.typed_array_bits(ta.into())?;
+        Ok(ta::fixed_length(o))
+    }
+
+    /// TypedArrayLength (sec-typedarraylength) of MakeTypedArrayWithBufferWitnessRecord(`ta`,
+    /// seq-cst): `Some(length)`, or `None` when IsTypedArrayOutOfBounds (a detached buffer
+    /// included). A TypeError if `ta` is not a TypedArray.
+    pub fn typed_array_length(&mut self, ta: impl Into<Local<'s>>) -> JsResult<Option<u64>> {
+        let o = self.typed_array_bits(ta.into())?;
+        Ok(ta::length(self.rt(), o))
+    }
+
+    // ---- DataView (§25.3) ----
+
+    /// A new DataView with prototype `proto` on `buffer` from `byte_offset`: `Some(n)` bytes,
+    /// or `None` for a byteLength that is undefined: on a resizable ArrayBuffer or a growable
+    /// SharedArrayBuffer a length-tracking view (`[[ByteLength]]` auto), on a fixed-length
+    /// buffer the byte length - `byte_offset` bytes (step 8.a). The caller ran the checks
+    /// of the DataView constructor (sec-dataview-buffer-byteoffset-bytelength) in spec order. A
+    /// TypeError if `buffer` is not a buffer or is detached; a RangeError if the range is not
+    /// inside it. Its internal slots (`ObjectClass::DataView`): 0 `[[ViewedArrayBuffer]]`,
+    /// 1 `[[ByteOffset]]`, 2 `[[ByteLength]]` (the int32 -1 for auto; 0 once a fixed one is
+    /// detached), 3 the data address (an internal native word), 4 the index of its own buffer
+    /// table entry (internal).
+    pub fn new_data_view(
+        &mut self,
+        proto: impl Into<Local<'s>>,
+        buffer: impl Into<Local<'s>>,
+        byte_offset: u64,
+        byte_length: Option<u64>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let p = proto_bits(proto.into());
+        let b = buffer.into().bits();
+        let r = ab::new_data_view(self.rt(), p, b, byte_offset, byte_length);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    // ---- Atomics (§25.4): `buffer` and `byte_index` are the caller's ValidateAtomicAccess
+    // result, for an integer element type (rows 0-8 except 2), aligned ----
+
+    /// GetValueFromBuffer with order seq-cst (`Atomics.load`, sec-atomics.load): the element as
+    /// a Number, or a BigInt for rows 7 and 8. A TypeError if `buffer` is not a buffer, is
+    /// detached or `element` is not an integer type; a RangeError for an index that is not
+    /// aligned or is past the byte length.
+    pub fn atomic_load(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+    ) -> JsResult<Local<'s>> {
+        let t = Self::element_row(element);
+        let r = ab::atomic_load(self.rt(), buffer.into().bits(), byte_index, t);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// SetValueInBuffer with order seq-cst (`Atomics.store`, sec-atomics.store) of the
+    /// converted `value`. An error as [`Cx::atomic_load`], or a TypeError if `value` has the
+    /// wrong type.
+    pub fn atomic_store(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        value: impl Into<Local<'s>>,
+    ) -> JsResult<()> {
+        let t = Self::element_row(element);
+        let (b, v) = (buffer.into().bits(), value.into().bits());
+        let r = ab::atomic_store(self.rt(), b, byte_index, t, v);
+        self.buffer_result(r)
+    }
+
+    /// GetModifySetValueInBuffer (sec-getmodifysetvalueinbuffer), seq-cst: the element becomes
+    /// `old op value` for the read-modify-write op `op` (the module docs: 0 add, 1 and,
+    /// 2 exchange, 3 or, 4 sub, 5 xor), in one atomic step; the result is the old element. An
+    /// error as [`Cx::atomic_store`].
+    pub fn atomic_read_modify_write(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        op: u8,
+        value: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s>> {
+        let t = Self::element_row(element);
+        let (b, v) = (buffer.into().bits(), value.into().bits());
+        let r = ab::atomic_rmw(self.rt(), b, byte_index, t, op, v);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// The compare-exchange of `Atomics.compareExchange` (sec-atomics.compareexchange) after its
+    /// conversions: in one seq-cst step, if the element's bytes equal the raw bytes of
+    /// `expected`, the element becomes `replacement`; the result is the old element. An error
+    /// as [`Cx::atomic_store`].
+    pub fn atomic_compare_exchange(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        expected: impl Into<Local<'s>>,
+        replacement: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s>> {
+        let t = Self::element_row(element);
+        let b = buffer.into().bits();
+        let (e, n) = (expected.into().bits(), replacement.into().bits());
+        let r = ab::atomic_compare_exchange(self.rt(), b, byte_index, t, e, n);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// DoWait (sec-dowait) with mode sync after its conversions: if the Int32 or BigInt64
+    /// element (row 5 or 7) of the SharedArrayBuffer `buffer` is `value`, the agent waits until
+    /// a notify, `timeout_ms` milliseconds (at least 0; +∞ or NaN waits for good) or the
+    /// termination of the isolate. The result is the String "ok", "not-equal" or "timed-out".
+    /// A TypeError if the agent cannot suspend (AgentCanSuspend: [`crate::Isolate::set_can_block`]
+    /// false), if `buffer` is not shared or `value` has the wrong type; errors of the element as
+    /// [`Cx::atomic_load`]. The compare is a SeqCst load under the waiter-list lock (the
+    /// critical section). A wait wakes at least every 10 ms to read the terminate word: a
+    /// termination (`TerminateHandle`) ends it with the termination pending.
+    pub fn atomics_wait(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        value: impl Into<Local<'s>>,
+        timeout_ms: f64,
+    ) -> JsResult<Local<'s>> {
+        let t = Self::element_row(element);
+        let (b, v) = (buffer.into().bits(), value.into().bits());
+        let rt = self.rt();
+        // DoWait step 10: If mode is sync and AgentCanSuspend() is false, throw a TypeError.
+        if !rt.jobs.agent().can_block() {
+            return Err(self.throw_type_error("Atomics.wait cannot be called in this context"));
+        }
+        let word = std::sync::Arc::clone(&rt.terminate);
+        let stop = || word.load(Ordering::Relaxed) & crate::interp::interrupt::TERMINATE != 0;
+        let r = ab::wait_sync(rt, b, byte_index, t, v, wait_timeout(timeout_ms), stop);
+        let text = match self.buffer_result(r)? {
+            SyncWait::NotEqual => "not-equal",
+            SyncWait::Ok => "ok",
+            SyncWait::TimedOut => "timed-out",
+            SyncWait::Stopped => return Err(self.terminate_now()),
+        };
+        Ok(self.new_string(text)?.into())
+    }
+
+    /// DoWait with mode async (`Atomics.waitAsync`, sec-dowait) after its conversions: the
+    /// result object `{ async, value }` (an ordinary object, `async` then `value`): `async`
+    /// false with "not-equal", or "timed-out" for a zero `timeout_ms`; else `async` true with a
+    /// new promise that a notify ("ok") or the timeout ("timed-out") resolves. The promise
+    /// lives in a heap record chain of the isolate (`jobs::async_waiter`); the waiter list
+    /// holds only the waiter's id. A notify from any thread puts the id into this isolate's
+    /// inbox; the isolate resolves the promise at its next microtask checkpoint, between jobs
+    /// ([`crate::Isolate::block_for_async_waiters`] sleeps until one is due). The promise's
+    /// prototype is `%Promise.prototype%` (null in an isolate with no builtin tables, which has
+    /// no `%Promise%`). Errors as [`Cx::atomics_wait`], with no AgentCanSuspend test.
+    pub fn atomics_wait_async(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        value: impl Into<Local<'s>>,
+        timeout_ms: f64,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let t = Self::element_row(element);
+        let (b, v) = (buffer.into().bits(), value.into().bits());
+        // DoWait step 15: the promise capability comes before the critical section. GC point:
+        // `b` and `v` are Rust locals (CSS).
+        let id = crate::builtins::IntrinsicId::PromisePrototype;
+        let proto = if self.has_intrinsic(id) {
+            self.intrinsic(id).into()
+        } else {
+            Local::null()
+        };
+        let promise = self.new_promise(proto);
+        let rt = self.rt();
+        let timeout = wait_timeout(timeout_ms);
+        let r = ab::wait_async(rt, rt.jobs.agent(), b, byte_index, t, v, timeout);
+        let (is_async, value): (bool, Local<'s>) = match self.buffer_result(r)? {
+            AsyncWait::NotEqual => (false, self.new_string("not-equal")?.into()),
+            AsyncWait::TimedOut => (false, self.new_string("timed-out")?.into()),
+            AsyncWait::Waiting(id) => {
+                // The record: no GC point between the enqueue and the link but this
+                // allocation, and the waiter is drained only at a checkpoint (this thread).
+                let rec = self.new_object_with_slots(
+                    Local::null(),
+                    ObjectClass::PromiseReaction,
+                    async_waiter::COUNT,
+                );
+                let rt = self.rt();
+                let id_bits = crate::conv::num(id as f64);
+                object::slot_set(rt, rec.bits(), async_waiter::ID, id_bits);
+                object::slot_set(rt, rec.bits(), async_waiter::PROMISE, promise.bits());
+                let head = rt.jobs.async_waiters();
+                object::slot_set(rt, rec.bits(), async_waiter::NEXT, head);
+                rt.jobs.set_async_waiters(rec.bits());
+                (true, promise.into())
+            }
+        };
+        let o = self.new_object();
+        self.create_data_property_or_throw(o, "async", Local::boolean(is_async))?;
+        self.create_data_property_or_throw(o, "value", value)?;
+        Ok(o)
+    }
+
+    /// `Atomics.notify` (sec-atomics.notify) after its conversions: wakes at most `count`
+    /// waiters (`u64::MAX`: all) on byte `byte_index` of `buffer`, first come first woken (sync
+    /// waiters of any isolate and async ones), and gives how many it woke (0 for a buffer that
+    /// is not shared). A TypeError if `buffer` is not a buffer. No byte is read.
+    pub fn atomics_notify(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+        byte_index: u64,
+        count: u64,
+    ) -> JsResult<u64> {
+        let r = ab::notify(self.rt(), buffer.into().bits(), byte_index, count);
+        self.buffer_result(r)
+    }
+
+    /// The termination that a waiter list wait saw (its stop word): the interrupt poll takes
+    /// the TERMINATE bit and leaves the termination pending.
+    fn terminate_now(&mut self) -> Throw {
+        let r = crate::interp::slow::interrupt(self.cx, core::ptr::null_mut());
+        debug_assert_eq!(r, 0, "the stop word had the TERMINATE bit");
+        if r == 0 {
+            return Throw;
+        }
+        self.throw_type_error("Atomics.wait: the isolate stopped")
+    }
+
+    /// The async waiters of `Atomics.waitAsync` that ended (a notify put their id into the
+    /// inbox, or their timeout passed) get their promise resolved, in the order they ended,
+    /// with "ok" or "timed-out"; then the head of the job queue. The microtask checkpoint
+    /// calls it before each job and before it decides that the queue is empty
+    /// (`abi/jobs.rs`), so the harness's promise-loop timers see a notify. With no async
+    /// waiter it is one load of a plain counter (no clock read, no lock). GC point when one
+    /// resolves.
+    ///
+    /// ep9 resolves a notified waiter at the next job boundary (the host-task choice,
+    /// M6-ORCH-601): a notify, from this agent too, only puts the id into the inbox of this
+    /// agent. ECMA-262 NotifyWaiter resolves a waiter of the same agent inside
+    /// `Atomics.notify` and sends one of another agent through EnqueueResolveInAgentJob
+    /// (HostEnqueueGenericJob: no order against promise jobs). V8 posts a task for every
+    /// waiter, of the same agent too (`futex-emulation.cc:185-210`). So ep9 matches the spec
+    /// on S1 (Codex's trace) and node on S2 and S3, and neither in every case (W: the reaction
+    /// of the waiter's promise):
+    ///
+    /// ```text
+    /// trace                                                   ep9       node      spec
+    /// S1  waitAsync; queue A (A queues B, B queues C); notify  A,W,B,C   A,B,C,W   A,W,B,C
+    /// S2  job A calls notify, then queues B                    A,B,W     A,B,W     A,W,B
+    /// S3  notify, then queue A                                 A,W       A,W       W,A
+    /// ```
+    pub(crate) fn queue_head_after_async_waiters(&mut self) -> u64 {
+        let rt = self.rt();
+        if rt.jobs.agent().pending() != 0 {
+            for (id, outcome) in rt.jobs.agent().take_ready() {
+                self.resolve_async_waiter(id, outcome);
+            }
+        }
+        rt.jobs.queue_head()
+    }
+
+    /// Unlinks the record of async waiter `id` and fulfills its promise with the String of
+    /// `outcome` (the job of EnqueueResolveInAgentJob, run at once: the value is a String, so
+    /// FulfillPromise is what its resolve function does). GC point.
+    fn resolve_async_waiter(&mut self, id: u64, outcome: Outcome) {
+        let rt = self.rt();
+        let want = crate::conv::num(id as f64);
+        let (mut prev, mut r) = (UNDEFINED, rt.jobs.async_waiters());
+        while r != UNDEFINED && object::slot_get(r, async_waiter::ID) != want {
+            prev = r;
+            r = object::slot_get(r, async_waiter::NEXT);
+        }
+        debug_assert!(r != UNDEFINED, "async waiter {id} has a record");
+        if r == UNDEFINED {
+            return;
+        }
+        let next = object::slot_get(r, async_waiter::NEXT);
+        if prev == UNDEFINED {
+            rt.jobs.set_async_waiters(next);
+        } else {
+            object::slot_set(rt, prev, async_waiter::NEXT, next);
+        }
+        let promise: Local<'s, JsObject> = Self::local(object::slot_get(r, async_waiter::PROMISE));
+        let text = match outcome {
+            Outcome::Ok => "ok",
+            Outcome::TimedOut => "timed-out",
+        };
+        // GC point: `promise` is a Rust local (CSS). A String this short always fits.
+        let s = self.new_string(text).expect("a short String");
+        self.fulfill_promise(promise, s);
+    }
+}
+
+/// The timeout of a wait in milliseconds as a `Duration`: `None` (no timeout) for +∞, NaN or
+/// a time too long to count; a negative time is 0.
+fn wait_timeout(ms: f64) -> Option<Duration> {
+    if ms.is_nan() {
+        return None;
+    }
+    Duration::try_from_secs_f64(ms.max(0.0) / 1000.0).ok()
+}
+
+/// TA-2 TA-BUFFERS (TA-ORCH-10; design study judge.md 4.7): the brand-checked reads that the
+/// getters of `ArrayBuffer.prototype`, `SharedArrayBuffer.prototype` and `DataView.prototype`
+/// need, and the DataView get and set. Each method tests the brand first (`buffer_class`,
+/// `is_data_view`: an object of these classes that the generic slot API made is not a buffer
+/// or a DataView here) and reads the slots only after it. None runs JS.
+impl<'s> Cx<'s> {
+    /// True if `v` is an ArrayBuffer (not a SharedArrayBuffer) that `abi/typed.rs` made: the
+    /// `[[ArrayBufferData]]` test of RequireInternalSlot with IsSharedArrayBuffer false. Never
+    /// throws.
+    pub fn is_array_buffer(&self, v: impl Into<Local<'s>>) -> bool {
+        ab::buffer_class(self.rt(), v.into().bits()) == Some(crate::abi::ObjectClass::ArrayBuffer)
+    }
+
+    /// True if `v` is a SharedArrayBuffer that `abi/typed.rs` made (IsSharedArrayBuffer of a
+    /// value with `[[ArrayBufferData]]`). Never throws.
+    pub fn is_shared_array_buffer(&self, v: impl Into<Local<'s>>) -> bool {
+        ab::buffer_class(self.rt(), v.into().bits())
+            == Some(crate::abi::ObjectClass::SharedArrayBuffer)
+    }
+
+    /// `[[ArrayBufferMaxByteLength]]` of the ArrayBuffer or SharedArrayBuffer `buffer`:
+    /// `Some(max)` for a resizable ArrayBuffer or a growable SharedArrayBuffer, `None` when
+    /// IsFixedLengthArrayBuffer is true (also when it is detached: the slot stays). A TypeError
+    /// if `buffer` is neither.
+    pub fn array_buffer_max_byte_length(
+        &mut self,
+        buffer: impl Into<Local<'s>>,
+    ) -> JsResult<Option<u64>> {
+        let b = buffer.into().bits();
+        if ab::buffer_class(self.rt(), b).is_none() {
+            return Err(self.throw_type_error("Receiver is not an ArrayBuffer"));
+        }
+        Ok(ab::max_byte_length(b))
+    }
+
+    /// True if `v` is a DataView that `abi/typed.rs` made (the `[[DataView]]` test of
+    /// RequireInternalSlot). Never throws.
+    pub fn is_data_view(&self, v: impl Into<Local<'s>>) -> bool {
+        ab::is_data_view(self.rt(), v.into().bits())
+    }
+
+    /// The DataView `v` (its bits), or a TypeError.
+    fn data_view_bits(&mut self, v: Local<'s>) -> JsResult<u64> {
+        let b = v.bits();
+        if ab::is_data_view(self.rt(), b) {
+            return Ok(b);
+        }
+        Err(self.throw_type_error("Receiver is not a DataView"))
+    }
+
+    /// `[[ViewedArrayBuffer]]` of the DataView `view` (also when it is detached). A TypeError
+    /// if `view` is not a DataView.
+    pub fn data_view_buffer(
+        &mut self,
+        view: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let v = self.data_view_bits(view.into())?;
+        Ok(Self::local(ab::data_view_buffer(v)))
+    }
+
+    /// `[[ByteOffset]]` of the DataView `view`, or `None` when IsViewOutOfBounds (a detached
+    /// buffer included) of MakeDataViewWithBufferWitnessRecord(`view`, seq-cst). A TypeError if
+    /// `view` is not a DataView.
+    pub fn data_view_byte_offset(&mut self, view: impl Into<Local<'s>>) -> JsResult<Option<u64>> {
+        let v = self.data_view_bits(view.into())?;
+        let in_bounds = ab::data_view_byte_length(self.rt(), v).is_some();
+        Ok(in_bounds.then(|| ab::data_view_byte_offset(v)))
+    }
+
+    /// GetViewByteLength (sec-getviewbytelength) of MakeDataViewWithBufferWitnessRecord(`view`,
+    /// seq-cst): `Some(n)` (for a length-tracking view the buffer's byte length now, less the
+    /// byte offset), or `None` when IsViewOutOfBounds (a detached buffer included). A TypeError
+    /// if `view` is not a DataView.
+    pub fn data_view_byte_length(&mut self, view: impl Into<Local<'s>>) -> JsResult<Option<u64>> {
+        let v = self.data_view_bits(view.into())?;
+        Ok(ab::data_view_byte_length(self.rt(), v))
+    }
+
+    /// GetViewValue (sec-getviewvalue) after its ToIndex and ToBoolean steps: the element of
+    /// type `element` (a Table 71 row, the module docs) at byte `byte_index` of the DataView
+    /// `view`, little endian if `little_endian`: a Number, or a BigInt for rows 7 and 8. A
+    /// TypeError if `view` is not a DataView or is out of bounds (IsViewOutOfBounds, a detached
+    /// buffer included); a RangeError if the element is past the view's byte length.
+    pub fn data_view_get_value(
+        &mut self,
+        view: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        little_endian: bool,
+    ) -> JsResult<Local<'s>> {
+        let t = Self::element_row(element);
+        let r = ab::data_view_get(self.rt(), view.into().bits(), byte_index, t, little_endian);
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// SetViewValue (sec-setviewvalue) after its ToIndex, ToNumber or ToBigInt, and ToBoolean
+    /// steps: stores `value` (a Number, or a BigInt for rows 7 and 8: the caller converted it)
+    /// as the element of type `element` at byte `byte_index` of the DataView `view`
+    /// (NumericToRawBytes, as [`Cx::set_value_in_buffer`]). An error as
+    /// [`Cx::data_view_get_value`], or a TypeError if `value` has the wrong type.
+    pub fn data_view_set_value(
+        &mut self,
+        view: impl Into<Local<'s>>,
+        byte_index: u64,
+        element: u8,
+        value: impl Into<Local<'s>>,
+        little_endian: bool,
+    ) -> JsResult<()> {
+        let t = Self::element_row(element);
+        let (v, x) = (view.into().bits(), value.into().bits());
+        let r = ab::data_view_set(self.rt(), v, byte_index, t, x, little_endian);
+        self.buffer_result(r)
+    }
+}
+
+/// The block of a SharedArrayBuffer as a `Send` handle (H22-Q8): it keeps the block alive and
+/// holds no JS value, so another isolate on another thread can make its own SharedArrayBuffer
+/// on the same bytes ([`Cx::new_shared_array_buffer_on_block`]; the test262 runner's
+/// `$262.agent.broadcast`). Made by [`Cx::shared_array_buffer_block`].
+#[derive(Clone, Debug)]
+pub struct SharedBlockRef(std::sync::Arc<ab::SharedBlock>);
+
+/// TA-2 fixer (N1; TA-ORCH-11 item 5): a SharedArrayBuffer block shared across isolates, and
+/// the block test of SharedArrayBuffer.prototype.slice. Each method tests the brand
+/// (`buffer_class`) before it reads a slot. None runs JS.
+impl<'s> Cx<'s> {
+    /// The block of the SharedArrayBuffer `sab`, for another isolate. A TypeError if `sab` is
+    /// not a SharedArrayBuffer that `abi/typed.rs` made.
+    pub fn shared_array_buffer_block(
+        &mut self,
+        sab: impl Into<Local<'s>>,
+    ) -> JsResult<SharedBlockRef> {
+        let r = ab::shared_block_of(self.rt(), sab.into().bits());
+        self.buffer_result(r).map(SharedBlockRef)
+    }
+
+    /// A new SharedArrayBuffer of this isolate with prototype `proto` (an object or null) on
+    /// `block`: the same bytes, the block's byte length now and its maximum (a growable block
+    /// gives a growable SharedArrayBuffer). A RangeError if the bytes cannot be counted.
+    pub fn new_shared_array_buffer_on_block(
+        &mut self,
+        proto: impl Into<Local<'s>>,
+        block: &SharedBlockRef,
+    ) -> JsResult<Local<'s, JsObject>> {
+        let p = proto_bits(proto.into());
+        let r = ab::adopt_shared(self.rt(), p, std::sync::Arc::clone(&block.0));
+        self.buffer_result(r).map(Self::local)
+    }
+
+    /// True if `a` and `b` are SharedArrayBuffers on the same block (`new.[[ArrayBufferData]]
+    /// is O.[[ArrayBufferData]]` of SharedArrayBuffer.prototype.slice): two objects of one
+    /// isolate can share a block after [`Cx::new_shared_array_buffer_on_block`]. False if
+    /// either is not a SharedArrayBuffer that `abi/typed.rs` made. Never throws.
+    pub fn is_same_shared_block(&self, a: impl Into<Local<'s>>, b: impl Into<Local<'s>>) -> bool {
+        ab::is_same_shared_block(self.rt(), a.into().bits(), b.into().bits())
+    }
+}
+
+/// The filled bodies on the ABI (TA-1; the waiter methods TA-4): the error kind of each
+/// method on a value that is no buffer or no view (no method is a stub), the waiter methods
+/// on a SharedArrayBuffer, and one round trip. The element
+/// semantics, detach, resize, GC and the exotic methods are tested in `tests::typed_array` and
+/// `tests::array_buffer`.
+#[cfg(test)]
+mod tests {
+    use crate::abi::{Cx, Local};
+    use crate::frame::UNDEFINED;
+    use crate::tests::{config, isolate};
+    use crate::{Dispatch, Isolate};
+
+    /// The constructor name and the message of the pending error.
+    fn pending(rt: &crate::runtime::Runtime, cx: &mut Cx<'_>) -> (String, String) {
+        let e: Local<'_> = Local::from_bits(rt.take_pending());
+        let e = e.as_object().expect("an Error object");
+        let msg = cx.get(e, "message").unwrap();
+        let msg = cx.to_rust_string(msg).unwrap();
+        let ctor = cx.get(e, "constructor").unwrap();
+        let name = cx.get(ctor.as_object().unwrap(), "name").unwrap();
+        (cx.to_rust_string(name).unwrap(), msg)
+    }
+
+    #[test]
+    fn each_method_throws_its_error_kind_and_none_is_a_stub() {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        let iso: &mut Isolate = &mut iso;
+        let rt: &crate::runtime::Runtime = &iso.rt;
+        let mut cx = Cx::new(&mut iso.cx);
+        let u: Local<'_> = Local::from_bits(UNDEFINED);
+        let o = cx.new_object();
+        let mut kinds = Vec::new();
+        let mut check =
+            |cx: &mut Cx<'_>, r: Result<(), ep9_value::Throw>, what: &str, want: &str| {
+                assert!(r.is_err(), "{what}");
+                let (name, msg) = pending(rt, cx);
+                assert_eq!(name, want, "{what}: {msg}");
+                kinds.push((what.to_string(), name, msg));
+            };
+        let r = cx.allocate_array_buffer(o, 9, Some(8)).map(drop);
+        check(&mut cx, r, "allocate_array_buffer len > max", "RangeError");
+        let r = cx
+            .allocate_array_buffer(o, 0, Some((1 << 32) + 1))
+            .map(drop);
+        check(&mut cx, r, "allocate_array_buffer max > cap", "RangeError");
+        let r = cx.allocate_array_buffer(o, 1 << 50, None).map(drop);
+        check(&mut cx, r, "allocate_array_buffer 2^50", "RangeError");
+        let r = cx.allocate_shared_array_buffer(o, 9, Some(8)).map(drop);
+        check(&mut cx, r, "allocate_shared_array_buffer", "RangeError");
+        let r = cx.array_buffer_byte_length(o).map(drop);
+        check(&mut cx, r, "array_buffer_byte_length", "TypeError");
+        let r = cx.detach_array_buffer(o, u);
+        check(&mut cx, r, "detach_array_buffer", "TypeError");
+        let r = cx.array_buffer_copy_and_detach(o, o, 0, true).map(drop);
+        check(&mut cx, r, "array_buffer_copy_and_detach", "TypeError");
+        let r = cx.array_buffer_resize(o, 4);
+        check(&mut cx, r, "array_buffer_resize", "TypeError");
+        let r = cx.shared_array_buffer_grow(o, 4);
+        check(&mut cx, r, "shared_array_buffer_grow", "TypeError");
+        let r = cx.copy_buffer_bytes(o, 0, o, 1, 1);
+        check(&mut cx, r, "copy_buffer_bytes", "TypeError");
+        let r = cx.get_value_from_buffer(o, 0, 0, true).map(drop);
+        check(&mut cx, r, "get_value_from_buffer", "TypeError");
+        let r = cx.set_value_in_buffer(o, 0, 0, u, true);
+        check(&mut cx, r, "set_value_in_buffer", "TypeError");
+        let r = cx.new_typed_array(o, 0, o, 0, None).map(drop);
+        check(&mut cx, r, "new_typed_array", "TypeError");
+        let r = cx.typed_array_buffer(o).map(drop);
+        check(&mut cx, r, "typed_array_buffer", "TypeError");
+        let r = cx.typed_array_byte_offset(o).map(drop);
+        check(&mut cx, r, "typed_array_byte_offset", "TypeError");
+        let r = cx.typed_array_fixed_length(o).map(drop);
+        check(&mut cx, r, "typed_array_fixed_length", "TypeError");
+        let r = cx.typed_array_length(o).map(drop);
+        check(&mut cx, r, "typed_array_length", "TypeError");
+        let r = cx.new_data_view(o, o, 0, Some(1)).map(drop);
+        check(&mut cx, r, "new_data_view", "TypeError");
+        let r = cx.atomic_load(o, 0, 5).map(drop);
+        check(&mut cx, r, "atomic_load", "TypeError");
+        let r = cx.atomic_store(o, 0, 5, Local::number(1.0));
+        check(&mut cx, r, "atomic_store", "TypeError");
+        let r = cx
+            .atomic_read_modify_write(o, 0, 5, 0, Local::number(1.0))
+            .map(drop);
+        check(&mut cx, r, "atomic_read_modify_write", "TypeError");
+        let one = Local::number(1.0);
+        let r = cx.atomic_compare_exchange(o, 0, 5, one, one).map(drop);
+        check(&mut cx, r, "atomic_compare_exchange", "TypeError");
+        // TA-4 R2 ATOMICS built the waiter list: no method is a stub now.
+        let r = cx.atomics_wait(o, 0, 5, u, f64::INFINITY).map(drop);
+        check(&mut cx, r, "atomics_wait", "TypeError");
+        let r = cx.atomics_wait_async(o, 0, 5, u, 0.0).map(drop);
+        check(&mut cx, r, "atomics_wait_async", "TypeError");
+        let r = cx.atomics_notify(o, 0, u64::MAX).map(drop);
+        check(&mut cx, r, "atomics_notify", "TypeError");
+        assert_eq!(kinds.len(), 25);
+        let stubs: Vec<&str> = kinds
+            .iter()
+            .filter(|(_, _, m)| m.contains("m8-stub"))
+            .map(|(w, _, _)| w.as_str())
+            .collect();
+        assert_eq!(stubs, [""; 0]);
+        assert!(!cx.is_detached_buffer(o));
+        assert!(!cx.is_detached_buffer(u));
+        assert_eq!(cx.typed_array_element(o), None);
+        assert_eq!(cx.typed_array_element(u), None);
+    }
+
+    /// One trip through the ABI: a buffer, a Float64Array view on it, a DataView store read back
+    /// through the view, the element type, the buffer, offset and lengths, then a detach.
+    #[test]
+    fn a_round_trip_through_the_abi() {
+        let mut iso = isolate(config(Dispatch::DEFAULT, true));
+        let iso: &mut Isolate = &mut iso;
+        let mut cx = Cx::new(&mut iso.cx);
+        let proto = cx.new_object();
+        let b = cx.allocate_array_buffer(proto, 24, None).unwrap();
+        assert_eq!(cx.array_buffer_byte_length(b).unwrap(), 24);
+        let t = cx.new_typed_array(proto, 11, b, 8, Some(2)).unwrap();
+        let dv = cx.new_data_view(proto, b, 0, None).unwrap();
+        assert_eq!(cx.typed_array_element(t), Some(11));
+        assert_eq!(cx.typed_array_buffer(t).unwrap().bits(), b.bits());
+        assert_eq!(cx.typed_array_byte_offset(t).unwrap(), 8);
+        assert_eq!(cx.typed_array_fixed_length(t).unwrap(), Some(2));
+        assert_eq!(cx.typed_array_length(t).unwrap(), Some(2));
+        // Big endian through the buffer (the DataView's store), read as a Float64Array element.
+        cx.set_value_in_buffer(b, 16, 11, Local::number(-2.5), false)
+            .unwrap();
+        let v = cx.get_value_from_buffer(b, 16, 11, false).unwrap();
+        assert_eq!(v.as_number(), Some(-2.5));
+        cx.set_value_in_buffer(b, 16, 11, Local::number(-2.5), true)
+            .unwrap();
+        let e = cx.get(t, "1").unwrap();
+        assert_eq!(e.as_number(), Some(-2.5));
+        cx.detach_array_buffer(b, Local::undefined()).unwrap();
+        assert!(cx.is_detached_buffer(b));
+        assert_eq!(cx.array_buffer_byte_length(b).unwrap(), 0);
+        assert_eq!(cx.typed_array_length(t).unwrap(), None);
+        assert_eq!(cx.get(t, "1").unwrap().bits(), UNDEFINED);
+        std::hint::black_box(dv);
+    }
+
+    /// TA-4 R2 ATOMICS: the waiter methods and the BigInt rows through the ABI, plain and
+    /// under GC stress. `atomics_wait` gives "not-equal" and "timed-out" (Int32 and BigInt64,
+    /// the compare of the raw bytes: 2^64 + 5 is 5), a TypeError for another row, a non-shared
+    /// buffer and `[[CanBlock]]` false; `atomics_notify` gives 0 on a non-shared buffer and on
+    /// a key with no waiter; `atomics_wait_async` gives `{ async: false, value }` or a promise
+    /// that the next checkpoint resolves after a notify, with a GC in between (the promise
+    /// lives only in the record chain and this frame); the BigUint64 RMW wraps mod 2^64.
+    #[test]
+    fn the_waiter_methods_and_bigint_rows_on_the_abi() {
+        use crate::abi::PromiseState;
+        for stress in [false, true] {
+            crate::tests::on_big_stack(move || {
+                let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                let iso: &mut Isolate = &mut iso;
+                iso.set_can_block(false);
+                let rt: &crate::runtime::Runtime = &iso.rt;
+                let mut cx = Cx::new(&mut iso.cx);
+                let p = cx.new_object();
+                let sab = cx.allocate_shared_array_buffer(p, 16, None).unwrap();
+                let ab = cx.allocate_array_buffer(p, 16, None).unwrap();
+                fn text<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> String {
+                    cx.to_rust_string(v).unwrap()
+                }
+                // [[CanBlock]] false: a TypeError before the compare.
+                assert!(cx.atomics_wait(sab, 0, 5, Local::number(1.0), 0.0).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                rt.jobs.agent().set_can_block(true);
+                let r = cx.atomics_wait(sab, 0, 5, Local::number(1.0), 0.0).unwrap();
+                assert_eq!(text(&mut cx, r), "not-equal");
+                let r = cx.atomics_wait(sab, 0, 5, Local::number(0.0), 1.0).unwrap();
+                assert_eq!(text(&mut cx, r), "timed-out");
+                let big = cx.bigint_from_i128((1 << 64) + 5).unwrap();
+                let five = cx.bigint_from_i128(5).unwrap();
+                cx.atomic_store(sab, 8, 7, five).unwrap();
+                let r = cx.atomics_wait(sab, 8, 7, big, 0.0).unwrap();
+                assert_eq!(text(&mut cx, r), "timed-out", "2^64 + 5 has the bytes of 5");
+                for (b, t) in [(sab, 6u8), (ab, 5)] {
+                    assert!(cx.atomics_wait(b, 0, t, Local::number(0.0), 0.0).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                }
+                assert_eq!(cx.atomics_notify(ab, 0, u64::MAX).unwrap(), 0);
+                assert_eq!(cx.atomics_notify(sab, 4, u64::MAX).unwrap(), 0);
+                // BigUint64 (row 8): 5 - 6 wraps to 2^64 - 1.
+                let six = cx.bigint_from_i128(6).unwrap();
+                let old = cx.atomic_read_modify_write(sab, 8, 8, 4, six).unwrap();
+                assert_eq!(text(&mut cx, old), "5");
+                let now = cx.atomic_load(sab, 8, 8).unwrap();
+                assert_eq!(text(&mut cx, now), "18446744073709551615");
+                // waitAsync.
+                let r = cx
+                    .atomics_wait_async(sab, 0, 5, Local::number(3.0), 0.0)
+                    .unwrap();
+                let (a, v) = (cx.get(r, "async").unwrap(), cx.get(r, "value").unwrap());
+                assert_eq!(
+                    (a.as_bool(), text(&mut cx, v).as_str()),
+                    (Some(false), "not-equal")
+                );
+                let r = cx
+                    .atomics_wait_async(sab, 0, 5, Local::number(0.0), 0.0)
+                    .unwrap();
+                let v = cx.get(r, "value").unwrap();
+                assert_eq!(text(&mut cx, v), "timed-out");
+                let r = cx.atomics_wait_async(sab, 0, 5, Local::number(0.0), f64::INFINITY);
+                let r = r.unwrap();
+                assert_eq!(cx.get(r, "async").unwrap().as_bool(), Some(true));
+                let promise = cx.get(r, "value").unwrap().as_object().unwrap();
+                cx.collect_garbage();
+                assert_eq!(cx.promise_state(promise).unwrap(), PromiseState::Pending);
+                assert_eq!(rt.jobs.agent().pending(), 1);
+                assert_eq!(cx.atomics_notify(sab, 0, u64::MAX).unwrap(), 1);
+                cx.collect_garbage();
+                cx.perform_microtask_checkpoint().unwrap();
+                assert_eq!(cx.promise_state(promise).unwrap(), PromiseState::Fulfilled);
+                let v = cx.promise_result(promise).unwrap();
+                assert_eq!(text(&mut cx, v), "ok");
+                assert_eq!(rt.jobs.agent().pending(), 0);
+                assert_eq!(
+                    rt.jobs.async_waiters(),
+                    UNDEFINED,
+                    "the record left the chain"
+                );
+                std::hint::black_box((p, sab, ab, r, promise));
+            });
+        }
+    }
+
+    /// TA-2 TA-BUFFERS: the brand-checked reads and the DataView get and set. Each takes only
+    /// an engine buffer or DataView (a TypeError, or false, for a plain object and for an
+    /// object of the class that the generic slot API made); a DataView with no byteLength on a
+    /// fixed-length buffer is a fixed view of the rest (route TA2-DV-FIXED: slot 2 holds the
+    /// byte length, not the auto -1), one on a resizable buffer tracks its length; get and
+    /// set check IsViewOutOfBounds (a TypeError) and the view range (a RangeError) against the
+    /// byte length at the access; a detach makes every read out of bounds. Plain and under
+    /// GC stress.
+    #[test]
+    fn the_ta2_reads_check_the_brand_and_the_view_bounds() {
+        use crate::abi::ObjectClass;
+        for stress in [false, true] {
+            crate::tests::on_big_stack(move || {
+                let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                let iso: &mut Isolate = &mut iso;
+                let rt: &crate::runtime::Runtime = &iso.rt;
+                let mut cx = Cx::new(&mut iso.cx);
+                let p = cx.new_object();
+                let o = cx.new_object();
+                let forged = cx.new_object_with_slots(p, ObjectClass::ArrayBuffer, 6);
+                let forged_dv = cx.new_object_with_slots(p, ObjectClass::DataView, 5);
+                let fixed = cx.allocate_array_buffer(p, 8, None).unwrap();
+                let rab = cx.allocate_array_buffer(p, 8, Some(16)).unwrap();
+                let sab = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+                let gsab = cx.allocate_shared_array_buffer(p, 8, Some(16)).unwrap();
+                // The buffer tests.
+                for (v, ab, shared) in [
+                    (o, false, false),
+                    (forged, false, false),
+                    (fixed, true, false),
+                    (rab, true, false),
+                    (sab, false, true),
+                    (gsab, false, true),
+                ] {
+                    assert_eq!(cx.is_array_buffer(v), ab);
+                    assert_eq!(cx.is_shared_array_buffer(v), shared);
+                }
+                for v in [o, forged] {
+                    assert!(cx.array_buffer_max_byte_length(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                }
+                assert_eq!(cx.array_buffer_max_byte_length(fixed).unwrap(), None);
+                assert_eq!(cx.array_buffer_max_byte_length(rab).unwrap(), Some(16));
+                assert_eq!(cx.array_buffer_max_byte_length(sab).unwrap(), None);
+                assert_eq!(cx.array_buffer_max_byte_length(gsab).unwrap(), Some(16));
+                // TA2-DV-FIXED: no byteLength on a fixed buffer gives a fixed view (slot 2 is 6).
+                let dv = cx.new_data_view(p, fixed, 2, None).unwrap();
+                let auto = cx.new_data_view(p, rab, 2, None).unwrap();
+                let shared = cx.new_data_view(p, gsab, 0, None).unwrap();
+                let len = cx.slot(dv, ObjectClass::DataView, 2).unwrap();
+                assert_eq!(len.as_number(), Some(6.0), "a fixed view of the rest");
+                let len = cx.slot(auto, ObjectClass::DataView, 2).unwrap();
+                assert_eq!(len.as_int32(), Some(crate::layout::VIEW_LENGTH_AUTO));
+                // The DataView reads.
+                for v in [o, forged_dv, fixed] {
+                    assert!(!cx.is_data_view(v));
+                    assert!(cx.data_view_buffer(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(cx.data_view_byte_offset(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(cx.data_view_byte_length(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(cx.data_view_get_value(v, 0, 0, true).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                    assert!(
+                        cx.data_view_set_value(v, 0, 0, Local::number(1.0), true)
+                            .is_err()
+                    );
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                }
+                assert!(cx.is_data_view(dv) && cx.is_data_view(auto));
+                assert!(cx.data_view_buffer(dv).unwrap().is_same_bits(&fixed));
+                assert_eq!(cx.data_view_byte_offset(dv).unwrap(), Some(2));
+                assert_eq!(cx.data_view_byte_length(dv).unwrap(), Some(6));
+                assert_eq!(cx.data_view_byte_length(auto).unwrap(), Some(6));
+                // Big endian through the view, read back through the buffer.
+                cx.data_view_set_value(dv, 1, 4, Local::number(4660.0), false)
+                    .unwrap();
+                let b = cx.get_value_from_buffer(fixed, 3, 1, true).unwrap();
+                assert_eq!(b.as_number(), Some(18.0), "byte 3 = 0x12");
+                let x = cx.data_view_get_value(dv, 1, 4, true).unwrap();
+                assert_eq!(x.as_number(), Some(13330.0), "0x3412 little endian");
+                // The view range: 4 bytes from 3 of a 6-byte view.
+                assert!(cx.data_view_get_value(dv, 3, 5, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "RangeError");
+                assert!(cx.data_view_get_value(dv, u64::MAX, 0, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "RangeError");
+                // A value of the wrong type (the caller converts): a TypeError.
+                assert!(
+                    cx.data_view_set_value(dv, 0, 7, Local::number(1.0), true)
+                        .is_err()
+                );
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                // A length-tracking view follows a resize; a shrink below its offset puts it
+                // out of bounds.
+                cx.array_buffer_resize(rab, 16).unwrap();
+                assert_eq!(cx.data_view_byte_length(auto).unwrap(), Some(14));
+                cx.data_view_set_value(auto, 13, 1, Local::number(7.0), true)
+                    .unwrap();
+                cx.array_buffer_resize(rab, 1).unwrap();
+                assert_eq!(cx.data_view_byte_length(auto).unwrap(), None);
+                assert_eq!(cx.data_view_byte_offset(auto).unwrap(), None);
+                assert!(cx.data_view_get_value(auto, 0, 1, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                cx.array_buffer_resize(rab, 16).unwrap();
+                let x = cx.data_view_get_value(auto, 13, 1, true).unwrap();
+                assert_eq!(x.as_number(), Some(0.0), "a shrink zeroed the byte");
+                // Shared bytes: a growable SAB view grows with it.
+                cx.data_view_set_value(shared, 4, 5, Local::number(-2.0), true)
+                    .unwrap();
+                cx.shared_array_buffer_grow(gsab, 12).unwrap();
+                assert_eq!(cx.data_view_byte_length(shared).unwrap(), Some(12));
+                let x = cx.data_view_get_value(shared, 4, 5, true).unwrap();
+                assert_eq!(x.as_number(), Some(-2.0));
+                // A detach: every read of the fixed view is out of bounds; the buffer stays.
+                cx.detach_array_buffer(fixed, Local::undefined()).unwrap();
+                assert_eq!(cx.data_view_byte_length(dv).unwrap(), None);
+                assert_eq!(cx.data_view_byte_offset(dv).unwrap(), None);
+                assert!(cx.data_view_get_value(dv, 0, 0, true).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                assert!(cx.data_view_buffer(dv).unwrap().is_same_bits(&fixed));
+                std::hint::black_box((o, forged, forged_dv, sab, auto, shared));
+            });
+        }
+    }
+
+    /// TA-2 fixer N1 (H22-Q8): the block of a SharedArrayBuffer goes to an isolate on another
+    /// thread, which makes its own SharedArrayBuffer on it: an Atomics store there is seen by
+    /// an Atomics load here, a grow here is seen there, and the block lives on after the other
+    /// isolate is gone. Only an engine SharedArrayBuffer gives its block (the brand: a caller
+    /// object of the class, an ArrayBuffer and `{}` are TypeErrors). Two objects of one isolate
+    /// on one block are the same block for `is_same_shared_block`; any other pair is not.
+    /// Plain and under GC stress. The channel waits have a deadline (no hang).
+    #[test]
+    fn a_shared_block_crosses_isolates_and_keeps_the_brand() {
+        use crate::abi::{ObjectClass, SharedBlockRef};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        // A deadline for each wait on the other thread, not a time bound of the test.
+        const DEADLINE: Duration = Duration::from_secs(120);
+        for stress in [false, true] {
+            crate::tests::on_big_stack(move || {
+                let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                let iso: &mut Isolate = &mut iso;
+                let rt: &crate::runtime::Runtime = &iso.rt;
+                let mut cx = Cx::new(&mut iso.cx);
+                let p = cx.new_object();
+                let o = cx.new_object();
+                let forged = cx.new_object_with_slots(p, ObjectClass::SharedArrayBuffer, 6);
+                let ab = cx.allocate_array_buffer(p, 8, None).unwrap();
+                let gsab = cx.allocate_shared_array_buffer(p, 8, Some(64)).unwrap();
+                let other = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+                for v in [o, forged, ab] {
+                    assert!(cx.shared_array_buffer_block(v).is_err());
+                    assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                }
+                assert!(cx.shared_array_buffer_block(Local::undefined()).is_err());
+                assert_eq!(pending(rt, &mut cx).0, "TypeError");
+                // Int32 (Table 71 row 5) at byte 4: the other isolate reads it.
+                cx.atomic_store(gsab, 4, 5, Local::number(7.0)).unwrap();
+                let block: SharedBlockRef = cx.shared_array_buffer_block(gsab).unwrap();
+                let (to_agent, from_main) = mpsc::channel::<()>();
+                let (to_main, from_agent) = mpsc::channel::<(u64, Option<u64>, f64)>();
+                let agent = std::thread::Builder::new()
+                    .stack_size(512 << 20)
+                    .spawn(move || {
+                        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+                        let mut cx = Cx::new(&mut iso.cx);
+                        let p = cx.new_object();
+                        let sab = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                        drop(block);
+                        let seen = cx.atomic_load(sab, 4, 5).unwrap().as_number().unwrap();
+                        cx.atomic_store(sab, 0, 5, Local::number(42.0)).unwrap();
+                        let len = cx.array_buffer_byte_length(sab).unwrap();
+                        let max = cx.array_buffer_max_byte_length(sab).unwrap();
+                        to_main.send((len, max, seen)).unwrap();
+                        from_main
+                            .recv_timeout(DEADLINE)
+                            .expect("the main grew the block");
+                        let len = cx.array_buffer_byte_length(sab).unwrap();
+                        to_main.send((len, None, 0.0)).unwrap();
+                        cx.collect_garbage();
+                        std::hint::black_box(sab);
+                    })
+                    .unwrap();
+                let first = from_agent
+                    .recv_timeout(DEADLINE)
+                    .expect("the agent adopted");
+                assert_eq!(first, (8, Some(64), 7.0), "same length, maximum and bytes");
+                let x = cx.atomic_load(gsab, 0, 5).unwrap();
+                assert_eq!(x.as_number(), Some(42.0), "the agent's store");
+                cx.shared_array_buffer_grow(gsab, 32).unwrap();
+                to_agent.send(()).unwrap();
+                let grown = from_agent.recv_timeout(DEADLINE).expect("the agent read");
+                assert_eq!(grown.0, 32, "the agent sees the grow");
+                agent.join().unwrap();
+                // The agent isolate is gone with its SharedArrayBuffer: the block lives here.
+                cx.collect_garbage();
+                let x = cx.atomic_load(gsab, 0, 5).unwrap();
+                assert_eq!(x.as_number(), Some(42.0));
+                // Two objects of this isolate on one block.
+                let block = cx.shared_array_buffer_block(gsab).unwrap();
+                let twin = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                assert!(!twin.is_same_bits(&gsab));
+                assert_eq!(cx.array_buffer_byte_length(twin).unwrap(), 32);
+                assert_eq!(cx.array_buffer_max_byte_length(twin).unwrap(), Some(64));
+                assert!(cx.is_same_shared_block(gsab, twin));
+                assert!(cx.is_same_shared_block(twin, gsab));
+                assert!(cx.is_same_shared_block(gsab, gsab));
+                assert!(!cx.is_same_shared_block(gsab, other));
+                for v in [o, forged, ab] {
+                    assert!(!cx.is_same_shared_block(gsab, v));
+                    assert!(!cx.is_same_shared_block(v, v));
+                }
+                cx.collect_garbage();
+                let x = cx.atomic_load(twin, 0, 5).unwrap();
+                assert_eq!(x.as_number(), Some(42.0));
+                std::hint::black_box((o, forged, ab, gsab, other, twin));
+            });
+        }
+    }
+
+    /// TA-ORCH-12 (Codex TA-2 r2 finding 1): two isolates on two threads do plain DataView
+    /// stores of two widths on the same 4 bytes of one SharedArrayBuffer at the same time:
+    /// `setInt32` (both byte orders) and a `getUint32` here, `setUint8` of each byte there, in
+    /// a bounded loop. A plain access to shared bytes is one Relaxed `AtomicU8` access per
+    /// byte, so this is no data race and no mixed-size access in Rust. Each byte this side
+    /// reads, and each byte at the end, is 0 or a value that one side wrote there (JS lets an
+    /// Int32 tear). Not a timing test: it checks only the values, and each wait has a deadline.
+    #[test]
+    fn two_threads_store_two_widths_on_the_same_shared_bytes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        const DEADLINE: Duration = Duration::from_secs(120);
+        const ROUNDS: u32 = 20_000;
+        /// The values that a side can leave in byte `k` (0 at the start).
+        fn may_hold(k: u8, x: u8) -> bool {
+            // setInt32 of 0x04030201 and 0x14131211, little and big endian; setUint8 of
+            // 0xA0 + k and 0xB0 + k.
+            [0, 1 + k, 0x11 + k, 4 - k, 0x14 - k, 0xA0 + k, 0xB0 + k].contains(&x)
+        }
+        crate::tests::on_big_stack(|| {
+            let mut iso = isolate(config(Dispatch::DEFAULT, false));
+            let iso: &mut Isolate = &mut iso;
+            let mut cx = Cx::new(&mut iso.cx);
+            let p = cx.new_object();
+            let sab = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+            let dv = cx.new_data_view(p, sab, 0, None).unwrap();
+            let block = cx.shared_array_buffer_block(sab).unwrap();
+            let (to_main, from_other) = mpsc::channel::<()>();
+            let other = std::thread::Builder::new()
+                .stack_size(512 << 20)
+                .spawn(move || {
+                    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+                    let mut cx = Cx::new(&mut iso.cx);
+                    let p = cx.new_object();
+                    let sab = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                    let dv = cx.new_data_view(p, sab, 0, None).unwrap();
+                    to_main.send(()).unwrap();
+                    for r in 0..ROUNDS {
+                        for k in 0..4u8 {
+                            let x = f64::from(if r % 2 == 0 { 0xA0 } else { 0xB0 } + k);
+                            // Uint8 (Table 71 row 1).
+                            cx.data_view_set_value(dv, u64::from(k), 1, Local::number(x), true)
+                                .unwrap();
+                        }
+                    }
+                    std::hint::black_box((sab, dv));
+                })
+                .unwrap();
+            from_other
+                .recv_timeout(DEADLINE)
+                .expect("the other isolate adopted the block");
+            for r in 0..ROUNDS {
+                let x = if r % 2 == 0 { 0x0403_0201 } else { 0x1413_1211 };
+                // Int32 (row 5): rounds 0 and 1 of each 4 little endian, 2 and 3 big endian.
+                cx.data_view_set_value(dv, 0, 5, Local::number(f64::from(x)), r % 4 < 2)
+                    .unwrap();
+                // Uint32 (row 6), little endian: byte k is bits 8k..8k+8.
+                let got = cx.data_view_get_value(dv, 0, 6, true).unwrap();
+                let got = got.as_number().unwrap() as u32;
+                for (k, x) in got.to_le_bytes().into_iter().enumerate() {
+                    assert!(may_hold(k as u8, x), "round {r}: byte {k} = {x:#x}");
+                }
+            }
+            other.join().expect("the other thread ended");
+            for k in 0..4u8 {
+                let x = cx.data_view_get_value(dv, u64::from(k), 1, true).unwrap();
+                let x = x.as_number().unwrap() as u8;
+                assert!(may_hold(k, x), "the end: byte {k} = {x:#x}");
+            }
+            std::hint::black_box((p, sab, dv));
+        });
+    }
+
+    /// TA-ORCH-13 (Codex TA-2 r3): a TypedArray element on shared bytes does not tear. Two isolates
+    /// on two threads share one SharedArrayBuffer block, each with an Int32Array at byte 0 and an
+    /// Int16Array at byte 4. The writer stores -1 and 0 in turn in both elements; the reader reads
+    /// both, each in a bounded loop. Every read is 0 or -1 (IsNoTearConfiguration, ECMA-262
+    /// §25.1.3.12: an unordered Int32 or Int16 TypedArray access does not tear; a byte loop can
+    /// give 255 or 65535). Each element access is one racy `ep9_platform::shared_mem` access of the
+    /// element width (`load_racy`, `store_racy`), so this is no data race in Rust. Not a timing
+    /// test: it checks only the values, and each wait has a deadline (a byte loop can pass by
+    /// chance; the width probe test is the gate that does not depend on the race).
+    #[test]
+    fn two_threads_see_no_torn_int32_or_int16_element() {
+        use crate::typed_array as ta;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        const DEADLINE: Duration = Duration::from_secs(120);
+        const ROUNDS: u32 = 100_000;
+        // Table 71 rows 5 (Int32) and 3 (Int16).
+        const VIEWS: [(u8, u64); 2] = [(5, 0), (3, 4)];
+        crate::tests::on_big_stack(|| {
+            let mut iso = isolate(config(Dispatch::DEFAULT, false));
+            let iso: &mut Isolate = &mut iso;
+            let mut cx = Cx::new(&mut iso.cx);
+            let p = cx.new_object();
+            let sab = cx.allocate_shared_array_buffer(p, 8, None).unwrap();
+            let views = VIEWS.map(|(t, at)| cx.new_typed_array(p, t, sab, at, Some(1)).unwrap());
+            let block = cx.shared_array_buffer_block(sab).unwrap();
+            let (to_main, from_writer) = mpsc::channel::<()>();
+            let writer = std::thread::Builder::new()
+                .stack_size(512 << 20)
+                .spawn(move || {
+                    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+                    let mut cx = Cx::new(&mut iso.cx);
+                    let p = cx.new_object();
+                    let sab = cx.new_shared_array_buffer_on_block(p, &block).unwrap();
+                    let views =
+                        VIEWS.map(|(t, at)| cx.new_typed_array(p, t, sab, at, Some(1)).unwrap());
+                    to_main.send(()).unwrap();
+                    for r in 0..ROUNDS {
+                        let x = Local::number(if r % 2 == 0 { -1.0 } else { 0.0 }).bits();
+                        for o in views {
+                            ta::set_element(cx.inner(), o.bits(), 0.0, x).unwrap();
+                        }
+                    }
+                    std::hint::black_box((sab, views));
+                })
+                .unwrap();
+            from_writer
+                .recv_timeout(DEADLINE)
+                .expect("the writer adopted the block");
+            let read = |cx: &Cx<'_>, k: usize| {
+                let x: Local<'_> = Local::from_bits(ta::get_element(cx.rt(), views[k].bits(), 0.0));
+                x.as_number().unwrap()
+            };
+            for r in 0..ROUNDS {
+                for k in 0..2 {
+                    let x = read(&cx, k);
+                    assert!(x == 0.0 || x == -1.0, "round {r}: view {k} = {x}");
+                }
+            }
+            writer.join().expect("the writer ended");
+            // The last round (odd) stored 0.
+            assert_eq!([read(&cx, 0), read(&cx, 1)], [0.0, 0.0]);
+            std::hint::black_box((p, sab, views));
+        });
+    }
+}

@@ -176,6 +176,21 @@ fn group_size() -> usize {
     size_of(ep9_temporal::MODULES)
 }
 
+/// The cases whose script also installs every other lazy group ("Intl" and the TypedArray
+/// group): `Object.keys` and `Object.freeze` of globalThis ask `[[GetOwnProperty]]` of every
+/// key. Their count starts from the base plus [`other_group_cells`]: since the TA sync of
+/// m8-p2 (INTL W2 and TA-4) those cells (218 + 318) are more than half of the Temporal group
+/// (718), so the rounding of [`installs`] alone counts one install too many.
+const EVERY_GROUP_CASES: [&str; 2] = [
+    "a define with a value first",
+    "Object.freeze(globalThis) first",
+];
+
+/// The cells that the lazy groups other than Temporal add (one read of a key of each).
+fn other_group_cells(base: usize) -> usize {
+    min_cells("Intl; ArrayBuffer;").saturating_sub(base)
+}
+
 /// Whether the script that left `live` cells installed the Temporal group in `realms` realms
 /// (0, 1 or 2): the live cells above `base`, in units of the group's cells, rounded.
 fn installs(live: usize, base: usize, group: usize) -> usize {
@@ -487,12 +502,15 @@ fn every_read_gives_the_eager_result() {
     let (base, group) = group_cells();
     // `createRealm()` alone installs no group: it is the base of the realm cases.
     let realm_base = common::on_big_stack(|| run("const B = createRealm();", false).1);
+    let others = other_group_cells(base);
     for ((name, src, realms), want) in CASES.iter().zip(NODE) {
         let (r, live) = run_both(src);
         let want: Vec<String> = want.iter().map(|s| s.to_string()).collect();
         assert_eq!(r, Ok(want), "{name}");
         let from = if src.contains("createRealm") {
             realm_base
+        } else if EVERY_GROUP_CASES.contains(name) {
+            base + others
         } else {
             base
         };

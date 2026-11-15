@@ -138,7 +138,7 @@ fn elements_kind_values_and_storage_forms() {
 }
 
 /// H18 "elements kind values (append-only)": kind 15, the top of the 4 shape bits (never the
-/// next free value 7), is refused today (MODES-CHECK-w22 MC-w22-1). It has no storage form and
+/// next free value 9), is refused today (MODES-CHECK-w22 MC-w22-1). It has no storage form and
 /// no FactSnapshot kind, and an object whose shape holds it fails the storage-form check
 /// (`elements::storage_form_ok`, `elements::check`). Its kinds-set bit (25) is inside the
 /// IC_LAYOUT 4 mask (bits 10-25, V11-D4), so its append will move no IC_LAYOUT (it was outside
