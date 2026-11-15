@@ -494,7 +494,8 @@ fn narrow_text(
         AnyCalendarKind::Ethiopian | AnyCalendarKind::EthiopianAmeteAlem => {
             month_name::<DatetimeNamesMonthEthiopianV1>(req, month, nu)
         }
-        AnyCalendarKind::Hebrew => month_name::<DatetimeNamesMonthHebrewV1>(req, month, nu),
+        AnyCalendarKind::Hebrew => hebrew_digit_month(req, month)
+            .or_else(|| month_name::<DatetimeNamesMonthHebrewV1>(req, month, nu)),
         AnyCalendarKind::Indian => month_name::<DatetimeNamesMonthIndianV1>(req, month, nu),
         AnyCalendarKind::HijriTabularTypeIIFriday
         | AnyCalendarKind::HijriTabularTypeIIThursday
@@ -538,6 +539,48 @@ where
         }
         _ => None,
     }
+}
+
+/// The CLDR number of the Hebrew `month` (as ICU4C) when the narrow names of `req` are digits
+/// (root, ast, bn, ff-Adlm, mr: ICU4X keeps the CLDR names "1" to "12" and adds the patterns
+/// "{0}a" and "{0}b"), in the digits of the names (not of the numbering system, as ICU4C).
+/// ICU4X numbers the months by code (Nisan is M07), CLDR by place: Adar I (M05L) is 6, Adar
+/// and Adar II (M06) are 7, a month after Adar is its code number plus 1 (Nisan 8, Elul 13).
+/// `None` for other names.
+fn hebrew_digit_month(
+    req: icu_provider::DataRequest,
+    month: icu_calendar::types::MonthInfo,
+) -> Option<String> {
+    use icu_calendar::types::LeapStatus;
+    use icu_datetime::provider::names::{DatetimeNamesMonthHebrewV1, MonthNames};
+    let names = icu_provider::DataProvider::<DatetimeNamesMonthHebrewV1>::load(
+        &icu_datetime::provider::Baked,
+        req,
+    )
+    .ok()?;
+    let MonthNames::LeapPattern(l) = names.payload.get() else {
+        return None;
+    };
+    // The zero before the name of month 1; all 12 names must be the numbers in its block.
+    let one = u32::from(l.get(0)?.chars().next()?);
+    let zero = char::from_u32(one.checked_sub(1)?)?;
+    let digits = |n: u8| -> Option<String> {
+        n.to_string()
+            .bytes()
+            .map(|b| char::from_u32(u32::from(zero) + u32::from(b - b'0')))
+            .collect()
+    };
+    if l.len() != 14 || !(1..=12).all(|n| digits(n).as_deref() == l.get(usize::from(n - 1))) {
+        return None;
+    }
+    let n = month.number();
+    let cldr = match month.leap_status() {
+        LeapStatus::Leap if n == 5 => 6,
+        LeapStatus::Leap => return None,
+        _ if n <= 5 => n,
+        _ => n + 1,
+    };
+    digits(cldr)
 }
 
 /// The decimal digits of `n` in the numbering system `nu` (ASCII digits for a system with

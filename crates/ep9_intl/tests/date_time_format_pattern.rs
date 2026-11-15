@@ -83,8 +83,8 @@ print(ro.month, ro.weekday);
 /// month and weekday "narrow" (W4 Codex r1 F4): the ICU4X field bag maps narrow to the
 /// abbreviated length (or wide when another field is long), so the narrow name comes from
 /// the ICU4X names data per field (format or stand-alone), in the calendar of the format (a
-/// number where the data is numeric). Not here: a leap month (Hebrew "Adar II" is "7" in node,
-/// a leap pattern in ICU4X), which keeps the ICU4X text.
+/// number where the data is numeric). The Hebrew month numbers are in
+/// `hebrew_narrow_months_use_the_cldr_numbers`.
 #[test]
 fn narrow_weekday_and_month_names() {
     assert_eq!(
@@ -95,6 +95,35 @@ fn narrow_weekday_and_month_names() {
             "J 2567 BE | J | J | J",
             "4 11 11 6 10 10 4 4 | 4",
             "narrow narrow",
+        ])
+    );
+}
+
+const HEBREW: &str = r#"const f = (l, o, x) => new Intl.DateTimeFormat(l, Object.assign({timeZone: "UTC"}, o)).format(x);
+const leap = [Date.UTC(2023, 8, 20), Date.UTC(2024, 0, 20), Date.UTC(2024, 1, 20), Date.UTC(2024, 2, 20), Date.UTC(2024, 3, 15), Date.UTC(2024, 7, 15), Date.UTC(2024, 8, 10)];
+const plain = [Date.UTC(2024, 9, 10), Date.UTC(2025, 1, 10), Date.UTC(2025, 2, 15), Date.UTC(2025, 3, 15), Date.UTC(2025, 8, 1)];
+const m = (l, o, xs) => xs.map(x => f(l + "-u-ca-hebrew", o, x)).join(" ");
+print(m("en", {month: "narrow"}, leap), "|", m("en", {month: "narrow"}, plain));
+print(m("bn", {month: "narrow"}, leap), "|", m("bn", {month: "narrow"}, plain));
+print(m("mr", {month: "narrow"}, leap), "|", m("mr", {month: "narrow"}, plain));
+print(m("en", {month: "narrow", day: "numeric"}, [leap[3], leap[4], plain[2]]), "|", m("fr", {month: "narrow"}, [leap[2], leap[3], plain[2]]), "|", m("ff-Adlm", {month: "narrow"}, [leap[2], leap[3], leap[6]]), "|", f("bn-u-ca-hebrew-nu-latn", {month: "narrow"}, leap[4]));
+"#;
+
+/// Hebrew narrow months where the CLDR names are digits (root, so en and fr; bn, mr,
+/// ff-Adlm): the CLDR number, as in node. CLDR gives Adar I 6, Adar and Adar II 7, and the
+/// months after Adar the ICU4X number plus 1 (Nisan 8, Elul 13). ICU4X numbers the months by
+/// code (Nisan M07). The digits are the digits of the names (bn-u-nu-latn stays Bengali).
+/// The dates: Tishrei, Shevat, Adar I, Adar II, Nisan, Av, Elul of the leap year 5784, and
+/// Tishrei, Shevat, Adar, Nisan, Elul of 5785.
+#[test]
+fn hebrew_narrow_months_use_the_cldr_numbers() {
+    assert_eq!(
+        run_both(HEBREW),
+        lines(&[
+            "1 5 6 7 8 12 13 | 1 5 7 8 13",
+            "১ ৫ ৬ ৭ ৮ ১২ ১৩ | ১ ৫ ৭ ৮ ১৩",
+            "१ ५ ६ ७ ८ १२ १३ | १ ५ ७ ८ १३",
+            "10 7 7 8 15 7 | 6 7 7 | 𞥖 𞥗 𞥑𞥓 | ৮",
         ])
     );
 }
