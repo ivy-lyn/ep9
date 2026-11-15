@@ -449,6 +449,13 @@ const FIXED_COUNTS: [u8; 256] = {
     t[kind::MODULE_NAMESPACE.get() as usize] = nsf::FIXED as u8;
     t[kind::PROXY.get() as usize] = fixed::PROXY as u8;
     t[kind::PROXY_CALLABLE.get() as usize] = fixed::PROXY as u8;
+    // The 12 TypedArray view kinds (OBJECT_LAYOUT 9, H17 "view cells"): +24 buffer, +32
+    // data, +40 length, +48 byteOffset (`crate::typed_array::VIEW_FIXED`).
+    let mut v = kind::INT8_VIEW.get();
+    while v <= kind::FLOAT64_VIEW.get() {
+        t[v as usize] = crate::typed_array::VIEW_FIXED as u8;
+        v += 1;
+    }
     t
 };
 
@@ -479,7 +486,8 @@ pub(crate) fn fixed_count(k: u8) -> usize {
             kind::PROXY_CALLABLE
         ]
         .iter()
-        .any(|x| x.get() == k),
+        .any(|x| x.get() == k)
+            || kind::is_view_kind(k),
         "kind {k} is not a JS object kind"
     );
     usize::from(FIXED_COUNTS[usize::from(k)])
@@ -671,6 +679,30 @@ pub(crate) fn register_kinds(heap: &Heap) {
     for (id, k) in kinds {
         heap.register_kind(id, k).expect("register a VM cell kind");
     }
+    // The 12 TypedArray view kinds (OBJECT_LAYOUT 9, TA-1 TA-VM; `typed_array.rs`): JS objects
+    // with 4 fixed fields (+24 buffer, +32 data, +40 length, +48 byteOffset). Every word after
+    // word0 is a Value or a native word (`data`), so the common object trace visits them.
+    const VIEW_NAMES: [&str; kind::VIEW_KINDS as usize] = [
+        "int8-view",
+        "uint8-view",
+        "uint8-clamped-view",
+        "int16-view",
+        "uint16-view",
+        "int32-view",
+        "uint32-view",
+        "bigint64-view",
+        "biguint64-view",
+        "float16-view",
+        "float32-view",
+        "float64-view",
+    ];
+    const VF: usize = crate::typed_array::VIEW_FIXED;
+    for (row, name) in VIEW_NAMES.into_iter().enumerate() {
+        let id = KindId::new(kind::INT8_VIEW.get() + row as u8).expect("a view kind");
+        let k = object_kind(name, object_size::<VF>, trace_object::<VF>);
+        heap.register_kind(id, k).expect("register a view kind");
+    }
+    crate::array_buffer::register_kind(heap);
     crate::elements::register_kinds(heap);
     crate::bigint::register_kind(heap);
     crate::props::register_kinds(heap);
@@ -1736,16 +1768,39 @@ pub(crate) fn slot_class(v: u64) -> Option<u16> {
     Some(rd_i32(cell(v), slot_obj::CLASS) as u16)
 }
 
-/// The internal slot count of the SLOT_OBJECT `o`.
+/// The internal slot count of the SLOT_OBJECT `o`. Panics in every build if `o` is not a
+/// SLOT_OBJECT or its slots cell is not an ELEMENTS cell: a slot access of another value
+/// would take a word of some other cell for the slots cell (TA-1 fixer r3, A2), so every
+/// slot read and write ([`slot_get`], [`slot_set`]) checks it here.
 #[inline]
 pub(crate) fn slot_count(o: u64) -> usize {
-    debug_assert!(cell_kind(o) == kind::SLOT_OBJECT.get());
+    let k = cell_kind(o);
+    if k != kind::SLOT_OBJECT.get() {
+        not_a_slot_object(k);
+    }
     let s = rd(cell(o), slot_obj::SLOTS);
     if s == UNDEFINED {
         return 0;
     }
-    debug_assert!(cell_kind(s) == kind::ELEMENTS.get());
+    if cell_kind(s) != kind::ELEMENTS.get() {
+        not_a_slots_cell(cell_kind(s));
+    }
     rd_i32(cell(s), elems::CAPACITY) as usize
+}
+
+/// The panic of [`slot_count`] for a value that is not a SLOT_OBJECT (cell kind `k`; 0 for a
+/// value that is not a cell).
+#[cold]
+#[inline(never)]
+fn not_a_slot_object(k: u8) -> ! {
+    panic!("a value of cell kind {k} is not an object with internal slots")
+}
+
+/// The panic of [`slot_count`] for a SLOT_OBJECT whose slots word is not an ELEMENTS cell.
+#[cold]
+#[inline(never)]
+fn not_a_slots_cell(k: u8) -> ! {
+    panic!("the slots word of an object with internal slots is a cell of kind {k}, not ELEMENTS")
 }
 
 /// Internal slot `i` of the SLOT_OBJECT `o`. Panics if `i` ≥ [`slot_count`].
@@ -1757,9 +1812,34 @@ pub(crate) fn slot_get(o: u64, i: usize) -> u64 {
 }
 
 /// Stores internal slot `i` of the SLOT_OBJECT `o` (barriered). Panics if `i` ≥
-/// [`slot_count`].
+/// [`slot_count`], or if `o` is an engine object: a buffer or a DataView that
+/// `array_buffer.rs` made, whose slots bound raw memory accesses. Only `array_buffer.rs` writes
+/// those, with [`engine_slot_set`].
+///
+/// The choke point (TA-1 fixer r3, design study): the slots cell has no other writer, so every
+/// slot write of the VM and of the builtin ABI (`set_slot`, the Promise records and methods,
+/// collections, WeakRef, RegExp) comes here. A cheap pre-filter (the slot count, then the class
+/// word) sends only the objects that can be engine objects to the brand test.
 #[inline]
 pub(crate) fn slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
+    let n = slot_count(o);
+    assert!(i < n, "internal slot {i} out of range (the object has {n})");
+    if crate::array_buffer::may_be_engine_object(n, rd_i32(cell(o), slot_obj::CLASS)) {
+        crate::array_buffer::refuse_engine_write(rt, o, i);
+    }
+    wr(
+        &rt.heap,
+        cell(rd(cell(o), slot_obj::SLOTS)),
+        elems::DATA + 8 * i,
+        v,
+    );
+}
+
+/// [`slot_set`] with no brand test, for the engine objects of `array_buffer.rs` (buffers and
+/// DataViews): the same barriered store. Only `array_buffer.rs` calls it (and its tests).
+/// Panics if `i` ≥ [`slot_count`].
+#[inline]
+pub(crate) fn engine_slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
     let n = slot_count(o);
     assert!(i < n, "internal slot {i} out of range (the object has {n})");
     wr(
@@ -1767,5 +1847,10 @@ pub(crate) fn slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
         cell(rd(cell(o), slot_obj::SLOTS)),
         elems::DATA + 8 * i,
         v,
+    );
+    // After the store: the first write of a maker is the table slot, which makes the brand.
+    debug_assert!(
+        crate::array_buffer::is_engine_object(rt, o),
+        "engine_slot_set of an object that is not an engine buffer or DataView"
     );
 }

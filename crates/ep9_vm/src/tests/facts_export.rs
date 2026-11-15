@@ -1547,7 +1547,7 @@ struct NoWriter {
     types: Option<&'static str>,
 }
 
-const NO_WRITER: [NoWriter; 17] = [
+const NO_WRITER: [NoWriter; 16] = [
     NoWriter {
         field: "RecordFlags::RAN",
         named: "`RecordFlags::RAN`",
@@ -1561,14 +1561,6 @@ const NO_WRITER: [NoWriter; 17] = [
         named: "`RecordFlags::EXITED`",
         needles: &["RecordFlags::EXITED"],
         word: Some("EXITED"),
-        source: None,
-        types: None,
-    },
-    NoWriter {
-        field: "ObjectKind::TypedArray",
-        named: "`ObjectKind::TypedArray`",
-        needles: &["ObjectKind::TypedArray"],
-        word: Some("TypedArray"),
         source: None,
         types: None,
     },
@@ -1689,16 +1681,15 @@ const NO_WRITER: [NoWriter; 17] = [
 
 /// The code lines (file, trimmed text) that hold a needle today and write no field: the
 /// exporter's read of the LoadKeyed slot bit 26, which no T0 code sets (H16 "Declared, no
-/// writer"), the definition of that bit, a fuse name, and the representation join, which
-/// gives `NONE` only for two `NONE` inputs.
-const NOT_WRITERS: [(&str, &str); 5] = [
+/// writer"), the definition of that bit, and the representation join, which gives `NONE` only
+/// for two `NONE` inputs.
+const NOT_WRITERS: [(&str, &str); 4] = [
     (
         "facts_export.rs",
         "let flags = if ran && bits & crate::profile::keyed::RAN != 0 {",
     ),
     ("facts_export.rs", "RecordFlags::RAN"),
     ("profile.rs", "pub const RAN: u32 = 1 << 26;"),
-    ("fuse.rs", "\"TypedArray species\","),
     ("field_rep.rs", "(rep::NONE, x) | (x, rep::NONE) => x,"),
 ];
 
@@ -1752,8 +1743,8 @@ fn declared_items(facts: &SlotFacts, flags: ep9_facts::RecordFlags, out: &mut Ve
             | ObjectKind::Iterator
             | ObjectKind::PrimitiveWrapper
             | ObjectKind::BoundFunction
-            | ObjectKind::Arguments => {}
-            ObjectKind::TypedArray => out.push("ObjectKind::TypedArray"),
+            | ObjectKind::Arguments
+            | ObjectKind::TypedArray => {}
         }
     }
     fn property(p: &PropertyFacts, out: &mut Vec<&'static str>) {

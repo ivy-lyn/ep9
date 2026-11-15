@@ -35,13 +35,13 @@
 #   bench-run ........ M1 exit item 1: the 15 kernels on ep9 vs node (4 targets)
 #                      (kernels.mjs --check) as an artifact
 #   atomgate ......... the atom-key gate (G2, debug exec)            (Linux x64)
-#   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
+#   miri ............. Miri on ep9_value, ep9_heap, ep9_math and ep9_platform --lib shared_mem waiters (Linux x64)
 #   dep-guards ....... cargo tree/metadata guards; deny; cldr-tables (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
-#   fuzz-smoke ....... cargo-fuzz, 60 s per front-end target; prints (Linux x64)
-#                      only the crash count and hashes (V9-A17)
+#   fuzz-smoke ....... cargo-fuzz, 60 s per target (front end, unit  (Linux x64)
+#                      loader); prints only the crash count and hashes (V9-A17)
 #   bench-set ........ the bench mode (inputs bench_base, bench_head): (Linux x64,
 #                      cachegrind Ir of ep9 at base and head, BENCH-SET  Linux arm64)
 #                      rows, rule 13 verdict; else one "off" leg (its own tests)
@@ -272,7 +272,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Rule 25: 1.5x the last measured max: 110 min (windows-x64, run 42135182874, the first run
     # after the spec-temporal merge B0), so 165 (was 120; M6-ORCH-136).
-    timeout-minutes: 165
+    timeout-minutes: 175
     steps:
       # Windows: keep LF in our files and in test262 (scripts break on CRLF), allow long paths.
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
@@ -552,7 +552,7 @@ jobs:
     runs-on: ${{ matrix.target.os }}
     # Rule 25: run 42135182874 (after B0) cut 8 of 24 shards at 40 min; the same shard grew
     # 1.66x, so about 50 min (est.) x 1.5: 80 (was 40; feature-matrix 60 -> 75; DL B0-GCSKIP).
-    timeout-minutes: 80
+    timeout-minutes: 90
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -984,6 +984,10 @@ jobs:
         run: bash scripts/sync-icu4x.sh
       - run: cargo "+$MIRI_TOOLCHAIN" miri setup
       - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap -p ep9_math
+      # The shared-memory accessors and the waiter list of ep9_platform (TypedArray TA-4,
+      # V13-D8): their cfg(miri) path is the Rust atomics; the asm path and the mixed-width test
+      # run in the other jobs. The filter keeps the OS tests of the crate out (mmap, signals).
+      - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_platform --lib -- shared_mem waiters
       # The S2a loom test (plan v12 rule 8; M7-P1 GCPAR1): 2 markers on the shared work
       # structure. Miri does not cover the parallel mark (helpers() is 0 under Miri).
       - run: RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom cargo "+$MIRI_TOOLCHAIN" test --locked --release -p ep9_heap --lib parallel::loom_tests
@@ -1106,16 +1110,16 @@ jobs:
           path: sp-tsrs-win.log
           if-no-files-found: warn
 
-  # Front-end fuzz smoke (plan v9 M4-P2 FE-FUZZ; docs/plan/10-quality.md section 4): the 3
-  # cargo-fuzz targets of fuzz/ (its own nightly workspace, fuzz/README.md), seeded from
+  # Fuzz smoke (plan v9 M4-P2 FE-FUZZ; docs/plan/10-quality.md section 4): the 5 cargo-fuzz
+  # targets of fuzz/ (front end, regexp, unit_loader; its own nightly workspace, README), from
   # fuzz/seeds and a test262 sample, FUZZ_SMOKE seconds of mutation each. The repo is public
   # (plan v9 rule 14, V9-A17): fuzz/scripts/run.sh sends the fuzzer output to a file inside the
   # job and prints only the crash count, the SHA-256 of each crash file and numeric stats; the
   # job uploads nothing. The self-test step first proves that rule on a fixture crash. A CI
   # probe of the 10-minute smoke sets frontend_compile=600 (and the timeout to 45).
-  # Rule 25: the Mac run of every step except the mutation is 172 s (cold build in the
-  # self-test 102 s, test262 seeds 57 s, seed replay 11 s) + 180 s mutation = 5.9 min; on
-  # ubuntu-24.04 (4 vCPU, cold cache, cargo-fuzz install) about 12-15 min (est.).
+  # Rule 25: the Mac run of every step except the mutation was 172 s with 3 targets (cold build in
+  # the self-test 102 s, test262 seeds 57 s, replay 11 s); unit_loader adds ep9_vm to the build
+  # (Mac 155 s) and 60 s; 300 s mutation in all. ubuntu-24.04: re-read from the first run.
   fuzz-smoke:
     name: fuzz smoke (linux-x64)
     needs: scope
@@ -1126,7 +1130,7 @@ jobs:
     env:
       CARGO_FUZZ_VERSION: 0.12.0
       # <target>=<seconds of mutation>, one per target.
-      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60 regexp=60
+      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60 regexp=60 unit_loader=60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The +toolchain of fuzz/rust-toolchain.toml (the Miri pin); the root stable pin builds
@@ -1184,7 +1188,7 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    timeout-minutes: 80
     # Rule 25 (M6-ORCH-545): windows-x64 took 38.9 min on m2/m8 (43124645044), 42.6 min with INTL W2 (43003201072), > 45 with W3 (43056384143: the build, +30 INTL crates); 1.5 x about 48 min.
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
@@ -1209,7 +1213,7 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 95
+    timeout-minutes: 100
     # Plan v11 section 2.9; the M6-P0 probe (run 41565402096) took 20 min. Rule 25: run 42135182874
     # (after B0) was cut at 55 min (37 min before B0): 95 (est. 60 min x 1.5; M6-ORCH-136).
     steps:

@@ -22,6 +22,8 @@ ep9_bytecode = { path = "../crates/ep9_bytecode" }
 ep9_frontend = { path = "../crates/ep9_frontend" }
 ep9_regexp = { path = "../crates/ep9_regexp" }
 ep9_rx1 = { path = "../crates/ep9_rx1" }
+ep9_unit = { path = "../crates/ep9_unit" }
+ep9_vm = { path = "../crates/ep9_vm" }
 
 [features]
 # The fuzz-log self-test (scripts/self-test.sh): frontend_compile panics on an input that
@@ -53,6 +55,13 @@ bench = false
 [[bin]]
 name = "regexp"
 path = "fuzz_targets/regexp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unit_loader"
+path = "fuzz_targets/unit_loader.rs"
 test = false
 doc = false
 bench = false

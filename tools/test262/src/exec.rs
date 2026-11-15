@@ -36,32 +36,32 @@ use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Stric
 use ep9_heap::HeapConfig;
 use ep9_vm::{
     Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, ExecOptions, Feedback,
-    HostFn, Isolate, IsolateConfig, JsResult, Local, Preset, PropertyDescriptor, TerminateHandle,
+    Isolate, IsolateConfig, JsResult, Local, Preset, PropertyDescriptor, TerminateHandle,
 };
 
 use crate::frontmatter::{self, Meta};
 use crate::parse::{Mode, STRICT_PREFIX, modes};
 use crate::suite::{self, TestFile};
-use crate::{expect, json, provenance};
+use crate::{agent, expect, json, provenance};
 
 /// Native stack of the thread that runs the isolates in a worker (the CLI uses the same).
-const RUN_STACK_BYTES: usize = 64 << 20;
+pub(crate) const RUN_STACK_BYTES: usize = 64 << 20;
 
 /// The `$262` host object (INTERPRETING.md "Host-Defined Functions"): `global`, `gc`,
 /// `evalScript` (M2-P4, through `Cx::evaluate_script`) and `createRealm` (M3-P1, through
-/// `Cx::create_realm`; each realm runs this prelude over its own host functions, so its
-/// `evalScript` evaluates in that realm). `detachArrayBuffer` and `agent` are missing, so
-/// tests that use them fail.
-const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc, \
+/// `Cx::create_realm`; each realm runs its agent's prelude over its own host functions, so its
+/// `evalScript` evaluates in that realm). An isolate runs [`agent::prelude`]: this text, then
+/// `detachArrayBuffer` and `agent` (TypedArray TA-2 TA-HARNESS; the [`agent`] module).
+pub(crate) const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc, \
                        evalScript: __ep9_eval_script, createRealm: __ep9_create_realm };\n";
 
-/// The host functions of every realm of a test isolate, as global names (`register`).
-const HOST_FUNCTIONS: [(&str, u32, HostFn); 4] = [
+/// The host functions of every realm of a test isolate, as global names: these, then [`agent`]'s.
+pub(crate) const HOST_FUNCTIONS: agent::HostList = agent::host_functions([
     ("print", 1, print),
     ("__ep9_gc", 0, gc),
     ("__ep9_eval_script", 1, eval_script),
     ("__ep9_create_realm", 0, create_realm),
-];
+]);
 
 pub struct Options {
     pub test262: PathBuf,
@@ -224,7 +224,7 @@ pub fn decode(line: &str) -> Option<(String, TestResult)> {
 
 /// Outcome of one run (one mode) of a test.
 #[derive(Debug)]
-enum Run {
+pub(crate) enum Run {
     Pass,
     Fail {
         cause: String,
@@ -237,14 +237,14 @@ enum Run {
     },
 }
 
-fn infra(cause: &'static str, detail: impl Into<String>) -> Run {
+pub(crate) fn infra(cause: &'static str, detail: impl Into<String>) -> Run {
     Run::Infra {
         cause,
         detail: detail.into(),
     }
 }
 
-fn fail(cause: impl Into<String>, detail: impl Into<String>) -> Run {
+pub(crate) fn fail(cause: impl Into<String>, detail: impl Into<String>) -> Run {
     Run::Fail {
         cause: cause.into(),
         detail: detail.into(),
@@ -259,7 +259,7 @@ thread_local! {
 /// The last panic message (set by the worker's panic hook, from any thread).
 static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
 
-fn take_panic() -> String {
+pub(crate) fn take_panic() -> String {
     LAST_PANIC
         .lock()
         .map_or(None, |mut p| p.take())
@@ -337,7 +337,7 @@ fn create_realm<'s>(
             let desc = PropertyDescriptor::data(func.into(), true, false, true);
             cx.define_property_or_throw(global, name, desc)?;
         }
-        cx.evaluate_script(PRELUDE, "harness/$262 prelude")?;
+        cx.evaluate_script(agent::prelude(), "harness/$262 prelude")?;
         cx.get(global, "$262")
     })
 }
@@ -498,7 +498,7 @@ fn compile_failure(e: &CodegenError, what: &str) -> Run {
 }
 
 /// Compiles `src`; `name` is the test path or `harness/<file>` (for the `internal` test hook).
-fn compile(
+pub(crate) fn compile(
     src: &str,
     opts: SourceOpts,
     name: &str,
@@ -555,7 +555,7 @@ fn generational_from_env() -> (bool, u32) {
 
 /// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's,
 /// and the heap mode of [`generational_from_env`] (in `HeapConfig`, never `IsolateConfig`).
-fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
+pub(crate) fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
     let (generational, stress_major_every) = generational_from_env();
     IsolateConfig {
         heap: HeapConfig {
@@ -626,8 +626,8 @@ fn check_builtins(config: IsolateConfig) -> Result<(), String> {
     }
 }
 
-struct RunCtx<'a> {
-    opts: &'a WorkerOptions,
+pub(crate) struct RunCtx<'a> {
+    pub(crate) opts: &'a WorkerOptions,
     harness: &'a mut Harness,
     watchdog: &'a Watchdog,
 }
@@ -660,7 +660,7 @@ impl RunCtx<'_> {
         }
     }
 
-    fn run(&mut self, rel: &str, src: &str, meta: &Meta, mode: Mode) -> Run {
+    pub(crate) fn run(&mut self, rel: &str, src: &str, meta: &Meta, mode: Mode) -> Run {
         let negative = meta.negative.as_ref();
         let (source, opts) = match mode {
             Mode::Strict => (
@@ -705,9 +705,10 @@ impl RunCtx<'_> {
             Err(e) => return infra("panic", e),
         };
         self.watchdog.arm(iso.terminate_handle(), self.opts.timeout);
+        iso.set_can_block(agent::main_can_block());
         OUT.with(|o| o.borrow_mut().clear());
         if mode != Mode::Raw {
-            if let Some(r) = self.harness_script(&mut iso, "$262 prelude", PRELUDE) {
+            if let Some(r) = self.harness_script(&mut iso, "$262 prelude", agent::prelude()) {
                 return r;
             }
             let mut names = vec!["assert.js".to_string(), "sta.js".to_string()];
@@ -731,11 +732,12 @@ impl RunCtx<'_> {
         let mut resolve =
             |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
         let mut load = |name: &str| load_module(root, name);
+        let settle = meta.has_flag("async").then_some(self.opts.timeout);
         let result = iso.with_module_host(&mut resolve, &mut load, |iso| {
             if mode == Mode::Module {
                 run_module(iso, root, unit, rel)
             } else {
-                run_script(iso, root, unit, rel)
+                run_script(iso, root, unit, rel, settle)
             }
         });
         if fault_for("late", rel) {
@@ -824,11 +826,15 @@ fn run_module(
 /// script Err -> terminated: that error, no checkpoint
 ///            -> else a checkpoint (same host) -> its termination, else the script's error
 /// ```
+///
+/// `settle` (an async test: the soft timeout): after an `Ok`, the host loop of
+/// [`settle_async_waiters`] runs until `$DONE` prints or no `Atomics.waitAsync` waiter is left.
 fn run_script(
     iso: &mut Isolate,
     root: &Path,
     unit: ep9_bytecode::VerifiedUnit,
     rel: &str,
+    settle: Option<Duration>,
 ) -> Result<(), Exception> {
     let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
     let mut load = |name: &str| load_module(root, name);
@@ -842,7 +848,16 @@ fn run_script(
         })
     });
     match r {
-        Ok(()) => Ok(()),
+        Ok(()) => match settle {
+            Some(timeout) => settle_async_waiters(iso, timeout, |iso| {
+                iso.with_cx(|cx| {
+                    cx.with_module_text_host(&mut resolve, &mut load, &mut text, |cx| {
+                        cx.perform_microtask_checkpoint()
+                    })
+                })
+            }),
+            None => Ok(()),
+        },
         Err(e) if script_ok || e.terminated => Err(e),
         // The script threw (its exception is taken): the jobs still run; a job's error after
         // it is dropped.
@@ -981,7 +996,7 @@ fn run_test(
                 harness: &mut *harness,
                 watchdog,
             };
-            cx.run(rel, &src, &meta, mode)
+            agent::run(&mut cx, rel, &src, &meta, mode)
         }))
         .unwrap_or_else(|_| infra("panic", format!("panic: {}", take_panic())));
         // Past the deadline: a timeout even if the run returned, never a pass or a failure.
@@ -1607,9 +1622,9 @@ pub fn run(opts: &Options) -> ExitCode {
         "--feedback".into(),
         opts.feedback.name().into(),
     ];
-    // A test has at most 2 runs; each gets the soft timeout, then a margin. A worker that
-    // gives no result by then is stuck where the interrupt check does not reach: kill it.
-    let hard = opts.timeout * 2 + Duration::from_secs(5);
+    // A test has at most 2 runs; each gets the soft timeout and the agent stop grace, then
+    // a margin. A worker with no result by then is stuck where no interrupt reaches: kill it.
+    let hard = opts.timeout * 2 + agent::STOP_GRACE * 2 + Duration::from_secs(5);
     let workers = Workers {
         subcommand: "exec-worker",
         args: &worker_args,
@@ -2011,6 +2026,39 @@ fn heap_mode(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Result<(bool, 
     Ok((generational, major_every))
 }
 
+/// How long the host loop of an async test sleeps at most before it looks at the test again.
+const SETTLE_TICK: Duration = Duration::from_millis(2);
+
+/// The host loop of an async test (TypedArray TA-4, O8): while the main isolate has
+/// `Atomics.waitAsync` waiters and the test has not printed its async result, sleep until one
+/// can end (a notify from an agent, its timeout, or [`SETTLE_TICK`]:
+/// `Isolate::block_for_async_waiters`), then run `checkpoint` (a microtask checkpoint, which
+/// resolves their promises and runs the jobs). A shell's event loop does the same. It ends with
+/// a termination at `timeout` after its start, or once `block_for_async_waiters` reports that
+/// the isolate is terminated (the watchdog terminates it by then, but an idle isolate runs no
+/// JS that would poll it).
+fn settle_async_waiters(
+    iso: &mut Isolate,
+    timeout: Duration,
+    mut checkpoint: impl FnMut(&mut Isolate) -> Result<(), Exception>,
+) -> Result<(), Exception> {
+    let deadline = Instant::now() + timeout;
+    while iso.async_waiter_count() > 0 && !OUT.with(|o| o.borrow().contains("Test262:AsyncTest")) {
+        // The deadline first; `block_for_async_waiters` is true when the isolate is terminated.
+        if Instant::now() >= deadline || iso.block_for_async_waiters(SETTLE_TICK) {
+            return Err(Exception {
+                message: "the async waiters did not end before the timeout".to_string(),
+                constructor: None,
+                stack: None,
+                location: None,
+                terminated: true,
+            });
+        }
+        checkpoint(iso)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2041,7 +2089,7 @@ mod tests {
             |referrer: &str, specifier: &str| resolve_module(&root, referrer, specifier);
         let mut load = |name: &str| load_module(&root, name);
         let r = iso.with_module_host(&mut resolve, &mut load, |iso| {
-            run_script(iso, &root, unit, "test/main.js")
+            run_script(iso, &root, unit, "test/main.js", None)
         });
         let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
         let _ = std::fs::remove_dir_all(&root);

@@ -107,9 +107,14 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_intl::display_names::BLOCK, 37);
     // INTL W3: relative_time_format.
     assert_eq!(ep9_intl::relative_time_format::BLOCK, 38);
-    // INTL W4: date_time_format, duration_format.
-    assert_eq!(ep9_intl::date_time_format::BLOCK, 39);
-    assert_eq!(ep9_intl::duration_format::BLOCK, 40);
+    assert_eq!(ep9_builtins::typed_array::BLOCK, 41);
+    assert_eq!(ep9_builtins::typed_array::proto::BLOCK, 42);
+    assert_eq!(ep9_builtins::typed_array::base64::BLOCK, 43);
+    assert_eq!(ep9_builtins::atomics::BLOCK, 44);
+    // INTL W4: date_time_format, duration_format (after the TypedArray
+    // blocks 39-44; INTL sync m8-p5).
+    assert_eq!(ep9_intl::date_time_format::BLOCK, 45);
+    assert_eq!(ep9_intl::duration_format::BLOCK, 46);
 }
 
 #[test]

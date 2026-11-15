@@ -20,8 +20,10 @@
 //!                             30    31      32        33            34
 //!                             list_format, segmenter, display_names, relative_time_format,
 //!                             35           36         37             38
-//!                             date_time_format, duration_format]
-//!                             39                40
+//!          array_buffer, data_view, typed_array, typed_array_proto, base64, atomics,
+//!          39            40         41           42                 43      44
+//!          ep9_intl::MODULES (W4, after the TA blocks): date_time_format, duration_format]
+//!                                                       45                46
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -54,6 +56,13 @@ pub mod bigint;
 pub mod iterator;
 // M7-P3 SPEC-ERM: block 29.
 pub mod disposable;
+// TypedArray TA-2 TA-BUFFERS: blocks 39 and 40.
+pub mod array_buffer;
+pub mod data_view;
+// TypedArray TA-3 TA-CTORS: block 41; TA-4: its modules proto (block 42) and base64 (43).
+pub mod typed_array;
+// TypedArray TA-4 TA-ATOMICS: block 44.
+pub mod atomics;
 
 use ep9_vm::{BuiltinModule, BuiltinTable};
 
@@ -104,7 +113,22 @@ pub const MODULES: &[BuiltinModule] = &[
     ep9_intl::display_names::MODULE,
     // INTL W3 (the RTF skeleton; RTF fills it): the lazy group "Intl".
     ep9_intl::relative_time_format::MODULE,
-    // INTL W4 (the DTF-OPT skeleton; DTF-OPT and DURATION fill them): the lazy group "Intl".
+    // TypedArray TA-2 TA-BUFFERS: ArrayBuffer, SharedArrayBuffer, DataView; the lazy group of
+    // the keys `ArrayBuffer`, `SharedArrayBuffer` and `DataView` (TA-D14).
+    array_buffer::MODULE,
+    data_view::MODULE,
+    // TypedArray TA-3 TA-CTORS: %TypedArray% and the 12 TypedArray constructors; their 12
+    // global keys join the lazy group of `array_buffer` (TA-D14).
+    typed_array::MODULE,
+    // TypedArray TA-4: the %TypedArray.prototype% methods, the Uint8Array base64 and hex
+    // methods (both join the lazy group of `array_buffer`: each entry targets a group
+    // intrinsic) and %Atomics% (its global key is a key of the group, TA-D14). Install order
+    // sets property order: node's `Uint8Array` keys put `fromBase64` after `BYTES_PER_ELEMENT`.
+    typed_array::proto::MODULE,
+    typed_array::base64::MODULE,
+    atomics::MODULE,
+    // INTL W4 (the DTF-OPT skeleton; DTF-OPT and DURATION fill them): the lazy group "Intl";
+    // blocks 45 and 46, after the TypedArray blocks 39-44 (INTL sync m8-p5).
     ep9_intl::date_time_format::MODULE,
     ep9_intl::duration_format::MODULE,
 ];

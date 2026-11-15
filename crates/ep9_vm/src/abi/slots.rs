@@ -14,7 +14,7 @@
 //! | Method | Spec | Errors |
 //! |---|---|---|
 //! | `new_object_with_slots(proto, class, n)` | OrdinaryObjectCreate(proto, internalSlotsList) (§10.1.12) | none; panics if `n` > [`ObjectClass::MAX_SLOTS`] |
-//! | `slot(o, class, i)`, `set_slot(o, class, i, v)` | RequireInternalSlot(O, slot) (§10.1.15), then read or write | TypeError if `o` is not an object of `class`; panics if `i` ≥ the object's slot count |
+//! | `slot(o, class, i)`, `set_slot(o, class, i, v)` | RequireInternalSlot(O, slot) (§10.1.15), then read or write | TypeError if `o` is not an object of `class`; panics if `i` ≥ the object's slot count; on a buffer or a DataView that `abi/typed.rs` made (an engine object), `set_slot` panics, and `slot` for an engine word ([`Cx::set_slot`]) |
 //! | `object_class(v)` | "has a `[[PromiseState]]` internal slot" tests: IsPromise (§27.2.1.6), the builtinTag of `Object.prototype.toString` (§20.1.3.6) | none |
 //!
 //! The class decides what each slot index means; the builtin module of the class names its
@@ -52,8 +52,8 @@ pub enum ObjectClass {
     /// A Set instance: `[[SetData]]`.
     Set,
     /// An ArrayBuffer instance: `[[ArrayBufferData]]`, `[[ArrayBufferByteLength]]`,
-    /// `[[ArrayBufferMaxByteLength]]`, `[[ArrayBufferDetachKey]]`. Slots hold Values: the
-    /// byte store itself needs a native-data addition (not in M0 month 2).
+    /// `[[ArrayBufferMaxByteLength]]`, `[[ArrayBufferDetachKey]]`. Made by the `Cx` methods of
+    /// `abi/typed.rs` (TA-1), which own the slots of their buffers ([`Cx::set_slot`]).
     ArrayBuffer,
     /// A RegExp instance: `[[OriginalSource]]`, `[[OriginalFlags]]`, `[[RegExpRecord]]` (bit 8:
     /// `[[LegacyFeaturesEnabled]]`, M5-P2), `[[RegExpMatcher]]`, `[[Realm]]` (Annex B, M5-P2;
@@ -142,6 +142,16 @@ pub enum ObjectClass {
     /// String); the other slots are named in `ep9_intl` relative_time_format.rs. No ICU4X object
     /// is in a slot.
     IntlRelativeTimeFormat,
+    /// A SharedArrayBuffer instance (§25.2; TypedArray TA-0 TA-DECL, design TA-D3): the slot
+    /// form of [`ObjectClass::ArrayBuffer`] (`docs/plan/notes/typedarray-design.md` §2.2); its
+    /// bytes are a shared block off the heap, never detached. Made by the `Cx` methods of
+    /// `abi/typed.rs` (TA-1 TA-VM fills them), which own its slots ([`Cx::set_slot`]).
+    SharedArrayBuffer,
+    /// A DataView instance (§25.3; TA-0 TA-DECL, TA-D3): `[[ViewedArrayBuffer]]`,
+    /// `[[ByteOffset]]`, `[[ByteLength]]` and the cached data address (an `ExternalRef<u8>`
+    /// native word, the H25 inventory) in its slots (design §2.2). Made by the `Cx` methods of
+    /// `abi/typed.rs`, which own its slots ([`Cx::set_slot`]).
+    DataView,
     /// An Intl.DateTimeFormat instance (ECMA-402 §11, INTL W4): slot 0 `[[Locale]]` (a String);
     /// the other slots are named in `ep9_intl` date_time_format.rs. No ICU4X object is in a slot.
     IntlDateTimeFormat,
@@ -189,6 +199,8 @@ impl ObjectClass {
         ObjectClass::IntlSegmentIterator,
         ObjectClass::IntlDisplayNames,
         ObjectClass::IntlRelativeTimeFormat,
+        ObjectClass::SharedArrayBuffer,
+        ObjectClass::DataView,
         ObjectClass::IntlDateTimeFormat,
         ObjectClass::IntlDurationFormat,
     ];
@@ -249,6 +261,8 @@ impl ObjectClass {
             ObjectClass::IntlSegmentIterator => "Segment Iterator",
             ObjectClass::IntlDisplayNames => "Intl.DisplayNames",
             ObjectClass::IntlRelativeTimeFormat => "Intl.RelativeTimeFormat",
+            ObjectClass::SharedArrayBuffer => "SharedArrayBuffer",
+            ObjectClass::DataView => "DataView",
             ObjectClass::IntlDateTimeFormat => "Intl.DateTimeFormat",
             ObjectClass::IntlDurationFormat => "Intl.DurationFormat",
         }
@@ -283,7 +297,10 @@ impl<'s> Cx<'s> {
 
     /// RequireInternalSlot(o, …) (§10.1.15), then internal slot `i` of `o`: a TypeError if `o`
     /// is not an object of `class`. Panics if `i` ≥ the slot count the object was made with
-    /// (a bug in the builtin).
+    /// (a bug in the builtin), or if `o` is a buffer or a DataView that `abi/typed.rs` made (an
+    /// engine object, [`Cx::set_slot`]) and the slot holds an engine word, not a JS value: the
+    /// store (slot 0) of a buffer; slots 3 and 4 of a DataView (the data address and the index
+    /// of its table entry).
     pub fn slot(
         &mut self,
         o: impl Into<Local<'s>>,
@@ -291,12 +308,34 @@ impl<'s> Cx<'s> {
         i: usize,
     ) -> JsResult<Local<'s>> {
         let o = self.require_class(o.into(), class)?;
+        if let Some(read) = engine_readable(class)
+            && crate::array_buffer::is_engine_object(self.rt(), o)
+        {
+            assert!(
+                read.contains(&i),
+                "internal slot {i} of an engine {} is the engine's",
+                class.name()
+            );
+        }
         Ok(Self::local(object::slot_get(o, i)))
     }
 
     /// RequireInternalSlot(o, …) (§10.1.15), then sets internal slot `i` of `o` to `v`: a
     /// TypeError if `o` is not an object of `class`. Panics if `i` ≥ the slot count the object
-    /// was made with (a bug in the builtin).
+    /// was made with (a bug in the builtin), or if `o` is an engine object (below; the panic is
+    /// in `object::slot_set`, which every slot write of the VM goes through).
+    ///
+    /// **Engine objects** (Codex TA-1 r1 finding 1; TA-1 fixer r3). An ArrayBuffer,
+    /// SharedArrayBuffer or DataView that `abi/typed.rs` makes owns the buffer table entry
+    /// that its table slot names (buffer slot 5, DataView slot 4) from its birth: that is its
+    /// brand, which no safe call can give another object. The store, byte length, flags and
+    /// table index of a buffer and the data address of a DataView bound every raw memory
+    /// access, so only `abi/typed.rs` writes these objects: `set_slot` (and every other slot
+    /// write) panics for each of their slots, and `slot` for each slot but the spec ones that
+    /// the builtins read (1-5 of a buffer; 0-2 of a DataView: buffer, offset, length). Every
+    /// other object of these classes, of any slot count, is the caller's (any slot, as for
+    /// every class), and `abi/typed.rs` does not take it for a buffer or a DataView (a
+    /// TypeError there).
     pub fn set_slot(
         &mut self,
         o: impl Into<Local<'s>>,
@@ -317,5 +356,21 @@ impl<'s> Cx<'s> {
         }
         let msg = format!("{} is not a {} object", conv::describe(b), class.name());
         Err(self.throw_type_error(&msg))
+    }
+}
+
+/// For the classes whose engine objects `abi/typed.rs` makes (ArrayBuffer, SharedArrayBuffer,
+/// DataView): the slots of an engine object that [`Cx::slot`] may read. The others hold
+/// engine words, not JS values: a buffer's store (slot 0); a DataView's data address and the
+/// index of its table entry (slots 3 and 4). `None` for the other classes ([`Cx::set_slot`]).
+#[inline]
+fn engine_readable(class: ObjectClass) -> Option<core::ops::RangeInclusive<usize>> {
+    use crate::array_buffer::{dv_slot, slot};
+    match class {
+        ObjectClass::ArrayBuffer | ObjectClass::SharedArrayBuffer => {
+            Some(slot::BYTE_LENGTH..=slot::TABLE)
+        }
+        ObjectClass::DataView => Some(dv_slot::BUFFER..=dv_slot::BYTE_LENGTH),
+        _ => None,
     }
 }

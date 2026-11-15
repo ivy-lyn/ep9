@@ -328,6 +328,11 @@ pub(crate) struct Runtime {
     /// PROFILE5): each poll advances it. 0 = not seeded yet (the next poll starts the fixed
     /// sequence); `profile::JITTER_OFF` = no jitter (the fixed reset to `BUDGET`).
     pub call_window_jitter: Cell<u64>,
+    /// The buffer table (`array_buffer.rs`, TypedArray TA-1 TA-VM; design §5.1): the
+    /// off-heap stores of resizable ArrayBuffers and SharedArrayBuffers and the view list of
+    /// each buffer that has a view, indexed by the int32 a buffer holds. Rust memory with one
+    /// weak source: no Value is held strongly (plan rule 8).
+    pub buffers: crate::array_buffer::BufferTable,
 }
 
 /// The next [`Runtime::id`].
@@ -380,6 +385,7 @@ impl Runtime {
             deopt: crate::deopt::SideTable::new(),
             fuses: crate::fuse::Registry::new(&heap),
             call_window_jitter: Cell::new(0),
+            buffers: crate::array_buffer::BufferTable::new(&heap),
             heap,
             shared,
             units: RefCell::new(Vec::new()),

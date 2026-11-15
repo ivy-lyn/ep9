@@ -1474,8 +1474,10 @@ pub(crate) fn note_proto_index_key(rt: &Runtime, o: u64) {
 /// True if the object `o` may have an array-index own property: an array with a non-zero
 /// `length` (holes too), another object with an element (M5-P1 ELEM1), a String wrapper of a non-empty string, a stored index key, or a
 /// routed kind (ARGUMENTS, MODULE_NAMESPACE: its hooks answer for index keys that are not in
-/// its storage). Not a GC point. Out of line: [`proto_info_for`] runs it once per new
-/// prototype.
+/// its storage), or a TypedArray of any length, even 0 (MC-w26-4, design §4.2: its `[[Set]]`
+/// of an index with another receiver stores nothing, §10.4.5.5 step 1.b.ii, so it changes the
+/// store of every index on the objects below it). Not a GC point. Out of line:
+/// [`proto_info_for`] runs it once per new prototype.
 #[cold]
 #[inline(never)]
 fn may_have_index_keys(o: u64) -> bool {
@@ -1485,6 +1487,7 @@ fn may_have_index_keys(o: u64) -> bool {
         || (0..object::own_count(o))
             .any(|i| key::array_index_of(object::own_entry(o, i).0).is_some())
         || crate::exotic::is_routed(kind::cell_kind(o))
+        || kind::is_view(o)
 }
 
 /// The PROTO_INFO for the prototype `p` (an object, or null). The first call for an object

@@ -18,6 +18,9 @@
 //!
 //! Scalars are plain, 'single-quoted' or "double-quoted". A plain scalar that YAML would read
 //! as a number, bool or null is an error, because the runner needs strings.
+//!
+//! Flags are kept as written. The two `[[CanBlock]]` flags ([`Meta::can_block`]) cannot come
+//! together: no agent can run such a test, so the front matter is an error.
 
 use std::fmt::Write as _;
 
@@ -47,7 +50,25 @@ impl Meta {
     pub fn is_parse_negative(&self) -> bool {
         self.negative.as_ref().is_some_and(|n| n.phase == "parse")
     }
+
+    /// The `[[CanBlock]]` value of the agent that may run the test (INTERPRETING.md, flags
+    /// `CanBlockIsFalse` and `CanBlockIsTrue`): `Some(false)`, `Some(true)`, or `None` when
+    /// any agent may run it. [`parse`] refuses a test with both flags.
+    pub fn can_block(&self) -> Option<bool> {
+        if self.has_flag(CAN_BLOCK_IS_TRUE) {
+            Some(true)
+        } else if self.has_flag(CAN_BLOCK_IS_FALSE) {
+            Some(false)
+        } else {
+            None
+        }
+    }
 }
+
+/// The flag of a test that only an agent whose `[[CanBlock]]` is false may run.
+pub const CAN_BLOCK_IS_FALSE: &str = "CanBlockIsFalse";
+/// The flag of a test that only an agent whose `[[CanBlock]]` is true may run.
+pub const CAN_BLOCK_IS_TRUE: &str = "CanBlockIsTrue";
 
 const OPEN: &str = "/*---";
 const CLOSE: &str = "---*/";
@@ -184,6 +205,11 @@ fn parse_yaml(body: &str) -> Result<Meta, String> {
             "negative" => meta.negative = Some(parse_negative(entry).map_err(at)?),
             _ => check_skipped_value(entry.inline).map_err(at)?,
         }
+    }
+    if meta.has_flag(CAN_BLOCK_IS_FALSE) && meta.has_flag(CAN_BLOCK_IS_TRUE) {
+        return Err(format!(
+            "flags {CAN_BLOCK_IS_FALSE} and {CAN_BLOCK_IS_TRUE} together: no agent may run the test"
+        ));
     }
     Ok(meta)
 }
@@ -555,6 +581,26 @@ mod tests {
         }
         assert!(parse("no front matter").is_err());
         assert!(parse("/*--- flags: [a]").is_err());
+    }
+
+    /// The `[[CanBlock]]` flags (INTERPRETING.md): one of them names the agent that may run
+    /// the test; both together is an error, never a guess (TypedArray TA-2 TA-HARNESS).
+    #[test]
+    fn can_block_flags() {
+        assert_eq!(
+            fm("flags: [CanBlockIsTrue]").unwrap().can_block(),
+            Some(true)
+        );
+        assert_eq!(
+            fm("flags: [onlyStrict, CanBlockIsFalse]")
+                .unwrap()
+                .can_block(),
+            Some(false)
+        );
+        assert_eq!(fm("flags: [async]").unwrap().can_block(), None);
+        assert_eq!(fm("description: x").unwrap().can_block(), None);
+        let e = fm("flags: [CanBlockIsFalse, CanBlockIsTrue]").unwrap_err();
+        assert!(e.contains("no agent may run the test"), "{e}");
     }
 
     #[test]

@@ -2113,3 +2113,135 @@ fn a_record_runs_only_for_a_new_bit_and_sees_a_vector_made_by_a_poll() {
     };
     assert!(slots(never, || no_change_program().0)[1].is_none());
 }
+
+// ---- The pair no-change test of a TestEqual exit (M8-P5 LEVER-8) ---------------------------
+
+/// The turns of the loop of [`nullish_pair_program`]. Fewer than [`NO_CHANGE_TURNS`]: a debug
+/// build has no tail calls, so each instruction of the run nests a native frame, and the
+/// frames of this loop (3 `TestEqual` sites a turn) would pass the debug stack floor
+/// (`interp::dsl::debug_native_stack_check`) in 10,600 turns. The test starts the budget low
+/// to reach a poll in the loop instead.
+const PAIR_TURNS: i32 = 300;
+
+/// The script calls function 1 (`f`) once. `f` runs [`PAIR_TURNS`] turns of a loop with
+/// three `TestEqual` sites, each with null or undefined on a side (the only pairs `TestEqual`
+/// leaves to its record, `interp/ops.rs`): `o == null` with `o` an object (RECEIVER |
+/// NULLISH), `null == u` with `u` undefined (NULLISH) and `d == undefined` with `d` = 1.5
+/// (OTHER). Each turn gives the same bits, so after the first record a `full` sibling handler
+/// finds no new bit and tail-calls `skip_next` (`interp::dsl::record_pair_exit`). On the last
+/// turn `o` is 7 and `u` is a string: two new OTHER bits that must still reach the slots, one
+/// with null on the right and one with null on the left. Returns the three slots of `f`.
+fn nullish_pair_program() -> (VerifiedUnit, [FeedbackSlot; 3]) {
+    let mut s = Asm::script(0);
+    let site = s.b.feedback_slot(FeedbackSlotKind::Call);
+    let kf = s.b.function_constant(FunctionId(1));
+    let f = s.b.new_register();
+    s.b.create_closure(kf, s.closure, 0).star(f);
+    s.b.call_undefined_receiver0(f, site);
+    s.b.lda_undefined().return_();
+
+    let mut fa = Asm::new(meta("f", 0, 0, 0, 0));
+    let k_obj = fa.b.feedback_slot(FeedbackSlotKind::CompareOp);
+    let k_null = fa.b.feedback_slot(FeedbackSlotKind::CompareOp);
+    let k_other = fa.b.feedback_slot(FeedbackSlotKind::CompareOp);
+    let (o, n, u, d) = (
+        fa.b.new_register(),
+        fa.b.new_register(),
+        fa.b.new_register(),
+        fa.b.new_register(),
+    );
+    fa.b.create_empty_object_literal().star(o);
+    fa.b.lda_null().star(n);
+    fa.b.lda_undefined().star(u);
+    fa.lda_num(1.5);
+    fa.b.star(d);
+    counted_loop(&mut fa, PAIR_TURNS, |s, i| {
+        s.b.ldar(n).test_equal(o, k_obj);
+        s.b.ldar(u).test_equal(n, k_null);
+        s.b.lda_undefined().test_equal(d, k_other);
+        // After the second-to-last turn: the values of the last turn.
+        let keep = s.b.new_label();
+        s.b.lda_smi(PAIR_TURNS - 2)
+            .test_equal_strict(i, s.cmp)
+            .jump_if_false(keep);
+        s.b.lda_smi(7).star(o);
+        s.lda_str("not null");
+        s.b.star(u);
+        s.b.bind(keep);
+    });
+    fa.b.lda_undefined().return_();
+    (
+        unit("", vec![s.finish(), fa.finish()]),
+        [k_obj, k_null, k_other],
+    )
+}
+
+/// M8-P5 LEVER-8: a `full` sibling `TestEqual` handler finds the bits of its pair itself
+/// (`profile::nullish_pair_bits`) and records only a new bit (`record_next`), else it
+/// tail-calls `skip_next`. The slots must be what `profile::record_pair` on every execution
+/// gives: the bits of the many same turns, plus the OTHER bit of the last turn, the same in
+/// every dispatch expansion (`slots` compares the match loop, which records inline with
+/// `record_pair`, with the sibling handlers) and GC mode, with the vector made at the first
+/// instruction (threshold 0) or at the first budget poll in the loop (threshold 1000, a budget
+/// of 100 at the start: before the poll the test finds no vector and records nothing).
+/// `u32::MAX`: no vector at all.
+#[test]
+fn a_test_equal_pair_records_only_a_new_bit() {
+    let k = nullish_pair_program().1;
+    let obj_null = cmp(CompareHint::RECEIVER) | cmp(CompareHint::NULLISH);
+    let want = [
+        obj_null | cmp(CompareHint::OTHER),
+        cmp(CompareHint::NULLISH) | cmp(CompareHint::OTHER),
+        cmp(CompareHint::OTHER),
+    ];
+    for (threshold, budget) in [(0, None), (1000, Some(100))] {
+        let how = How {
+            threshold,
+            budget,
+            ..RUN
+        };
+        let got = assert_no_records(how, || nullish_pair_program().0);
+        for (i, (&slot, &w)) in k.iter().zip(&want).enumerate() {
+            assert_eq!(value(&got, 1, slot), w, "threshold {threshold}, site {i}");
+            assert_eq!(
+                key(&got, 1, slot),
+                Key::Undefined,
+                "site {i}: key untouched"
+            );
+        }
+    }
+    let never = How {
+        threshold: u32::MAX,
+        ..RUN
+    };
+    assert!(slots(never, || nullish_pair_program().0)[1].is_none());
+}
+
+/// M8-P5 LEVER-8: in the `full` sibling expansion (threshold 0: `f` has its vector at its
+/// first instruction) the pairs of [`nullish_pair_program`] run
+/// `record_next` only for their 5 new bits (2 + 2 + 1 over the 3 sites) and never
+/// `record_pair_next`; up to M8-P4 each of the 900 pairs ran `record_pair_next`. Counted by
+/// `interp::dsl::exit_count` on the thread of the run.
+#[test]
+fn a_test_equal_pair_with_no_new_bit_runs_no_record_exit() {
+    use crate::interp::dsl::exit_count::{RECORD, RECORD_PAIR};
+    let (record, pair) = on_big_stack(|| {
+        let mut iso = isolate(IsolateConfig {
+            feedback_threshold: 0,
+            ..config(Dispatch::Sibling, false)
+        });
+        RECORD.with(|n| n.set(0));
+        RECORD_PAIR.with(|n| n.set(0));
+        let r = iso.with_cx_checkpoint(|cx| {
+            cx.run_script(nullish_pair_program().0, "profile.js")
+                .map(|_| ())
+        });
+        assert!(r.is_ok(), "{r:?}");
+        (RECORD.with(|n| n.get()), RECORD_PAIR.with(|n| n.get()))
+    });
+    assert_eq!(
+        (record, pair),
+        (5, 0),
+        "(record_next, record_pair_next) runs"
+    );
+}

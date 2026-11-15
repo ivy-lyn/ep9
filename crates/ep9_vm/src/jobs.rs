@@ -7,6 +7,8 @@
 //!   roots (a heap root source, as symbol.rs):  queue head ──> job ──> job ──> ... <── queue tail
 //!                                              rejected head ──> record <─> ... <── rejected tail (both ways)
 //!                                              async modules: ELEMENTS [n, MODULE ..] (module.rs)
+//!                                              async waiters: record ──> record ──> ... (TA-4)
+//!   agent:    the waiter-list agent (`ep9_platform::waiters::Agent`: inbox, [[CanBlock]])
 //!   closures: one FunctionInfo per (behaviour, name, length), boxed, never freed
 //!   tracker:  IsolateConfig::promise_rejection_tracker
 //!
@@ -14,7 +16,8 @@
 //! a record     SLOT_OBJECT, ObjectClass::PromiseReaction, null prototype; JS never sees one:
 //!              a reaction ([`reaction`]), a job ([`job`]), the state of a pair of resolving
 //!              functions ([`resolving`]), the state of a capability executor ([`executor`]),
-//!              an entry of the rejected list ([`rejected`]), or closure data of the builtins
+//!              an entry of the rejected list ([`rejected`]), an async waiter
+//!              ([`async_waiter`]), or closure data of the builtins
 //! ```
 //!
 //! Every list is a chain of heap records (plan rule 8): no Rust `Vec` or `VecDeque` holds a
@@ -124,19 +127,35 @@ pub(crate) mod rejected {
     pub const COUNT: usize = 3;
 }
 
-/// The roots of the job state: the two lists (head and tail each), and the list of the
-/// modules whose async evaluation may still be pending (`module.rs`).
+/// An async waiter of `Atomics.waitAsync` (TypedArray TA-4; `abi/typed.rs`): the promise of
+/// the waiter with this id in the isolate's [`ep9_platform::waiters::Agent`]. The waiter list
+/// holds the id only (Rust values); the promise lives here, in a chain from
+/// [`JobState::async_waiters`], until a notify or the timeout resolves it.
+pub(crate) mod async_waiter {
+    /// The waiter id (a Number).
+    pub const ID: usize = 0;
+    /// The promise of the `{ async: true, value: promise }` result.
+    pub const PROMISE: usize = 1;
+    /// The next record of the chain (undefined: last).
+    pub const NEXT: usize = 2;
+    pub const COUNT: usize = 3;
+}
+
+/// The roots of the job state: the two lists (head and tail each), the list of the modules
+/// whose async evaluation may still be pending (`module.rs`) and the chain of async waiters.
 struct JobRoots {
     queue_head: Cell<u64>,
     queue_tail: Cell<u64>,
     rejected_head: Cell<u64>,
     rejected_tail: Cell<u64>,
     async_modules: Cell<u64>,
+    async_waiters: Cell<u64>,
 }
 
 impl JobRoots {
     fn trace(&self, t: &mut Tracer<'_>) {
         t.visit_bits(self.async_modules.get());
+        t.visit_bits(self.async_waiters.get());
         #[cfg(test)]
         if NEGATIVE_CONTROL_UNTRACED_QUEUE.with(Cell::get) {
             return;
@@ -168,6 +187,10 @@ pub(crate) struct JobState {
     closures: RefCell<HashMap<ClosureKey, Box<FunctionInfo>>>,
     /// The embedder's HostPromiseRejectionTracker hook.
     tracker: Cell<Option<PromiseRejectionTracker>>,
+    /// The isolate's agent of the process waiter list (TypedArray TA-4): its async waiters (ids
+    /// and deadlines), its inbox and `[[CanBlock]]`. Rust values only; its drop removes the
+    /// isolate's async waiters from the list.
+    agent: ep9_platform::waiters::Agent,
 }
 
 impl JobState {
@@ -179,6 +202,7 @@ impl JobState {
             rejected_head: Cell::new(UNDEFINED),
             rejected_tail: Cell::new(UNDEFINED),
             async_modules: Cell::new(UNDEFINED),
+            async_waiters: Cell::new(UNDEFINED),
         });
         let source = Rc::clone(&roots);
         heap.add_root_source(move |t| source.trace(t));
@@ -186,7 +210,22 @@ impl JobState {
             roots,
             closures: RefCell::new(HashMap::new()),
             tracker: Cell::new(None),
+            agent: ep9_platform::waiters::Agent::new(),
         }
+    }
+
+    /// The first record of the async-waiter chain ([`async_waiter`]), or undefined.
+    pub fn async_waiters(&self) -> u64 {
+        self.roots.async_waiters.get()
+    }
+
+    pub fn set_async_waiters(&self, v: u64) {
+        self.roots.async_waiters.set(v);
+    }
+
+    /// The isolate's waiter-list agent.
+    pub fn agent(&self) -> &ep9_platform::waiters::Agent {
+        &self.agent
     }
 
     pub fn queue_head(&self) -> u64 {

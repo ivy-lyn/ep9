@@ -47,7 +47,7 @@
 //! | Flow | Fast bodies | Record (sibling: tail-called function) |
 //! |---|---|---|
 //! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next::<PLACE>`: it reads the slot operand at its constant offset) |
-//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<PLACE>`: it gets the pair) |
+//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<OP>`: it gets the pair; `TestEqual` first: [`nullish_pair_bits`]) |
 //! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
 //!
 //! The match loop, `become` and the prefixed step record inline (`Flow::recorded`).
@@ -1134,4 +1134,51 @@ pub(crate) fn adds_bit(st: &St<'_>, s: FSlot, bits: u32) -> bool {
     let old = value(v, s.0);
     debug_assert!(is_i32(old), "a profile slot holds an int32: {old:#x}");
     old as u32 & bits != bits
+}
+
+// ---- The pair no-change test of a RecordPair exit (M8-P5 LEVER-8) --------------------------
+//
+// `interp::Flow::RecordPair` had no no-change test (M8-P1 RECCOST2 gave one only to
+// `Flow::Record`): every pair tail-called `interp::dsl::record_pair_next`, which ran the whole
+// [`compare_bits`] (the class of each operand, a cell kind read and an atom test for each
+// cell, then the class pair) before its test. `TestEqual` gives a pair only with null or
+// undefined on a side (`interp/ops.rs`, the `x == null` arm), and the bits of such a pair need
+// much less ([`nullish_pair_bits`]): two nullish values give NULLISH; an object (a cell whose
+// kind is a receiver kind, [`KIND_CLASS`]) gives RECEIVER | NULLISH; any other value gives
+// OTHER (its class with NULLISH is no class pair of `compare_pair`). So the `full` sibling
+// handler of `TestEqual` finds these bits and runs the test of [`adds_bit`] (the pair form of
+// the RECCOST2 test, `interp::dsl::record_pair_exit`): no new bit, the tail call of
+// `skip_next`; a new bit, the tail call of `record_next` with these bits ([`record`] stores
+// them as [`record_pair`] would), so every slot gets the same bits (FACT_SCHEMA 2). The oracle
+// of `tests::feedback` checks [`nullish_pair_bits`] against the old `compare_bits` on every
+// pair of its value set.
+
+const _: () = assert!(NULL | 8 == UNDEFINED && UNDEFINED | 8 == UNDEFINED && NULL != UNDEFINED);
+
+/// The [`compare_bits`] of the pair `l`, `r` if null or undefined is on a side, else `None`:
+/// NULLISH for two nullish values, RECEIVER | NULLISH for a nullish value and an object, else
+/// OTHER. One cell kind read at most; no atom test.
+#[inline(always)]
+pub(crate) fn nullish_pair_bits(l: u64, r: u64) -> Option<u32> {
+    // `v | 8 == UNDEFINED` holds for null and undefined only (the `compare_operand` test).
+    let other = if l | 8 == UNDEFINED {
+        r
+    } else if r | 8 == UNDEFINED {
+        l
+    } else {
+        return None;
+    };
+    let h = if other | 8 == UNDEFINED {
+        CompareHint::NULLISH.bits()
+    } else if other >> 49 == 0
+        && other & OTHER_TAG == 0
+        // SAFETY: a cell Value held by the VM is live (crate invariant, object.rs).
+        && KIND_CLASS[usize::from(unsafe { cell_ptr(other).header() }.kind())]
+            == CompareHint::RECEIVER
+    {
+        CompareHint::RECEIVER.bits() | CompareHint::NULLISH.bits()
+    } else {
+        CompareHint::OTHER.bits()
+    };
+    Some(u32::from(h))
 }

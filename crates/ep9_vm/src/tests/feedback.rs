@@ -701,9 +701,12 @@ fn old_compare_bits(l: u64, r: u64) -> u32 {
     u32::from(h)
 }
 
-/// Checks `profile::compare_bits` against the oracle on every pair of `values`; returns the
-/// number of pairs.
+/// Checks `profile::compare_bits` against the oracle on every pair of `values`, and
+/// `profile::nullish_pair_bits` (M8-P5 LEVER-8: the bits of a `TestEqual` pair, which has null
+/// or undefined on a side) too: the oracle's bits when a side is null or undefined, else none.
+/// Returns the number of pairs.
 fn check_compare_pairs(values: &[u64]) -> usize {
+    use crate::frame::NULL;
     let mut n = 0;
     for &l in values {
         for &r in values {
@@ -711,6 +714,12 @@ fn check_compare_pairs(values: &[u64]) -> usize {
                 crate::profile::compare_bits(l, r),
                 old_compare_bits(l, r),
                 "compare_bits({l:#x}, {r:#x})"
+            );
+            let nullish = [l, r].iter().any(|&v| v == NULL || v == UNDEFINED);
+            assert_eq!(
+                crate::profile::nullish_pair_bits(l, r),
+                nullish.then(|| old_compare_bits(l, r)),
+                "nullish_pair_bits({l:#x}, {r:#x})"
             );
             n += 1;
         }
