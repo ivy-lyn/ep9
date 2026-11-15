@@ -12,6 +12,9 @@
 //!   gen/t2.rs       T2_*                the unit patterns of the sanctioned units and of the
 //!                                       CLDR compound units of two of them, per CLDR locale
 //!                                       and width (crate::number_format::unit)
+//!   gen/collator_search/mod.rs  SEARCH_COLLATIONS  the search collations (`-u-co-search`),
+//!                                       from the ICU export data of the ICU4X compiled data
+//!                                       (`collator-search` mode; crate::collator::search)
 //! ```
 //!
 //! The CLDR version of the tables is the CLDR version of the ICU4X compiled data (the tests of
@@ -74,6 +77,10 @@ mod t1;
 #[rustfmt::skip]
 #[path = "gen/t2.rs"]
 mod t2;
+/// `SEARCH_COLLATIONS`.
+#[rustfmt::skip]
+#[path = "gen/collator_search/mod.rs"]
+pub(crate) mod collator_search;
 
 use icu_plurals::PluralCategory;
 use icu_provider::DataLocale;
