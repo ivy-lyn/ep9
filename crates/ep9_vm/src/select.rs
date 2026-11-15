@@ -95,7 +95,7 @@ pub(crate) struct CodeObject {
     pub(crate) state: ObjectState,
     /// The CPU feature bits the code needs; each must be in [`Session::cpu`].
     pub(crate) cpu: u64,
-    /// Its InvalidatingFuse dependencies.
+    /// Its fuse refs ([`Dep`]: a GuardFuse read or an InvalidatingFuse dependency).
     pub(crate) deps: Vec<Dep>,
 }
 
