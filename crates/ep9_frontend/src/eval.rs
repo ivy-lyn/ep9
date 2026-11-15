@@ -30,7 +30,7 @@
 //! | E2 | The label spans (oxc 0.158, `SemanticBuilder::new_compiler()`): `new.target` = the NewTarget node (parser error); `super.x`, `super[x]` = the Super node; `super()` = the whole CallExpression; `#x` = the PrivateIdentifier (`#x`, with the `#`). Only the error of the node's kind (`AllowKind`, matched by oxc's message) is dropped, and a Super counts only as the object of a non-optional `super.x` / `super[x]`: `super?.x`, `(super).x` and a bare `super` keep their errors | Measured, the table in `tests` and the oxc doc |
 //! | E3 | `new.target` and `super` are allowed only at the eval code's own function level (also inside arrows), never inside a function, method, field initializer or static block of the eval code | Those have their own `new.target` and home object; oxc reports nothing there when they are valid |
 //! | E4 | For indirect eval the context flags and `private_names` are ignored (treated as false and empty) | PerformEval: indirect eval is global code |
-//! | E5 | The completion value comes from an AST rewrite before oxc_semantic: value-producing statements store into the synthetic root binding `.result` (V8 `Rewriter`, src/parsing/rewriter.cc, ported statement by statement), and function 0 returns it. A function or class value is stored through a one-element sequence, so it gets no name | The statement generators (stmt.rs) have no completion register; the rewrite keeps the change inside this file. `eval("(function(){})").name` is `""` (node 24) |
+//! | E5 | The completion value comes from an AST rewrite before oxc_semantic: value-producing statements store into the synthetic root binding `.result` (V8 `Rewriter`, src/parsing/rewriter.cc, ported statement by statement), and function 0 returns it. A function or class value is stored through a one-element sequence, so it gets no name. (INTL W4 EVALSCRIPT) A Script from `compile_script_with_completion` (for `$262.evalScript`) gets the same rewrite (`with_script_completion`); its `.result` is a register of function 0, never a global binding | The statement generators (stmt.rs) have no completion register; the rewrite keeps the change inside this file. `eval("(function(){})").name` is `""` (node 24) |
 //! | E6 | (M3-P4) `super()` in eval code (allowed only when the caller's receiver function is a derived constructor: PerformEval step 10.b.iv inDerivedConstructor, also through arrows and nested eval) reaches the caller's `.callee`, `new.target` and `this` slots by name: `super_call` (expr.rs) binds `this` with `StaLookupSlot "this"`, which the VM runs as BindThisValue, and then always calls `RunClassFieldsInitializer`. Before M3-P4 it was Unsupported | No new id or opcode (ABI 5): no source text can store to `this`, so the store to that name was free to define (slow/lookup.rs) |
 //! | E7 | (M3-P2 VM-ARGS) An Annex B.3.2.3 block function of sloppy eval code: the prologue calls `DeclareEvalAnnexBFunction(name)` (ABI 5 id 46) after the eval code's own declarations and keeps its answer in a register; the declaration, when it runs, calls `StoreEvalAnnexBFunction(name, f)` (id 47) if the answer was true (`gen_eval_program`, `store_annex_b_var`). A var binding that only Annex B made gets no `DeclareEvalVar` | Whether it gets a var binding depends on the caller's environments at run time (B.3.2.3 steps ii.2.a-f): the VM decides it (`interp/slow/eval.rs`). Before M3-P2 this was Unsupported |
 //! | E7-ORDER | (M3-P2, RV2-ARGS1) The E7 Annex B bindings are declared after the eval code's own function and var bindings, in V8's order. The spec runs the B.3.2.3 steps at EvalDeclarationInstantiation step 13, before steps 17-18. Only the order of new global properties differs: `var aa1; { function bb1() {} } function cc1() {}` adds cc1, aa1, bb1 (spec: bb1, cc1, aa1; node v24.22.1: aa1, cc1, bb1) | Node is the oracle (plan rule): bb1 comes last, as in V8. The names never overlap, so no binding and no error changes |
@@ -597,6 +597,66 @@ fn rewrite_completion<'a>(ast: &AstBuilder<'a>, program: &mut Program<'a>) {
         let value = Expression::StringLiteral(oxc_allocator::Box::new_in(lit, ast));
         let store = r.store(value, last.span);
         program.body.insert(0, store);
+    }
+}
+
+/// The front end of a Script compiled with its completion value
+/// ([`bytecodegen::compile_script_with_completion`]): the `crate::with_front_end` steps, with
+/// the E5 rewrite between the parse and oxc_semantic. Only that entry calls it, so a Script
+/// compiled on any other path does not change.
+///
+/// ```text
+/// caller thread: prescan (layer 0)
+/// front-end worker: crate::parse (sloppy: the rewrite reads the source's own directives)
+///   rewrite_completion (`.result` stores; scope/resolve.rs places `.result` in a register)
+///   strict: force_strict; layer 2 again (the rewrite adds at most 2 levels)
+///   crate::semantic; `consumer` (the scope pass and BytecodeGen)
+/// ```
+///
+/// A Script has no allowed set and no shim (E1-E3, E8): every parser and semantic error stays
+/// an error, as in `crate::with_front_end`.
+pub(crate) fn with_script_completion<R, F>(
+    source: &str,
+    strictness: Strictness,
+    consumer: F,
+) -> Result<R, CodegenError>
+where
+    R: Send + 'static,
+    F: for<'f> FnOnce(&FrontEnd<'f>) -> Result<R, CodegenError> + Send + 'static,
+{
+    let estimate = crate::prescan::estimate(source.as_bytes(), false);
+    if estimate.depth > PRESCAN_CAP {
+        return Err(too_deep(DepthLayer::PreScan, source, estimate.at));
+    }
+    let owned = source.to_owned();
+    let job = move || {
+        let allocator = Allocator::default();
+        let sloppy = SourceOpts::script(Strictness::Sloppy);
+        let mut program = crate::parse(&allocator, &owned, sloppy)?;
+        rewrite_completion(&AstBuilder::new(&allocator), &mut program);
+        if strictness == Strictness::Strict {
+            crate::force_strict(&allocator, &mut program);
+        }
+        if let Err(deep) = crate::depth::check_ast_depth(&program, AST_CAP) {
+            return Err(too_deep(DepthLayer::Ast, &owned, deep.span.start));
+        }
+        let semantic = crate::semantic(&owned, &program)?;
+        consumer(&FrontEnd {
+            source: &owned,
+            opts: SourceOpts::script(strictness),
+            program: &program,
+            semantic: &semantic,
+        })
+    };
+    match crate::worker::run(crate::stack::WORKER_STACK_BYTES, job) {
+        Ok(result) => result,
+        Err(spawn) => Err(CompileError::Range(RangeError {
+            kind: RangeErrorKind::StackUnavailable,
+            message: spawn.message,
+            span: None,
+            position: None,
+        })
+        .into()),
     }
 }
 
