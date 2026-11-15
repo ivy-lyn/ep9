@@ -892,7 +892,7 @@ pub fn field_set(r: &Resolved) -> CompositeFieldSet {
 }
 
 /// The ICU4X preferences tag of `r`: the data locale of `[[Locale]]` with the resolved "ca",
-/// "hc" (h24 as h23: ICU4X has no h24) and "nu".
+/// "hc" (h24 as h23: ICU4X has no h24; `pattern::adjust` writes 24 for hour 0) and "nu".
 fn prefs_tag(r: &Resolved) -> String {
     let data_locale = tag::remove_unicode_extension(&r.locale);
     let mut t = format!("{data_locale}-u-ca-{}", r.calendar);

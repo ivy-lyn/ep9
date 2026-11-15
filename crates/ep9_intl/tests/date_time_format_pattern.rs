@@ -48,3 +48,23 @@ fn patterns_give_the_node_lines() {
         ])
     );
 }
+
+const H24: &str = r#"const f = (l, o, x = 0) => new Intl.DateTimeFormat(l, Object.assign({timeZone: "UTC"}, o)).format(x);
+const p = (l, o, x = 0) => new Intl.DateTimeFormat(l, Object.assign({timeZone: "UTC"}, o)).formatToParts(x).map(q => q.type + ":" + q.value).join("/");
+print(f("en", {hourCycle: "h24", hour: "2-digit", minute: "2-digit"}), "|", p("en", {hourCycle: "h24", hour: "2-digit", minute: "2-digit"}), "|", f("en", {hourCycle: "h24", timeStyle: "short"}), "|", f("en-u-hc-h24", {hour: "numeric"}), "|", f("en-u-nu-arab", {hourCycle: "h24", hour: "numeric", minute: "numeric"}), "|", f("en", {hourCycle: "h24", hour: "numeric", minute: "numeric"}, 3600000), "|", new Date(0).toLocaleTimeString("en-u-hc-h24", {timeZone: "UTC"}));
+print(f("en", {hourCycle: "h24", hour: "numeric"}), "|", f("de", {hourCycle: "h24", dateStyle: "short", timeStyle: "short"}), "|", f("en", {hourCycle: "h24", hour: "numeric", dayPeriod: "short"}), "|", new Intl.DateTimeFormat("en", {hourCycle: "h24", hour: "numeric", timeZone: "UTC"}).resolvedOptions().hourCycle);
+"#;
+
+/// hourCycle "h24" (W4 Codex r1 F3): ICU4X has no h24, so the formatter takes h23; at hour 0
+/// the hour field is "24" (FormatDateTimePattern 11.5.5, hour: h24 and v = 0 gives 24), in
+/// the digits of the numbering system, for the components and the styles; hour 1 stays "01".
+#[test]
+fn h24_writes_24_at_midnight() {
+    assert_eq!(
+        run_both(H24),
+        lines(&[
+            "24:00 | hour:24/literal::/minute:00 | 24:00 | 24 | ٢٤:٠٠ | 01:00 | 24:00:00",
+            "24 | 01.01.70, 24:00 | 24 | h24",
+        ])
+    );
+}

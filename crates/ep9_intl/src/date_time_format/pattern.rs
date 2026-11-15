@@ -6,6 +6,7 @@
 //!
 //! ```text
 //! ICU4X string + pattern ─ pieces ─┬─ U+202F -> U+0020 in literals (the V8 and SM output)
+//!                                  ├─ h24: hour 0 is "24" (ICU4X formats h24 as h23)
 //!                                  ├─ styles: a 2-digit year where the locale pattern has "yy"
 //!                                  └─ components:
 //!                                     drop the time fields ICU4X adds ({minute, second} -> "mm:ss")
@@ -30,7 +31,7 @@ use icu_locale_core::Locale;
 use icu_time::zone::models::AtTime;
 use icu_time::{TimeZoneInfo, ZonedDateTime};
 
-use super::{Resolved, c, formatter_for, part_type};
+use super::{HOUR_CYCLES, Resolved, c, formatter_for, part_type};
 use crate::cache::{self, Service};
 use crate::cldr;
 use crate::tag;
@@ -272,6 +273,30 @@ fn numeric_width(text: &str, width: usize, nu: &str) -> String {
     }
 }
 
+/// "24" in the digits of the hour text `text` (hour 0 of an h23 pattern: "0" or "00"): the
+/// digits of `nu` when the text uses them, else the digits after the text's zero (a decimal
+/// digit block is contiguous). A text that is not a zero stays.
+fn hour_24(text: &str, nu: &str) -> String {
+    if let Some(ds) = cldr::numbering_system_digits(nu)
+        && !text.is_empty()
+        && text.chars().all(|ch| ch == ds[0])
+    {
+        return [ds[2], ds[4]].iter().collect();
+    }
+    let mut chars = text.chars();
+    if let Some(zero) = chars.next()
+        && zero.is_numeric()
+        && chars.all(|ch| ch == zero)
+        && let (Some(two), Some(four)) = (
+            char::from_u32(u32::from(zero) + 2),
+            char::from_u32(u32::from(zero) + 4),
+        )
+    {
+        return [two, four].iter().collect();
+    }
+    text.to_string()
+}
+
 /// The last two digits of the numeric text `text` (UTS 35 "yy"; one zero in front of a
 /// one-digit text). A text with a non-digit (a sign) stays.
 fn two_digit_year(text: &str, nu: &str) -> String {
@@ -425,6 +450,17 @@ pub(super) fn adjust(
         }
     }
     let nu = r.numbering_system.as_str();
+    // hourCycle "h24": ICU4X has no h24 and formats with h23 (`prefs_tag`), so the hour at
+    // midnight is "00". FormatDateTimePattern (11.5.5), p = "hour": if [[HourCycle]] is "h24"
+    // and v is 0, let v be 24. For the components and the styles.
+    if clock.hour == 0 && r.styles.hour_cycle.is_some_and(|h| HOUR_CYCLES[h] == "h24") {
+        for p in pieces.iter_mut() {
+            if let Some(('H', n)) = p.field {
+                p.text = hour_24(&p.text, nu);
+                p.field = Some(('k', n));
+            }
+        }
+    }
     let data_locale = tag::remove_unicode_extension(&r.locale);
     let styles = r.styles.date_style.is_some() || r.styles.time_style.is_some();
     let year_is_two_digit = if styles {
@@ -657,6 +693,12 @@ mod tests {
         assert_eq!(two_digit_year("5", "latn"), "05");
         assert_eq!(two_digit_year("-5", "latn"), "-5");
         assert_eq!(two_digit_year("٢٠٢٦", "arab"), "٢٦");
+        assert_eq!(hour_24("00", "latn"), "24");
+        assert_eq!(hour_24("0", "latn"), "24");
+        assert_eq!(hour_24("٠٠", "arab"), "٢٤");
+        assert_eq!(hour_24("〇", "hanidec"), "二四");
+        assert_eq!(hour_24("०", "latn"), "२४");
+        assert_eq!(hour_24("12", "latn"), "12");
     }
 
     #[test]
