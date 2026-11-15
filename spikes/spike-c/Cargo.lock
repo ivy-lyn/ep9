@@ -211,6 +211,7 @@ dependencies = [
  "icu_calendar",
  "icu_casemap",
  "icu_collator",
+ "icu_collections",
  "icu_datetime",
  "icu_decimal",
  "icu_experimental",
