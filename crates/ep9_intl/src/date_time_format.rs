@@ -974,7 +974,7 @@ fn format_pieces(r: &Resolved, ms: i64) -> Option<Vec<pattern::Piece>> {
     Some(pattern::adjust(r, &input, &clock, two_digit_year, pieces))
 }
 
-/// The components that resolvedOptions reports (11.3.7 step 5 reads [[DateTimeFormat]], the
+/// The components that resolvedOptions reports (11.3.7 step 5 reads `[[DateTimeFormat]]`, the
 /// format record that CreateDateTimeFormat selected, not the request): the numeric hour,
 /// minute, second, month and day widths of the pattern that format uses (count 2: "2-digit",
 /// count 1: "numeric"; V8 maps its ICU pattern back the same way). A text field, the year,
