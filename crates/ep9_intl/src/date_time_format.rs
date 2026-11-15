@@ -22,16 +22,17 @@
 //!   ─> Resolved in the slots (no ICU4X object)
 //! format(date) ─ TimeClip ─ cache::get_or_make(Service::DateTimeFormat, prefs tag, field
 //!   set bits) ─> Rc<DateTimeFormatter<CompositeFieldSet>> ─ ICU4X format of the local time
-//!   (tzdb::offset_at for a named zone) ─> the string and its UTS 35 pattern
-//! formatToParts(date) ─ the string cut by the pattern fields (`parts`)
+//!   (tzdb::offset_at for a named zone) ─> the string and its UTS 35 pattern ─ pieces by the
+//!   pattern ─ `pattern::adjust` (the ICU4C form) ─> the parts; format: their string
+//! formatToParts(date) ─ the same parts
 //! Date.prototype.toLocale{,Date,Time}String ─ to_locale_string (no globalThis.Intl read)
 //! ```
 //!
 //! The legacy constructor path (ChainDateTimeFormat and UnwrapDateTimeFormat, normative
 //! optional) uses `%Intl%.[[FallbackSymbol]]` (`intl::fallback_symbol`). The field set comes
 //! from the ICU4X field bag (`fieldbag::DateTimeFieldBag`) or the styles; the per-field
-//! width, the flexible day periods and the other pattern work are W4 DTF-PATTERN's. No
-//! ICU4X object is in a slot (INTL-I1-D7, plan rule 8).
+//! width, the flexible day periods and the other pattern work are in the `pattern` module
+//! (W4 DTF-PATTERN). No ICU4X object is in a slot (INTL-I1-D7, plan rule 8).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-date_time_format.txt`.
@@ -55,6 +56,8 @@ use icu_locale_core::Locale;
 use icu_time::zone::models::AtTime;
 use icu_time::zone::{IanaParser, TimeZone, UtcOffset};
 use icu_time::{DateTime, TimeZoneInfo, ZonedDateTime};
+
+mod pattern;
 
 use crate::available;
 use crate::cache::{self, Service};
@@ -829,7 +832,7 @@ fn field_bag(cs: Components) -> DateTimeFieldBag {
 /// The ICU4X builder of the styles `s` (DateTimeStyleFormat, 11.5.4): the date fields YMDE
 /// for "full", else YMD; the time precision minute for "short", else second; the zone name
 /// long for "full", short for "long". ICU4X has one length for all fields: the date style's
-/// wins (a per-field width is W4 DTF-PATTERN's).
+/// wins.
 fn style_builder(s: Styles) -> FieldSetBuilder {
     let length = |i: usize| match STYLES[i] {
         "full" | "long" => Length::Long,
@@ -866,7 +869,14 @@ pub fn field_set(r: &Resolved) -> CompositeFieldSet {
     let mut b = if r.styles.date_style.is_some() || r.styles.time_style.is_some() {
         style_builder(r.styles)
     } else {
-        field_bag(r.components).to_field_set_builder()
+        let mut bag = field_bag(r.components);
+        // With an hour, the day period is the AM/PM field that `pattern::adjust` writes as
+        // the flexible day period: it must not set the length of the text fields (ICU4X's
+        // field bag takes the longest text width, the day period's too).
+        if bag.hour.is_some() {
+            bag.day_period = None;
+        }
+        bag.to_field_set_builder()
     };
     for step in 0..4 {
         if let Ok(fs) = b.clone().build_composite() {
@@ -929,57 +939,37 @@ pub fn time_clip(t: f64) -> Option<i64> {
     Some(t as i64)
 }
 
-/// The formatted time value `ms` (a TimeClip result) of `r` and its UTS 35 pattern.
-pub fn format_ms(r: &Resolved, ms: i64) -> Option<(String, String)> {
+/// The time value of 2000-01-01T12:00:00Z: the reference date of a style format's year width
+/// (`format_ms`).
+const REFERENCE_MS: i64 = 946_728_000_000;
+
+/// The parts (Table 18 type, value) of the formatted time value `ms` (a TimeClip result) of
+/// `r` (PartitionDateTimePattern, 11.5.5): the ICU4X output cut by its pattern, with the
+/// changes of `pattern::adjust` (W4 DTF-PATTERN).
+pub fn format_ms(r: &Resolved, ms: i64) -> Option<Vec<(&'static str, String)>> {
     let f = formatter_for(r)?;
     let input = zoned(&r.time_zone, ms);
     let formatted = f.format(&input);
-    Some((formatted.to_string(), formatted.pattern().to_string()))
+    let p = formatted.pattern().to_string();
+    let pieces = pattern::pieces(&formatted.to_string(), &p);
+    // A date style writes the year with the width of the locale pattern ("M/d/yy" in en
+    // short); ICU4X writes the full year for a year far from the present: read the width at
+    // the reference date.
+    let two_digit_year =
+        r.styles.date_style.is_some() && pattern::field_count(&p, 'y').is_some_and(|n| n != 2) && {
+            let reference = f.format(&zoned(&r.time_zone, REFERENCE_MS));
+            pattern::field_count(&reference.pattern().to_string(), 'y') == Some(2)
+        };
+    let clock = pattern::Clock {
+        hour: input.time.hour.number(),
+        minute: input.time.minute.number(),
+        second: input.time.second.number(),
+    };
+    let pieces = pattern::adjust(r, &input, &clock, two_digit_year, pieces);
+    Some(pattern::parts(&pieces))
 }
 
-// ---- formatToParts: the string cut by the pattern ---------------------------------------------
-
-/// A pattern item: a field (its UTS 35 letter) or a literal text.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Item {
-    Field(char),
-    Literal(String),
-}
-
-/// The items of the UTS 35 pattern `p`: runs of one ASCII letter are fields; quoted text
-/// ('' for a quote) and other characters are literals.
-fn pattern_items(p: &str) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::new();
-    let mut literal = String::new();
-    let mut chars = p.chars().peekable();
-    let mut quoted = false;
-    while let Some(ch) = chars.next() {
-        if ch == '\'' {
-            if chars.peek() == Some(&'\'') {
-                chars.next();
-                literal.push('\'');
-            } else {
-                quoted = !quoted;
-            }
-            continue;
-        }
-        if !quoted && ch.is_ascii_alphabetic() {
-            if !literal.is_empty() {
-                items.push(Item::Literal(std::mem::take(&mut literal)));
-            }
-            while chars.peek() == Some(&ch) {
-                chars.next();
-            }
-            items.push(Item::Field(ch));
-        } else {
-            literal.push(ch);
-        }
-    }
-    if !literal.is_empty() {
-        items.push(Item::Literal(literal));
-    }
-    items
-}
+// ---- formatToParts: the pattern field types ---------------------------------------------------
 
 /// The part type of the UTS 35 field letter `ch` (Table 18 names; "literal" for a letter
 /// with no ECMA-402 type).
@@ -1011,52 +1001,6 @@ fn run_len(s: &str) -> usize {
         .map_or(s.len(), |(i, _)| i)
 }
 
-/// The parts of the formatted string `s` of the pattern `p` (PartitionDateTimePattern,
-/// 11.5.5): each field takes the text up to the next literal of the pattern; two fields with
-/// no literal between them split at the digit boundary. Text that the pattern does not
-/// explain is a literal.
-pub fn parts(s: &str, p: &str) -> Vec<(&'static str, String)> {
-    let items = pattern_items(p);
-    let mut out: Vec<(&'static str, String)> = Vec::new();
-    let push = |out: &mut Vec<(&'static str, String)>, t: &'static str, v: &str| {
-        if v.is_empty() {
-            return;
-        }
-        if t == "literal"
-            && let Some(last) = out.last_mut()
-            && last.0 == "literal"
-        {
-            last.1.push_str(v);
-            return;
-        }
-        out.push((t, v.to_string()));
-    };
-    let mut rest = s;
-    let mut i = 0;
-    while i < items.len() {
-        match &items[i] {
-            Item::Literal(l) => {
-                if let Some(r) = rest.strip_prefix(l.as_str()) {
-                    push(&mut out, "literal", l);
-                    rest = r;
-                }
-            }
-            Item::Field(ch) => {
-                let end = match items.get(i + 1) {
-                    None => rest.len(),
-                    Some(Item::Field(_)) => run_len(rest),
-                    Some(Item::Literal(l)) => rest.find(l.as_str()).unwrap_or(rest.len()),
-                };
-                push(&mut out, part_type(*ch), &rest[..end]);
-                rest = &rest[end..];
-            }
-        }
-        i += 1;
-    }
-    push(&mut out, "literal", rest);
-    out
-}
-
 // ---- the crate functions (Date.prototype.toLocale*) -------------------------------------------
 
 /// Date.prototype.toLocaleString, toLocaleDateString and toLocaleTimeString (ECMA-402 §20.4)
@@ -1080,12 +1024,21 @@ pub fn to_locale_string<'s>(
     let r = initialize(cx, locales, options, required, defaults)?;
     // 4. Return ! FormatDateTime(dateFormat, x).
     let s = format_date_time(cx, &r, tv)?;
-    Ok(cx.new_string(&s.0)?.into())
+    Ok(cx.new_string(&join(&s))?.into())
 }
 
-/// FormatDateTime ( dateTimeFormat, x ) (11.5.6) of `r`: the string and its pattern (a
-/// RangeError for a time value that TimeClip makes NaN).
-fn format_date_time(cx: &mut Cx<'_>, r: &Resolved, x: f64) -> JsResult<(String, String)> {
+/// The string of `parts`.
+fn join(parts: &[(&'static str, String)]) -> String {
+    parts.iter().map(|(_, v)| v.as_str()).collect()
+}
+
+/// FormatDateTimeToParts ( dateTimeFormat, x ) (11.5.7) of `r`: the parts (a RangeError for
+/// a time value that TimeClip makes NaN); FormatDateTime (11.5.6) is their string.
+fn format_date_time(
+    cx: &mut Cx<'_>,
+    r: &Resolved,
+    x: f64,
+) -> JsResult<Vec<(&'static str, String)>> {
     // PartitionDateTimePattern 1-2. Let x be TimeClip(x); NaN: a RangeError.
     let Some(ms) = time_clip(x) else {
         return Err(cx.throw_range_error("Invalid time value"));
@@ -1190,7 +1143,7 @@ fn date_time_format_function<'s>(
     // 3-4. x: Date.now() for undefined, else ? ToNumber(date).
     let x = date_value(cx, args.get(0))?;
     // 5. Return ? FormatDateTime(dtf, x).
-    let (s, _) = format_date_time(cx, &r, x)?;
+    let s = join(&format_date_time(cx, &r, x)?);
     Ok(cx.new_string(&s)?.into())
 }
 
@@ -1206,9 +1159,9 @@ fn format_to_parts<'s>(
     // 3-4. x: Date.now() for undefined, else ? ToNumber(date).
     let x = date_value(cx, args.get(0))?;
     // 5. Return ? FormatDateTimeToParts(dtf, x) (11.5.7).
-    let (s, p) = format_date_time(cx, &r, x)?;
+    let parts = format_date_time(cx, &r, x)?;
     let array = cx.new_array();
-    for (i, (t, v)) in parts(&s, &p).iter().enumerate() {
+    for (i, (t, v)) in parts.iter().enumerate() {
         cx.poll_interrupt()?;
         let o = cx.new_object();
         let t = cx.new_string(t)?;
@@ -1358,37 +1311,5 @@ mod tests {
         assert_eq!(time_clip(8.64e15 + 1.0), None);
         assert_eq!(time_clip(f64::NAN), None);
         assert_eq!(time_clip(f64::NEG_INFINITY), None);
-    }
-
-    #[test]
-    fn parts_follow_the_pattern() {
-        let p = parts("1/2/2026, 3:04:05\u{202f}PM", "M/d/y, h:mm:ss\u{202f}a");
-        let text: Vec<String> = p.iter().map(|(t, v)| format!("{t}:{v}")).collect();
-        assert_eq!(
-            text,
-            [
-                "month:1",
-                "literal:/",
-                "day:2",
-                "literal:/",
-                "year:2026",
-                "literal:, ",
-                "hour:3",
-                "literal::",
-                "minute:04",
-                "literal::",
-                "second:05",
-                "literal:\u{202f}",
-                "dayPeriod:PM"
-            ]
-        );
-        let p = parts("Tuesday, January 2", "EEEE, MMMM d");
-        assert_eq!(p[0], ("weekday", "Tuesday".to_string()));
-        assert_eq!(p[2], ("month", "January".to_string()));
-        let p = parts("2026年1月2日", "y年M月d日");
-        assert_eq!(p.len(), 6);
-        assert_eq!(p[1], ("literal", "年".to_string()));
-        let p = parts("12 o'clock", "h 'o''clock'");
-        assert_eq!(p[1], ("literal", " o'clock".to_string()));
     }
 }
