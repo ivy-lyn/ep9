@@ -735,9 +735,12 @@ pub(super) fn normalize<'s>(
     // 6. Let ns be the String value that is the result of normalizing S into the normalization
     //    form named by f as specified in the latest Unicode Standard, Normalization Forms.
     // 7. Return ns.
+    //    The result stops at MAX_LENGTH: past it, the RangeError of a too long string, with
+    //    no buffer past the limit (W4 Codex r1 F2).
     let units = units(cx, s)?;
-    match normalize(&units, f) {
-        Cow::Borrowed(_) => Ok(s.value()),
-        Cow::Owned(ns) => new_str(cx, &ns),
+    match normalize(&units, f, MAX_LENGTH) {
+        Ok(Cow::Borrowed(_)) => Ok(s.value()),
+        Ok(Cow::Owned(ns)) => new_str(cx, &ns),
+        Err(_) => Err(cx.throw_range_error("Invalid string length")),
     }
 }

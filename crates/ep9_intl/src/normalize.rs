@@ -6,10 +6,17 @@
 //!
 //! ```text
 //! code units ──> runs of well-formed UTF-16, split at each lone surrogate
-//!   run ──> icu_normalizer normalize_utf16 (Cow: borrowed when the run is normal already)
+//!   run ──> split_normalized_utf16: (head, tail)
+//!     head ──> copied as it is (normal already)
+//!     tail ──> normalize_iter, one char at a time
 //!   lone surrogate ──> copied as it is
-//! all runs borrowed ──> Cow::Borrowed(the input): the caller returns S itself, no new string
+//! all tails empty ──> Cow::Borrowed(the input): the caller returns S itself, no new string
 //! ```
+//!
+//! The result buffer never grows past `max` code units (W4 Codex r1 F2): one more unit gives
+//! `Err(TooLong)` before the buffer grows. One char can be 18 code units (U+FDFA in NFKC), so
+//! a full ICU4X result buffer first (`normalize_utf16`) and then a copy gave two buffers of
+//! 1 GB or more outside the managed heap for a 60 MB input, and only then the RangeError.
 //!
 //! ICU4X maps a lone surrogate to U+FFFD before it normalizes; ECMA-262 normalizes the code
 //! points of S (StringToCodePoints, §6.1.4), so a lone surrogate is a code point of its own and
@@ -58,37 +65,103 @@ impl Form {
         })
     }
 
-    /// The ICU4X normalization of one well-formed run (no lone surrogate in it).
-    fn run<'a>(self, run: &'a [u16]) -> Cow<'a, [u16]> {
+    /// The ICU4X split of one well-formed run (no lone surrogate in it): the longest head
+    /// that is normal already, and the tail. The result of the run is the head and then the
+    /// normalization of the tail.
+    fn split(self, run: &[u16]) -> (&[u16], &[u16]) {
         match self {
-            Form::Nfc => NFC.normalize_utf16(run),
-            Form::Nfd => NFD.normalize_utf16(run),
-            Form::Nfkc => NFKC.normalize_utf16(run),
-            Form::Nfkd => NFKD.normalize_utf16(run),
+            Form::Nfc => NFC.split_normalized_utf16(run),
+            Form::Nfd => NFD.split_normalized_utf16(run),
+            Form::Nfkc => NFKC.split_normalized_utf16(run),
+            Form::Nfkd => NFKD.split_normalized_utf16(run),
+        }
+    }
+
+    /// Appends the normalization of `tail` (well-formed UTF-16, the tail of [`Form::split`])
+    /// to `out`, one char at a time; `Err(TooLong)` at the first char past the limit.
+    fn write(self, tail: &[u16], out: &mut Bounded) -> Result<(), TooLong> {
+        // The run has no lone surrogate, so no decode error (U+FFFD is never used).
+        let chars = char::decode_utf16(tail.iter().copied()).map(|c| c.unwrap_or('\u{FFFD}'));
+        match self {
+            Form::Nfc => NFC.normalize_iter(chars).try_for_each(|c| out.push_char(c)),
+            Form::Nfd => NFD.normalize_iter(chars).try_for_each(|c| out.push_char(c)),
+            Form::Nfkc => NFKC
+                .normalize_iter(chars)
+                .try_for_each(|c| out.push_char(c)),
+            Form::Nfkd => NFKD
+                .normalize_iter(chars)
+                .try_for_each(|c| out.push_char(c)),
         }
     }
 }
 
-/// Step 6 of String.prototype.normalize: the code units of `s` normalized into `form`.
-/// `Cow::Borrowed(s)` when `s` is in that form already (then the caller needs no new string);
-/// lone surrogates pass through as they are (see the module doc).
-pub fn normalize(s: &[u16], form: Form) -> Cow<'_, [u16]> {
-    // `out` stays `None` while every run so far is normal already: the result up to here is
-    // then `s[..start]` itself.
-    let mut out: Option<Vec<u16>> = None;
-    let push_run = |out: &mut Option<Vec<u16>>, start: usize, end: usize| {
-        let run = form.run(&s[start..end]);
-        match (out.as_mut(), run) {
-            (None, Cow::Borrowed(_)) => {}
-            (None, Cow::Owned(run)) => {
-                let mut v = Vec::with_capacity(s.len() - (end - start) + run.len());
-                v.extend_from_slice(&s[..start]);
-                v.extend_from_slice(&run);
-                *out = Some(v);
-            }
-            (Some(v), run) => v.extend_from_slice(&run),
+/// The normalized string would be longer than the `max` of [`normalize`] (the caller throws
+/// the RangeError of a too long string).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TooLong;
+
+/// A result buffer that never holds, or reserves, more than `max` code units.
+struct Bounded {
+    v: Vec<u16>,
+    max: usize,
+}
+
+impl Bounded {
+    fn push_slice(&mut self, more: &[u16]) -> Result<(), TooLong> {
+        if more.len() > self.max - self.v.len() {
+            return Err(TooLong);
+        }
+        let need = self.v.len() + more.len();
+        if need > self.v.capacity() {
+            // Double as a Vec does, but never reserve past `max`.
+            let want = need.max(self.v.capacity().saturating_mul(2)).min(self.max);
+            self.v.reserve_exact(want - self.v.len());
+        }
+        self.v.extend_from_slice(more);
+        Ok(())
+    }
+
+    fn push_char(&mut self, c: char) -> Result<(), TooLong> {
+        let mut b = [0u16; 2];
+        self.push_slice(c.encode_utf16(&mut b))
+    }
+}
+
+/// Appends the normalization of the run `s[start..end]` (`out` is `None` while every run so
+/// far is normal already: the result up to `start` is then `s[..start]` itself).
+fn push_run(
+    s: &[u16],
+    form: Form,
+    max: usize,
+    out: &mut Option<Bounded>,
+    start: usize,
+    end: usize,
+) -> Result<(), TooLong> {
+    let (head, tail) = form.split(&s[start..end]);
+    let o = match out {
+        Some(o) => {
+            o.push_slice(head)?;
+            o
+        }
+        None if tail.is_empty() => return Ok(()),
+        None => {
+            let mut o = Bounded {
+                v: Vec::with_capacity(s.len().min(max)),
+                max,
+            };
+            o.push_slice(&s[..start + head.len()])?;
+            out.insert(o)
         }
     };
+    form.write(tail, o)
+}
+
+/// Step 6 of String.prototype.normalize: the code units of `s` normalized into `form`.
+/// `Cow::Borrowed(s)` when `s` is in that form already (then the caller needs no new string);
+/// lone surrogates pass through as they are (see the module doc). `Err(TooLong)` when the
+/// result is longer than `max` code units: the buffer stops there (it never holds more).
+pub fn normalize(s: &[u16], form: Form, max: usize) -> Result<Cow<'_, [u16]>, TooLong> {
+    let mut out: Option<Bounded> = None;
     let mut start = 0;
     let mut i = 0;
     while i < s.len() {
@@ -100,19 +173,19 @@ pub fn normalize(s: &[u16], form: Form) -> Cow<'_, [u16]> {
         }
         if (0xD800..=0xDFFF).contains(&u) {
             // A lone surrogate: end the run before it and copy it.
-            push_run(&mut out, start, i);
-            if let Some(v) = out.as_mut() {
-                v.push(u);
+            push_run(s, form, max, &mut out, start, i)?;
+            if let Some(o) = out.as_mut() {
+                o.push_slice(&[u])?;
             }
             start = i + 1;
         }
         i += 1;
     }
-    push_run(&mut out, start, s.len());
-    match out {
+    push_run(s, form, max, &mut out, start, s.len())?;
+    Ok(match out {
         None => Cow::Borrowed(s),
-        Some(v) => Cow::Owned(v),
-    }
+        Some(o) => Cow::Owned(o.v),
+    })
 }
 
 #[cfg(test)]
@@ -144,26 +217,38 @@ mod tests {
         ] {
             let units = u(s);
             assert!(
-                matches!(normalize(&units, form), Cow::Borrowed(_)),
+                matches!(normalize(&units, form, usize::MAX), Ok(Cow::Borrowed(_))),
                 "{s:?} {form:?}"
             );
         }
         // Lone surrogates around normal runs: still borrowed.
         let units = [0xDC00, 0x61, 0xD800, 0x62, 0xD83D, 0xDE00, 0xD800];
-        assert!(matches!(normalize(&units, Form::Nfc), Cow::Borrowed(_)));
+        assert!(matches!(
+            normalize(&units, Form::Nfc, usize::MAX),
+            Ok(Cow::Borrowed(_))
+        ));
     }
 
     #[test]
     fn the_four_forms_of_the_test262_string() {
         // test262 built-ins/String/prototype/normalize/return-normalized-string.js.
         let s = u("\u{1E9B}\u{323}");
-        assert_eq!(normalize(&s, Form::Nfc).as_ref(), u("\u{1E9B}\u{323}"));
         assert_eq!(
-            normalize(&s, Form::Nfd).as_ref(),
+            normalize(&s, Form::Nfc, usize::MAX).unwrap().as_ref(),
+            u("\u{1E9B}\u{323}")
+        );
+        assert_eq!(
+            normalize(&s, Form::Nfd, usize::MAX).unwrap().as_ref(),
             u("\u{17F}\u{323}\u{307}")
         );
-        assert_eq!(normalize(&s, Form::Nfkc).as_ref(), u("\u{1E69}"));
-        assert_eq!(normalize(&s, Form::Nfkd).as_ref(), u("s\u{323}\u{307}"));
+        assert_eq!(
+            normalize(&s, Form::Nfkc, usize::MAX).unwrap().as_ref(),
+            u("\u{1E69}")
+        );
+        assert_eq!(
+            normalize(&s, Form::Nfkd, usize::MAX).unwrap().as_ref(),
+            u("s\u{323}\u{307}")
+        );
     }
 
     #[test]
@@ -172,23 +257,82 @@ mod tests {
         // does not compose with the "e" before it.
         let s = [0x61, 0x301, 0xD800, 0x65, 0x301, 0xDC00, 0x301];
         assert_eq!(
-            normalize(&s, Form::Nfc).as_ref(),
+            normalize(&s, Form::Nfc, usize::MAX).unwrap().as_ref(),
             [0xE1, 0xD800, 0xE9, 0xDC00, 0x301]
         );
         let nfc = [0xE1, 0xD800, 0xE9, 0xDC00];
         assert_eq!(
-            normalize(&nfc, Form::Nfd).as_ref(),
+            normalize(&nfc, Form::Nfd, usize::MAX).unwrap().as_ref(),
             [0x61, 0x301, 0xD800, 0x65, 0x301, 0xDC00]
         );
         // A pair stays one code point: U+1D15E MUSICAL SYMBOL HALF NOTE decomposes (NFC and
         // NFD both, a composition exclusion) to U+1D157 U+1D165.
         let pair = [0xD834, 0xDD5E];
         assert_eq!(
-            normalize(&pair, Form::Nfc).as_ref(),
+            normalize(&pair, Form::Nfc, usize::MAX).unwrap().as_ref(),
             [0xD834, 0xDD57, 0xD834, 0xDD65]
         );
         // A lone surrogate first and last, with a change in between.
         let s = [0xDFFF, 0x41, 0x30A, 0xDBFF];
-        assert_eq!(normalize(&s, Form::Nfkc).as_ref(), [0xDFFF, 0xC5, 0xDBFF]);
+        assert_eq!(
+            normalize(&s, Form::Nfkc, usize::MAX).unwrap().as_ref(),
+            [0xDFFF, 0xC5, 0xDBFF]
+        );
+    }
+
+    /// W4 Codex r1 F2: the result stops at `max` code units. U+FDFA is 18 units in NFKC and
+    /// NFKD; it is NFC and NFD already, so those stay borrowed whatever the max.
+    #[test]
+    fn the_result_stops_at_the_limit() {
+        let s = u(&"\u{FDFA}".repeat(1000));
+        for form in [Form::Nfkc, Form::Nfkd] {
+            let full = normalize(&s, form, usize::MAX).unwrap();
+            assert_eq!(full.len(), 18_000, "{form:?}");
+            assert_eq!(normalize(&s, form, 18_000).unwrap(), full, "{form:?}");
+            assert_eq!(normalize(&s, form, 17_999), Err(TooLong), "{form:?}");
+            assert_eq!(normalize(&s, form, 0), Err(TooLong), "{form:?}");
+        }
+        for form in [Form::Nfc, Form::Nfd] {
+            assert!(
+                matches!(normalize(&s, form, 1000), Ok(Cow::Borrowed(_))),
+                "{form:?}"
+            );
+        }
+        // A head that is normal already counts too: "a" x 10 then U+FDFA.
+        let s = u("aaaaaaaaaa\u{FDFA}");
+        assert_eq!(normalize(&s, Form::Nfkc, 28).map(|r| r.len()), Ok(28));
+        assert_eq!(normalize(&s, Form::Nfkc, 27), Err(TooLong));
+        // A lone surrogate after the change counts too.
+        let s = [0xFDFA, 0xD800];
+        assert_eq!(normalize(&s, Form::Nfkc, 19).map(|r| r.len()), Ok(19));
+        assert_eq!(normalize(&s, Form::Nfkc, 18), Err(TooLong));
+    }
+
+    /// The tail goes through `normalize_iter`: it gives the same units as ICU4X's
+    /// `normalize_utf16` for each scalar value of planes 0-2 (every one with a decomposition
+    /// or a nonzero combining class is there) alone, after "a", and before U+0301 U+0323.
+    #[test]
+    fn the_iterator_path_matches_normalize_utf16() {
+        let mut units = Vec::new();
+        for c in (0..=0x2FFFFu32).filter_map(char::from_u32) {
+            for s in [
+                format!("{c}"),
+                format!("a{c}"),
+                format!("{c}\u{301}\u{323}"),
+            ] {
+                units.clear();
+                units.extend(s.encode_utf16());
+                for form in [Form::Nfc, Form::Nfd, Form::Nfkc, Form::Nfkd] {
+                    let want = match form {
+                        Form::Nfc => NFC.normalize_utf16(&units),
+                        Form::Nfd => NFD.normalize_utf16(&units),
+                        Form::Nfkc => NFKC.normalize_utf16(&units),
+                        Form::Nfkd => NFKD.normalize_utf16(&units),
+                    };
+                    let got = normalize(&units, form, usize::MAX).unwrap();
+                    assert_eq!(got, want, "{:x} {form:?}", u32::from(c));
+                }
+            }
+        }
     }
 }
