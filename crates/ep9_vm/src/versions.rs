@@ -65,7 +65,7 @@
 /// (`layout::SHAPE_FLAG_SEALED`, `layout::SHAPE_FLAG_FROZEN`; `shape::level`). A level sits on
 /// the dictionary shape of a non-extensible Array with a dense elements kind, so a dense kind
 /// alone no longer means that the elements are writable: native code that stores an element
-/// tests the level bits too. No cell layout changes.
+/// tests the level bits too, and so does every length write. No cell layout changes.
 ///
 /// 9 (TypedArray TA-0 TA-DECL, design `docs/plan/notes/typedarray-design.md` §2, §3.2; TA-D13:
 /// the one bump of the TypedArray workflow): the 12 view kinds 29-40 (spec Table 71 order) and
