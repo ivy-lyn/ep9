@@ -1,4 +1,4 @@
-//! Intl.DurationFormat (ECMA-402 §13; block 40): `%Intl.DurationFormat%` and
+//! Intl.DurationFormat (ECMA-402 §13; block 46): `%Intl.DurationFormat%` and
 //! `%Intl.DurationFormat.prototype%`, a module of the lazy group "Intl" (INTL-I1-D8): its
 //! properties target only `%Intl%` and its own intrinsics.
 //!
@@ -64,7 +64,7 @@ use crate::tag::{self, icu_locale};
 use decimal::{Grouping, IntlMv, SignDisplay};
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 40;
+pub const BLOCK: u8 = 46;
 
 /// The class of an Intl.DurationFormat object.
 pub const CLASS: ObjectClass = ObjectClass::IntlDurationFormat;

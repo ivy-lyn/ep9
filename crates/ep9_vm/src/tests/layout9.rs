@@ -163,13 +163,14 @@ fn elements_kinds_7_and_8() {
 }
 
 /// H20 part 2: ObjectClass 36 SharedArrayBuffer and 37 DataView (TA-D3), after the INTL W3
-/// classes; ArrayBuffer keeps id 5. The build check below fails if a class is missing from
-/// `ObjectClass::ALL` or out of its id order.
+/// classes; ArrayBuffer keeps id 5. The INTL W4 classes 38-39 follow them (the INTL sync m8-p5
+/// moved them after the TA classes, route INTL-W4-RENUMBER). The build check below fails if a
+/// class is missing from `ObjectClass::ALL` or out of its id order.
 #[test]
 fn object_classes_36_and_37() {
     const _: () = {
         let all = ObjectClass::ALL;
-        assert!(all.len() == ObjectClass::DataView as usize + 1);
+        assert!(all.len() == ObjectClass::IntlDurationFormat as usize + 1);
         let mut i = 0;
         while i < all.len() {
             assert!(all[i] as usize == i);
@@ -187,5 +188,9 @@ fn object_classes_36_and_37() {
     assert_eq!(ObjectClass::SharedArrayBuffer.name(), "SharedArrayBuffer");
     assert_eq!(ObjectClass::DataView.name(), "DataView");
     assert_eq!(ObjectClass::from_id(37), Some(ObjectClass::DataView));
-    assert_eq!(ObjectClass::from_id(38), None);
+    assert_eq!(
+        ObjectClass::from_id(38),
+        Some(ObjectClass::IntlDateTimeFormat)
+    );
+    assert_eq!(ObjectClass::from_id(40), None);
 }

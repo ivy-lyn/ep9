@@ -3,7 +3,8 @@
 //! only through `Cx`.
 //!
 //! ```text
-//! ep9_builtins::MODULES = [.., ep9_temporal::MODULES.., iterator, ep9_intl::MODULES..]
+//! ep9_builtins::MODULES = [.., ep9_temporal::MODULES.., iterator, disposable, ep9_intl 30-38,
+//!                          the TypedArray modules 39-44, ep9_intl 45-46]
 //! ep9_intl::MODULES (blocks, append-only; the lazy group of the global key "Intl", INTL-I1-D8)
 //!   30 intl      %Intl%                                  intl.rs     (W1 CORE)
 //!   31 locale    %Intl.Locale%, %Intl.Locale.prototype%  locale.rs   (W1 LOCALE)
@@ -16,8 +17,8 @@
 //!   37 display_names  %Intl.DisplayNames%, its prototype      display_names.rs  (W2 DISPLAYNAMES)
 //!   38 relative_time_format  %Intl.RelativeTimeFormat%, its prototype
 //!                                                            relative_time_format.rs (W3 RTF)
-//!   39 date_time_format  %Intl.DateTimeFormat%, its prototype  date_time_format.rs (W4 DTF-OPT)
-//!   40 duration_format   %Intl.DurationFormat%, its prototype  duration_format.rs  (W4 DURATION)
+//!   45 date_time_format  %Intl.DateTimeFormat%, its prototype  date_time_format.rs (W4 DTF-OPT)
+//!   46 duration_format   %Intl.DurationFormat%, its prototype  duration_format.rs  (W4 DURATION)
 //!   (intl.rs also makes %IntlFallbackSymbolHolder%, the ep9-internal holder of
 //!    %Intl%.[[FallbackSymbol]]; W4 DTF-OPT)
 //! support (W1 CORE):

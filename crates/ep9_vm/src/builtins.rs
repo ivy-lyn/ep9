@@ -941,7 +941,7 @@ impl IntrinsicId {
             | IntrinsicId::Float32ArrayPrototype
             | IntrinsicId::Float64Array
             | IntrinsicId::Float64ArrayPrototype
-            | IntrinsicId::Atomics => return None,
+            | IntrinsicId::Atomics
             | IntrinsicId::IntlDateTimeFormat
             | IntrinsicId::IntlDateTimeFormatPrototype
             | IntrinsicId::IntlDurationFormat

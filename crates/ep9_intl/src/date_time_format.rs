@@ -1,4 +1,4 @@
-//! Intl.DateTimeFormat (ECMA-402 §11; block 39): `%Intl.DateTimeFormat%` and
+//! Intl.DateTimeFormat (ECMA-402 §11; block 45): `%Intl.DateTimeFormat%` and
 //! `%Intl.DateTimeFormat.prototype%`, a module of the lazy group "Intl" (INTL-I1-D8): its
 //! properties target only `%Intl%` and its own intrinsics.
 //!
@@ -73,7 +73,7 @@ use crate::resolve;
 use crate::tag;
 
 /// This module's block of builtin ids.
-pub const BLOCK: u8 = 39;
+pub const BLOCK: u8 = 45;
 
 /// The class of an Intl.DateTimeFormat object.
 pub const CLASS: ObjectClass = ObjectClass::IntlDateTimeFormat;
