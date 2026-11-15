@@ -99,8 +99,7 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
         .iter()
         .map(|m| (m.name, m.block))
         .collect();
-    let (w1_w3, w4): (Vec<(&str, u8)>, Vec<(&str, u8)>) =
-        intl.iter().partition(|&&(_, block)| block <= 38);
+    let (w1_w3, w4): (Vec<_>, Vec<_>) = intl.into_iter().partition(|&(_, block)| block <= 38);
     for (first_block, part) in [(30usize, w1_w3), (45, w4)] {
         let run = &got[first_block - 1..first_block - 1 + part.len()];
         assert_eq!(run, &part[..]);
