@@ -100,7 +100,6 @@ test/built-ins/Error/prototype/stack/setter-non-extensible-receiver.js
 test/built-ins/Error/prototype/stack/setter-via-assignment.js
 test/built-ins/Function/prototype/arguments/prop-desc.js
 test/built-ins/Function/prototype/caller/prop-desc.js
-test/built-ins/Proxy/revocable/tco-fn-realm.js
 test/built-ins/ShadowRealm/WrappedFunction/length-throws-typeerror.js
 test/built-ins/ShadowRealm/WrappedFunction/length.js
 test/built-ins/ShadowRealm/WrappedFunction/name-throws-typeerror.js
@@ -266,13 +265,10 @@ test/intl402/DateTimeFormat/prototype/formatToParts/temporal-plaindatetime-forma
 test/intl402/DateTimeFormat/prototype/formatToParts/temporal-plainmonthday-formatting-timezonename.js
 test/intl402/DateTimeFormat/prototype/formatToParts/temporal-plaintime-formatting-timezonename.js
 test/intl402/DateTimeFormat/prototype/formatToParts/temporal-plainyearmonth-formatting-timezonename.js
-test/intl402/DurationFormat/prototype/format/duration-out-of-range-2.js
-test/intl402/DurationFormat/prototype/format/duration-out-of-range-3.js
 test/intl402/DurationFormat/prototype/format/taint-temporal-duration-prototype.js
 test/intl402/DurationFormat/prototype/format/temporal-duration-string-arg.js
 test/intl402/DurationFormat/prototype/formatToParts/taint-temporal-duration-prototype.js
 test/intl402/DurationFormat/prototype/formatToParts/temporal-duration-string-arg.js
-test/intl402/FallbackSymbol/per-realm.js
 test/intl402/Temporal/Duration/prototype/toLocaleString/returns-same-results-as-DurationFormat.js
 test/intl402/Temporal/Instant/prototype/toLocaleString/basic.js
 test/intl402/Temporal/Instant/prototype/toLocaleString/dateStyle-timeStyle-undefined.js
@@ -702,7 +698,6 @@ test/staging/sm/Date/non-iso.js
 test/staging/sm/Date/two-digit-years.js
 test/staging/sm/Function/function-caller-restrictions.js
 test/staging/sm/Function/function-name-assignment.js
-test/staging/sm/Proxy/revoked-get-function-realm-typeerror.js
 test/staging/sm/RegExp/unicode-back-reference.js
 test/staging/sm/RegExp/unicode-ignoreCase-escape.js
 test/staging/sm/TypedArray/toString.js
