@@ -12,6 +12,18 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 serde_json = "=1.0.154"
+# The `collator-search` mode (feature `datagen`; INTL-V2-D17 Form A, INTL-W4-CLDR): the ICU4X
+# source provider of the same release reads the search collations from the ICU export data that
+# icuexport.pin names. Optional, so the CI form (`--check`, `cargo test`) does not build them.
+# `icu_provider_source/unstable`: the dev-dependencies turn on `icu_properties/unstable`, and
+# without the source provider's own `unstable` its posix-property code then does not compile
+# (icu_provider_source 2.4.0 `properties/bin_cp_set.rs`), so the tests could not build.
+icu_collator = { version = "=2.4.0", default-features = false, features = ["compiled_data", "datagen"], optional = true }
+icu_provider = { version = "=2.4.0", default-features = false, optional = true }
+icu_provider_source = { version = "=2.4.0", default-features = false, optional = true }
+
+[features]
+datagen = ["dep:icu_collator", "dep:icu_provider", "dep:icu_provider_source", "icu_provider_source/unstable"]
 
 # ICU4X 2.4.0 / icu_experimental 0.7.0: compiled data of CLDR 49.0.0 (icu_decimal_data and
 # icu_experimental_data README.md). Exact pins; they move with each ICU4X BUMP.

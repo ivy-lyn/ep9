@@ -1,0 +1,5 @@
+# The ICU export data of the search collations (tools/cldr-tables collator-search; INTL-V2-D17
+# Form A): "<tag> <file> <sha256>". The tag is icu_provider_source 2.4.0's TESTED_ICUEXPORT_TAG,
+# the release of the ICU4X 2.4 compiled data (the generator checks that the two agree). Move it
+# with each ICU4X BUMP (README.md).
+release-79.1rc icu4x-icuexportdata-79.1rc.zip ba95a2b748772a4984bcead9bc556f834448ef46e375c4163f27929d8c2d98c9
