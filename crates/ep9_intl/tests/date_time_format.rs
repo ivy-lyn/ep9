@@ -113,8 +113,8 @@ print(dd.toLocaleDateString("en", {timeZone: "UTC"})); Intl.DateTimeFormat = sav
 /// format, formatToParts and Date.prototype.toLocale{,Date,Time}String: components, styles,
 /// calendars, numbering systems, named and offset zones, the TimeClip range ends, "Invalid
 /// Date", the required/defaults table, and no read of `globalThis.Intl`
-/// (`taint-Intl-DateTimeFormat.js`). The cases have no day period (ICU4X writes U+202F before
-/// it; V8 writes U+0020: W4 DTF-PATTERN's).
+/// (`taint-Intl-DateTimeFormat.js`). The cases have no day period (`pattern::adjust` writes
+/// U+0020 before it, as V8 does; tests/date_time_format_pattern.rs has those cases).
 #[test]
 fn format_and_to_locale_string_give_the_node_lines() {
     assert_eq!(
