@@ -1178,7 +1178,7 @@ op!(GetKeyedProperty(st, object: R, s: FSlot) {
 } cold {
     let (o, k) = (st.reg(object), st.acc);
     profile::record_keyed_cold(st, s, o, k);
-    prop_cold(st, PropOp::GetKeyed, o, k, UNDEFINED)
+    keyed_ic::cold_get(st, o, k)
 });
 op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);

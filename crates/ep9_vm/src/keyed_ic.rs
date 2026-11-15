@@ -4,13 +4,13 @@
 //!
 //! ```text
 //! interp/ops.rs (M4-P0 hooks; each after profile::record_keyed, which records nothing)
-//!   GetKeyedProperty          array-only inline path (implicit), then -> fast_get   (views)
+//!   GetKeyedProperty          array-only inline path (implicit), then -> fast_get   (cold)
 //!   SetKeyedProperty          -> fast_set: a present Array element (hit), grow case, views
 //!   DefineKeyedOwnProperty    -> fast_define_own                                    (cold)
 //!   StaInArrayLiteral         -> fast_sta_in_array_literal                          (cold)
 //!   TestIn                    -> fast_has                                           (cold)
-//! cold body: profile::record_keyed_cold (the value half), then the generic operation
-//!   (`property::get_keyed`, `set_keyed`, ...: an int32 index makes no string key, M4-P3)
+//! cold body: profile::record_keyed_cold (the value half), then (GetKeyedProperty: cold_get, the
+//!   views) the generic operation (`get_keyed`, ...: an int32 index makes no string key, M4-P3)
 //! ```
 //!
 //! **The keyed IC state is the key half** (weak), and only this module writes it:
@@ -71,7 +71,7 @@ use crate::elements;
 use crate::feedback::{self, fv};
 use crate::frame::{HOLE, UNDEFINED, int32_bits, int32_of};
 use crate::interp::dsl::FSlot;
-use crate::interp::{Flow, St};
+use crate::interp::{Done, Flow, St};
 use crate::kinds;
 use crate::object::{self, delems, elems, obj, rd, rd_i32};
 use crate::profile::{self, keyed};
@@ -140,11 +140,11 @@ fn note_receiver(rt: &Runtime, v: u64, i: u32, o: u64, key: u64) {
 }
 
 /// `o[k]` (LoadKeyed slot `s`), after the array-only path of `GetKeyedProperty` missed (a
-/// hole, out of bounds, another receiver or key): the view case ([`view::get`], TA-2); all else
-/// is cold (the generic `get_keyed` reads an int32 index without a string key).
+/// hole, out of bounds, another receiver or key). Always cold: the view case is in the cold
+/// body ([`cold_get`]; here it made the x86-64 handler save 6 registers on entry, TA-X86-KEYED).
 #[inline(always)]
-pub(crate) fn fast_get(st: &mut St<'_>, o: u64, k: u64, s: FSlot) -> Flow {
-    view::get(st, o, k, s)
+pub(crate) fn fast_get(_st: &mut St<'_>, _o: u64, _k: u64, _s: FSlot) -> Flow {
+    Flow::Cold
 }
 
 /// `o[k] = v` (StoreKeyed slot `s`): the fast case stores a present Array element in place,
@@ -372,18 +372,18 @@ pub(crate) fn fast_has(_st: &mut St<'_>, _k: u64, _o: u64, _s: FSlot) -> Flow {
 #[cfg(test)]
 pub(crate) use view::VIEW_HITS;
 
-// The view cases of the keyed fast bodies (TypedArray TA-2 TA-KEYED; module docs inside).
+// The view cases of the keyed bodies (TypedArray TA-2 TA-KEYED; module docs inside).
 mod view {
     //! **The view cases (TypedArray TA-2 TA-KEYED; design `docs/plan/notes/typedarray-design.md`
-    //! §6.1, §4.1, §5.2).** [`get`] and [`set`] are the tails of `fast_get` and `fast_set` for
-    //! a receiver that is no Array case: a TypedArray (a view kind, `kinds::is_view_kind`)
-    //! with an int32 key `i >= 0`; anything else is cold. Each starts with one compare of the
-    //! cell kind (a receiver kind past `PROXY_CALLABLE` is a view), then a cold-path hint, so
-    //! the view code stays off the block order of the array paths as far as LLVM allows (M7-P5
-    //! ICWIDE: a new case there cost +2 instructions per array hit; this one costs about 1 per
-    //! Array load hit and none per Array store hit, mac a64). It makes no call and reads no
-    //! IC state, so the `GetKeyedProperty` handler keeps no frame and the `SetKeyedProperty`
-    //! handler saves no more registers.
+    //! §6.1, §4.1, §5.2).** [`set`] is the tail of `fast_set`, and [`get`] the first step of
+    //! the `GetKeyedProperty` cold body (`super::cold_get`), for a receiver that is no Array
+    //! case: a TypedArray (a view kind, `kinds::is_view_kind`) with an int32 key `i >= 0`;
+    //! anything else is cold. [`set`] starts with one compare of the cell kind (a kind past
+    //! `PROXY_CALLABLE` is a view), then a cold-path hint (M7-P5 ICWIDE: a new case on the
+    //! array paths cost +2 instructions per array hit; this one costs none per Array store
+    //! hit). [`get`] is not in the fast handler (TA-X86-KEYED): there its bound code made the
+    //! x86-64 handler save 6 registers on entry, +16 instructions per Array load hit
+    //! (navier-stokes +6.1%). Neither makes a call or reads IC state.
     //!
     //! ```text
     //! element type t = cell kind - INT8_VIEW; BigInt64, BigUint64 (a BigInt allocates) and
@@ -420,10 +420,10 @@ mod view {
     //! `INDEX | OBJECT` for an int32 key `>= 0` on a view (no element case, and no kinds-set bit:
     //! the view kinds are no `elements::plain_elements_kind`, and the kinds-set bits 7 and 8
     //! have no writer before TA-3; a negative int32 records `OTHER_KEY`, so it is cold here).
-    //! - A LoadKeyed view hit records as cold ([`super::record_as_cold`], the grow case form):
-    //!   the LoadKeyed key half keeps no state (H16 "the keyed IC state is live only for
-    //!   StoreKeyed"), and a state change there would be a call in the `GetKeyedProperty`
-    //!   handler, which gives its array path a frame (M7-P5 ICWIDE).
+    //! - A LoadKeyed view hit runs in the cold body, after `profile::record_keyed_cold`
+    //!   recorded these bits: the LoadKeyed key half keeps no state (H16 "the keyed IC state is
+    //!   live only for StoreKeyed"), so a view load needs no fast handler state (a state change
+    //!   in the `GetKeyedProperty` handler gives its array path a frame, M7-P5 ICWIDE).
     //! - A StoreKeyed view hit records as cold too, and it leaves the key half alone (as every
     //!   case that is not the Array fast case, MC-w14-6), so the key half names only Array
     //!   receivers, and an Array hit still needs a cold `ARRAY` record first. A view shape in
@@ -661,20 +661,17 @@ mod view {
         }
     }
 
-    /// The view case of `GetKeyedProperty`: for a view `o`, the element or undefined into the
-    /// accumulator, recorded as the cold body records it ([`VIEW_BITS`]); else cold. Never
-    /// allocates, never calls; not a GC point.
+    /// The view case of `GetKeyedProperty` (its cold body, `super::cold_get`): for a view `o`
+    /// and a key the case takes, the element or undefined; else `None` (the generic operation).
+    /// Records nothing (the cold body recorded [`VIEW_BITS`] before). Never allocates, never
+    /// calls; not a GC point.
     #[inline(always)]
-    pub(super) fn get(st: &mut St<'_>, o: u64, k: u64, s: FSlot) -> Flow {
-        if !maybe_view(o) {
-            return Flow::Cold;
-        }
-        core::hint::cold_path();
+    pub(super) fn get(o: u64, k: u64) -> Option<u64> {
         if !is_view(o) {
-            return Flow::Cold;
+            return None;
         }
-        st.acc = match element(o, k) {
-            At::Cold => return Flow::Cold,
+        let v = match element(o, k) {
+            At::Cold => return None,
             At::Out => UNDEFINED,
             At::Elem { t, p } => {
                 // SAFETY: element `i` is below the view's current bound, so it is inside the
@@ -685,7 +682,7 @@ mod view {
         };
         #[cfg(test)]
         VIEW_HITS.with(|c| c.set([c.get()[0] + 1, c.get()[1]]));
-        record_as_cold(s, VIEW_BITS)
+        Some(v)
     }
 
     /// The view case of `SetKeyedProperty`: for a view `o` (the receiver), the in-bounds store
@@ -713,4 +710,28 @@ mod view {
         VIEW_HITS.with(|c| c.set([c.get()[0], c.get()[1] + 1]));
         record_as_cold(s, VIEW_BITS)
     }
+}
+
+/// The `GetKeyedProperty` cold body after `profile::record_keyed_cold`: the view case
+/// ([`view::get`]: the element or undefined into the accumulator), else the generic operation
+/// (`slow::prop`, as `ops.rs` `prop_cold`). The view case is here, not in [`fast_get`], so the
+/// fast handler keeps the base code of its Array path (TA-X86-KEYED: in the fast handler its
+/// bound code made the x86-64 handler save 6 registers on entry). A view load hit pays the
+/// jump to the cold handler and its record, as before TA-2.
+#[inline(always)]
+pub(crate) fn cold_get(st: &mut St<'_>, o: u64, k: u64) -> Done {
+    if let Some(v) = view::get(o, k) {
+        st.acc = v;
+        return Done::Next;
+    }
+    let r = crate::interp::slow::prop(
+        st.cx,
+        st.fp,
+        st.pc,
+        crate::interp::slow::PropOp::GetKeyed,
+        o,
+        k,
+        UNDEFINED,
+    );
+    st.result(r)
 }
