@@ -47,7 +47,7 @@
 //! | Flow | Fast bodies | Record (sibling: tail-called function) |
 //! |---|---|---|
 //! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next::<PLACE>`: it reads the slot operand at its constant offset) |
-//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<PLACE>`: it gets the pair; `TestEqual` first: [`nullish_pair_bits`]) |
+//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<OP>`: it gets the pair; `TestEqual` first: [`nullish_pair_bits`]) |
 //! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
 //!
 //! The match loop, `become` and the prefixed step record inline (`Flow::recorded`).
