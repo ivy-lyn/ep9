@@ -15,6 +15,9 @@
 //!   gen/collator_search/mod.rs  SEARCH_COLLATIONS  the search collations (`-u-co-search`),
 //!                                       from the ICU export data of the ICU4X compiled data
 //!                                       (`collator-search` mode; crate::collator::search)
+//!   gen/t3.rs       T3_*                the flexible day periods (rules and names) and the
+//!                                       availableFormats patterns yMd, yM, Md per CLDR locale
+//!                                       (`t3` mode; crate::date_time_format::pattern)
 //! ```
 //!
 //! The CLDR version of the tables is the CLDR version of the ICU4X compiled data (the tests of
@@ -81,6 +84,11 @@ mod t2;
 #[rustfmt::skip]
 #[path = "gen/collator_search/mod.rs"]
 pub(crate) mod collator_search;
+/// `T3_RULE_LOCALES`, `T3_RULES`, `T3_TEXT`, `T3_TEXT_STARTS`, `T3_NAMES`, `T3_SETS`,
+/// `T3_LOCALE_SETS`.
+#[rustfmt::skip]
+#[path = "gen/t3.rs"]
+mod t3;
 
 use icu_plurals::PluralCategory;
 use icu_provider::DataLocale;
@@ -222,6 +230,69 @@ pub(crate) fn unit_patterns(set: usize, unit: &str, width: usize) -> Option<Unit
 /// unit set `set` in the width `width`.
 pub(crate) fn per_pattern(set: usize, width: usize) -> Option<&'static str> {
     t2_text(*t2::T2_PER.get(set)?.get(width)?)
+}
+
+// ---- T3: the flexible day periods and the numeric date patterns (INTL W4 DTF-PATTERN) ------
+
+/// A day period of a T3 rule (`T3_RULES` ids 0-7: morning1, morning2, afternoon1, afternoon2,
+/// evening1, evening2, night1, night2) or [`DAY_PERIOD_NOON`]; ids 8 and 9 (am, pm) have no
+/// T3 name.
+pub(crate) const DAY_PERIOD_NOON: usize = 8;
+
+/// The day period rule of the data locale `data_locale` (the first locale of its fallback chain
+/// that CLDR has a rule for): the period id of each hour 0-23, whether it has "noon", whether
+/// it has "midnight".
+pub(crate) fn day_period_rule(data_locale: &str) -> Option<(&'static [u8; 24], bool, bool)> {
+    locale_chain(data_locale).iter().find_map(|l| {
+        let i = t3::T3_RULE_LOCALES.binary_search(&l.as_str()).ok()?;
+        let (hours, flags) = &t3::T3_RULES[i];
+        Some((hours, flags & 1 != 0, flags & 2 != 0))
+    })
+}
+
+/// T3 text `i`; `None` for text 0, the empty text ("none").
+fn t3_text(i: u16) -> Option<&'static str> {
+    let i = usize::from(i);
+    let start = *t3::T3_TEXT_STARTS.get(i)? as usize;
+    let end = *t3::T3_TEXT_STARTS.get(i + 1)? as usize;
+    t3::T3_TEXT.get(start..end).filter(|t| !t.is_empty())
+}
+
+/// The T3 set of the data locale `data_locale`: the set of the first CLDR locale of its
+/// fallback chain ([`locale_chain`]).
+fn t3_set(data_locale: &str) -> Option<&'static [u16; 6]> {
+    locale_chain(data_locale).iter().find_map(|l| {
+        let i = locales::CLDR_LOCALES.binary_search(&l.as_str()).ok()?;
+        t3::T3_SETS.get(usize::from(*t3::T3_LOCALE_SETS.get(i)?))
+    })
+}
+
+/// The name (format context) of the day period `period` (a T3 rule id 0-7 or
+/// [`DAY_PERIOD_NOON`]) in the width `width` (0 abbreviated, 1 narrow, 2 wide) for
+/// `data_locale`, if CLDR has one.
+pub(crate) fn day_period_name(
+    data_locale: &str,
+    width: usize,
+    period: usize,
+) -> Option<&'static str> {
+    let set = t3_set(data_locale)?;
+    let record = t3::T3_NAMES.get(usize::from(*set.get(width)?))?;
+    t3_text(*record.get(period)?)
+}
+
+/// The decimal sign of the numbering system `nu` other than "latn", when it is not "." (T3:
+/// the sign most CLDR locales with symbols for `nu` have; ICU4C takes the root locale's).
+pub(crate) fn numbering_system_decimal(nu: &str) -> Option<&'static str> {
+    let i = t3::T3_DECIMALS
+        .binary_search_by(|(n, _)| (*n).cmp(nu))
+        .ok()?;
+    Some(t3::T3_DECIMALS[i].1)
+}
+
+/// The CLDR availableFormats pattern of the numeric date skeleton `skeleton` (0 yMd, 1 yM,
+/// 2 Md) for `data_locale`.
+pub(crate) fn numeric_date_pattern(data_locale: &str, skeleton: usize) -> Option<&'static str> {
+    t3_text(*t3_set(data_locale)?.get(3 + skeleton)?)
 }
 
 #[cfg(test)]
@@ -544,5 +615,31 @@ mod tests {
         // degree, fahrenheit, percent and the 9 kilo- to peta- bits and bytes).
         assert_eq!(units_hit.len(), 30, "{units_hit:?}");
         assert!(locales_hit >= 100, "{locales_hit}");
+    }
+
+    /// T3 through the locale fallback chain: the en and de rules, a name of each width, a
+    /// locale with no rule of its own (en-GB takes en's), and the numeric date patterns.
+    #[test]
+    fn t3_lookups() {
+        let (en, noon, midnight) = day_period_rule("en-US").expect("en rule");
+        assert!(noon && midnight);
+        // morning1 0-11, afternoon1 12-17, evening1 18-20, night1 21-23.
+        assert_eq!((en[0], en[11], en[12], en[18], en[21]), (0, 0, 2, 4, 6));
+        let (gb, ..) = day_period_rule("en-GB").expect("en-GB takes the en rule");
+        assert_eq!(gb, en);
+        let (de, noon, _) = day_period_rule("de-AT").expect("de rule");
+        assert!(!noon);
+        assert_eq!((de[4], de[5], de[10], de[13]), (6, 0, 1, 3));
+        assert_eq!(day_period_name("en", 0, DAY_PERIOD_NOON), Some("noon"));
+        assert_eq!(day_period_name("en", 1, DAY_PERIOD_NOON), Some("n"));
+        assert_eq!(day_period_name("en-US", 2, 6), Some("at night"));
+        assert_eq!(day_period_name("en", 2, 1), None, "en has no morning2");
+        assert_eq!(day_period_name("de", 2, 6), Some("nachts"));
+        assert_eq!(numeric_date_pattern("de-CH", 0), Some("d.M.y"));
+        assert_eq!(numeric_date_pattern("en-GB", 0), Some("dd/MM/y"));
+        assert_eq!(numeric_date_pattern("en", 2), Some("M/d"));
+        assert_eq!(numeric_date_pattern("ja", 0), Some("y/M/d"));
+        assert_eq!(numbering_system_decimal("arab"), Some("\u{66b}"));
+        assert_eq!(numbering_system_decimal("deva"), None);
     }
 }
