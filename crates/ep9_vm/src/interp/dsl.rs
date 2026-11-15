@@ -717,9 +717,9 @@ macro_rules! skip_next_fn {
         /// length: every opcode of one length shared its dispatch jump, which a branch
         /// predictor keys by its address, so the next handlers of all those opcodes mixed at
         /// one jump (x86-64 cachegrind, 51e20683: `skip_next::<3>` 11.8% of the indirect
-        /// mispredicts of navier-stokes, 5.9% of raytrace). With `OP` each opcode has its own
-        /// jump, as its handler has; the instructions stay the same (3 on x86-64). The copies
-        /// of one length are the same code, so [`distinct_copy`] keeps LLVM from merging them.
+        /// mispredicts of navier-stokes, 5.9% of raytrace). With `OP` each opcode has its own copy,
+        /// so its own jump where the linker keeps the copies (an ELF link; the win64 release link
+        /// folds them: [`distinct_copy`]). The instructions stay the same (3 on x86-64).
         ///
         /// # Safety
         /// `pc` is an instruction of verified code at one-byte scale in the live top frame
@@ -772,8 +772,8 @@ pub(crate) const fn opcode_of(op: u8) -> ep9_bytecode::Opcode {
 /// code in two functions makes LLVM merge them (MergeFunctions, on in optimized builds: the
 /// x86-64 cross build without this gave `TestEqualStrict` the `record_pair_next` copy of
 /// `TestEqual`), and then the opcodes would share one dispatch jump again. An `asm!` block
-/// whose text is an assembler comment that names `OP`, so the copies differ in LLVM IR; it
-/// emits no instruction and touches no register, memory, stack or flag.
+/// whose text is an assembler comment that names `OP` (no instruction; no register, memory,
+/// stack or flag), so the copies differ in LLVM IR only: win64 link /OPT:ICF folds them again.
 #[inline(always)]
 pub(crate) fn distinct_copy<const OP: u8>() {
     // SAFETY: the template is a comment only: no instruction, no operand.

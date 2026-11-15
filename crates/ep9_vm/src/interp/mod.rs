@@ -340,8 +340,8 @@ pub(crate) enum Flow {
     /// `record_next`), so the record code is not in the handler: an inline record on x86-64 saves
     /// registers on entry (M4-P1 PROFILE-X64). (a), (c) and the prefixed step record inline.
     Record(crate::profile::Rec),
-    /// As `Record`, for a comparison whose record needs the operand pair
-    /// (`profile::Pair`); (b) tail-calls `dsl::record_pair_next`.
+    /// As `Record`, for a comparison whose record needs the operand pair (`profile::Pair`); (b)
+    /// tail-calls `dsl::record_pair_next` (M8-P5: `TestEqual` first tests its pair, as `Record`).
     RecordPair(crate::profile::Pair),
     /// As `Jump(t)` after `call_fast` pushed a callee frame (`fp` is the new frame), for a
     /// call in the sampled window: `profile::record_call_pushed` with the caller's Call slot.
