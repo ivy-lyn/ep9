@@ -3261,3 +3261,249 @@ class S extends B { constructor(f) { super(f); } }\n";
         }
     }
 }
+
+// ---- M8-P5 MC-w40-7: the linked text under GC stress, and a JS throw through it -------------
+
+// A second copy of the linked frame stub (the `ep9_linked_test_text` form above), for
+// `unit_loader_a_registered_linked_text_runs_in_place_under_gc_stress`: a text is registered
+// once per process, and `unit_loader_a_registered_linked_text_runs_in_place` checks that its
+// own text is not registered yet, so the two tests cannot share one text.
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_gc_test,\"ax\",%progbits",
+    ".p2align 4",
+    ".globl ep9_linked_gc_test_text",
+    ".hidden ep9_linked_gc_test_text",
+    "ep9_linked_gc_test_text:",
+    LINKED_A64_BODY!(),
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+core::arch::global_asm!(
+    ".section __TEXT,__text,regular,pure_instructions",
+    ".p2align 4",
+    ".globl _ep9_linked_gc_test_text",
+    ".private_extern _ep9_linked_gc_test_text",
+    "_ep9_linked_gc_test_text:",
+    LINKED_A64_BODY!(),
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_gc_test,\"ax\",@progbits",
+    ".p2align 4",
+    ".globl ep9_linked_gc_test_text",
+    ".hidden ep9_linked_gc_test_text",
+    "ep9_linked_gc_test_text:",
+    ".cfi_startproc",
+    "push rbp",
+    ".cfi_def_cfa_offset 16",
+    ".cfi_offset rbp, -16",
+    "mov rbp, rsp",
+    ".cfi_def_cfa_register rbp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    ".cfi_def_cfa rsp, 8",
+    "ret",
+    ".cfi_endproc",
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "x86_64", windows))]
+core::arch::global_asm!(
+    ".section .text$ep9lg,\"xr\"",
+    ".p2align 4",
+    ".globl ep9_linked_gc_test_text",
+    ".def ep9_linked_gc_test_text",
+    ".scl 2",
+    ".type 32",
+    ".endef",
+    "ep9_linked_gc_test_text:",
+    ".seh_proc ep9_linked_gc_test_text",
+    "push rbp",
+    ".seh_pushreg rbp",
+    ".seh_endprologue",
+    "mov rbp, rsp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    "ret",
+    ".seh_endproc",
+    ".text",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+unsafe extern "C" {
+    /// The first byte of the second linked frame stub (above).
+    static ep9_linked_gc_test_text: u8;
+}
+
+/// The second linked frame stub: `call0_bytes().0.len()` bytes in this binary's text.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn linked_gc_stub() -> &'static [u8] {
+    let len = call0_bytes().0.len();
+    // SAFETY: as in `linked_stub`: the global_asm above places the stub's bytes, `len` of
+    // them, at the symbol, in the binary's read-execute text, never written.
+    unsafe { core::slice::from_raw_parts(&raw const ep9_linked_gc_test_text, len) }
+}
+
+/// `return g(<f>);` with `f` the global `f` (as [`call_g_walk`]).
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn call_g_with(f: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let a = s.a.get(0);
+    s.lda_global(f);
+    s.b.star(a);
+    s.lda_global("g");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver1(f, a, slot).return_();
+    unit("", vec![s.finish()])
+}
+
+/// MC-w40-7 (M8-P5): `unit_loader_a_registered_linked_text_runs_in_place` under GC stress, and
+/// a JS throw through the linked frame (A2-REPORT fixer_need 1). The isolate collects before
+/// every allocation and verifies the heap after each collection (`construct_isolate` with
+/// stress: `gc_stress` 1, `verify_after_gc`). `g` runs the second linked stub in place. While
+/// the linked frame is live, `walk` walks through it, and `mkobj` allocates (so collections
+/// run) and gives a new object that stays whole. Then `boom` throws through the linked frame,
+/// from Rust and from T0: `Error.stack` names `g`, the function of the linked frame. Last, a
+/// full collection and `verify_heap`. Limit: a root walk that skipped the VM frame of the
+/// linked code would not make this test fail. Each Value of that frame is a copy that its
+/// caller (a T0 frame, or a Rust local that the conservative scan sees) or a global also holds,
+/// and the stub reads its frame only before its one call; its native part holds no Value.
+#[test]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn unit_loader_a_registered_linked_text_runs_in_place_under_gc_stress() {
+    use ep9_platform::linked::{LinkedUnit, linked_text, register};
+    let text = linked_gc_stub();
+    assert_eq!(
+        text,
+        &call0_bytes().0[..],
+        "the linked stub is the frame stub"
+    );
+    let unit: &'static [u8] = Box::leak(vec![0x55u8; 64].into_boxed_slice());
+    let rec: &'static LinkedUnit = Box::leak(Box::new(LinkedUnit::new(unit, text)));
+    // SAFETY: as in `unit_loader_a_registered_linked_text_runs_in_place`: `text` is in this
+    // binary's text, never written, and the binary's unwind tables cover it.
+    unsafe { register(rec) }.unwrap();
+    assert_eq!(linked_text(text).map(<[u8]>::as_ptr), Some(text.as_ptr()));
+
+    let (mut iso, _) = construct_isolate(false, true);
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: as in `unit_loader_a_registered_linked_text_runs_in_place`: the linked text is
+    // the frame stub (it runs the bytecode of `g`), and the binary's tables describe it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            text,
+            &[],
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
+    assert_eq!(code.start, text.as_ptr() as usize, "the code runs in place");
+    let ret = code.start + call0_bytes().1;
+    let through = |what: &str| {
+        let ips = WALKED.with(|x| x.borrow_mut().take()).expect(what);
+        let at = ips.iter().position(|&ip| ip == ret).unwrap_or_else(|| {
+            panic!("{what}: the walk misses the linked frame (return address {ret:#x}): {ips:x?}")
+        });
+        assert!(
+            ips.len() - at >= 4,
+            "{what}: the walk stops at the linked frame: {ips:x?}"
+        );
+    };
+    let [g, w, m, b] = ["g", "walk", "mkobj", "boom"].map(|n| iso.global_raw(n).unwrap());
+
+    // From Rust: `walk` and `mkobj` through the linked frame.
+    WALKED.with(|x| x.borrow_mut().take());
+    let v = call_through_entry(&mut iso, g, &[w]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+    through("g(walk)");
+    let before = iso.gc_stats().collections;
+    let o = call_through_entry(&mut iso, g, &[m]).unwrap().unwrap();
+    through("g(mkobj)");
+    assert!(
+        iso.gc_stats().collections > before,
+        "no collection ran under the linked frame"
+    );
+    let tag = iso.with_cx_checkpoint(|cx| {
+        let o: Local<'_> = Local::from_bits(o.to_bits());
+        let o = o.as_object().expect("mkobj gives an object");
+        cx.get(o, "tag").map(|t| cx.display(t))
+    });
+    assert_eq!(tag.as_deref(), Ok("own"));
+
+    // From T0: the script frame calls `g`, which enters the linked text.
+    WALKED.with(|x| x.borrow_mut().take());
+    assert_eq!(
+        run_js(&mut iso, call_g_with("walk")),
+        Ok(Value::int32(42).to_bits())
+    );
+    through("T0 g(walk)");
+
+    // A JS throw through the linked frame, from Rust and from T0.
+    WALKED.with(|x| x.borrow_mut().take());
+    let e = call_through_entry(&mut iso, g, &[b]).unwrap().unwrap_err();
+    through("g(boom)");
+    let stack = e.stack.unwrap_or_default();
+    assert!(e.message.starts_with("Error: boom"), "{}", e.message);
+    assert!(stack.contains("at g ("), "the stack names g: {stack}");
+    WALKED.with(|x| x.borrow_mut().take());
+    let e = shown_in(&mut iso, call_g_with("boom"), false).unwrap_err();
+    through("T0 g(boom)");
+    assert!(e.starts_with("Error: boom"), "{e}");
+    assert!(e.contains("at g ("), "the stack names g: {e}");
+
+    iso.collect_garbage();
+    iso.verify_heap().unwrap();
+}
