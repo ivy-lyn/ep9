@@ -98,3 +98,27 @@ fn narrow_weekday_and_month_names() {
         ])
     );
 }
+
+const WIDTHS: &str = r#"const ro = (l, o) => { const r = new Intl.DateTimeFormat(l, Object.assign({timeZone: "UTC"}, o)).resolvedOptions(); return ["year", "month", "day", "hour", "minute", "second"].filter(k => r[k]).map(k => k + ":" + r[k]).join(" "); };
+print(ro("en-GB", {}), "|", ro("en", {hour: "numeric", minute: "numeric"}), "|", ro("en-GB", {hour: "numeric"}));
+print(ro("en", {minute: "numeric", second: "numeric"}), "|", ro("de", {}), "|", ro("en", {year: "2-digit", month: "numeric", day: "numeric"}));
+print(ro("fr", {}), "|", ro("en", {hour: "numeric", minute: "numeric", second: "numeric"}), "|", ro("en", {hour: "numeric", minute: "numeric", hourCycle: "h23"}), "|", ro("de", {hour: "numeric", hourCycle: "h11", minute: "numeric"}));
+print(ro("en", {minute: "numeric"}), "|", ro("en", {hour: "numeric"}), "|", ro("en", {month: "2-digit", day: "numeric"}), "|", ro("en", {month: "numeric", day: "2-digit"}), "|", ro("en", {month: "short", day: "numeric"}), "|", ro("ja", {}));
+"#;
+
+/// resolvedOptions reports the widths of the pattern that format uses (W4 Codex r1 F5;
+/// ECMA-402 11.3.7 reads [[DateTimeFormat]], the selected format, as V8 does): en-GB
+/// "dd/MM/y" gives month and day "2-digit", en "h:mm a" gives minute "2-digit". A text field,
+/// the year and a field the request did not have stay as they are.
+#[test]
+fn resolved_options_report_the_selected_widths() {
+    assert_eq!(
+        run_both(WIDTHS),
+        lines(&[
+            "year:numeric month:2-digit day:2-digit | hour:numeric minute:2-digit | hour:2-digit",
+            "minute:2-digit second:2-digit | year:numeric month:numeric day:numeric | year:2-digit month:numeric day:numeric",
+            "year:numeric month:2-digit day:2-digit | hour:numeric minute:2-digit second:2-digit | hour:2-digit minute:2-digit | hour:numeric minute:2-digit",
+            "minute:numeric | hour:numeric | month:2-digit day:numeric | month:numeric day:2-digit | month:short day:numeric | year:numeric month:numeric day:numeric",
+        ])
+    );
+}

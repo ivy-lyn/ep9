@@ -947,6 +947,12 @@ const REFERENCE_MS: i64 = 946_728_000_000;
 /// `r` (PartitionDateTimePattern, 11.5.5): the ICU4X output cut by its pattern, with the
 /// changes of `pattern::adjust` (W4 DTF-PATTERN).
 pub fn format_ms(r: &Resolved, ms: i64) -> Option<Vec<(&'static str, String)>> {
+    format_pieces(r, ms).map(|pieces| pattern::parts(&pieces))
+}
+
+/// The pieces (field letter and count, text) of the formatted time value `ms` of `r`: the
+/// ICU4X output cut by its pattern, after `pattern::adjust`.
+fn format_pieces(r: &Resolved, ms: i64) -> Option<Vec<pattern::Piece>> {
     let f = formatter_for(r)?;
     let input = zoned(&r.time_zone, ms);
     let formatted = f.format(&input);
@@ -965,8 +971,41 @@ pub fn format_ms(r: &Resolved, ms: i64) -> Option<Vec<(&'static str, String)>> {
         minute: input.time.minute.number(),
         second: input.time.second.number(),
     };
-    let pieces = pattern::adjust(r, &input, &clock, two_digit_year, pieces);
-    Some(pattern::parts(&pieces))
+    Some(pattern::adjust(r, &input, &clock, two_digit_year, pieces))
+}
+
+/// The components that resolvedOptions reports (11.3.7 step 5 reads [[DateTimeFormat]], the
+/// format record that CreateDateTimeFormat selected, not the request): the numeric hour,
+/// minute, second, month and day widths of the pattern that format uses (count 2: "2-digit",
+/// count 1: "numeric"; V8 maps its ICU pattern back the same way). A text field, the year,
+/// fractionalSecondDigits, timeZoneName and a field that the request did not have stay as
+/// they are; so do the styles (no components are reported then).
+fn selected_components(r: &Resolved) -> Components {
+    let mut out = r.components;
+    if r.styles.date_style.is_some() || r.styles.time_style.is_some() {
+        return out;
+    }
+    let Some(pieces) = format_pieces(r, REFERENCE_MS) else {
+        return out;
+    };
+    for p in pieces {
+        let Some((ch, n)) = p.field else {
+            continue;
+        };
+        let i = match ch {
+            'M' | 'L' if n <= 2 => c::MONTH,
+            'd' => c::DAY,
+            'h' | 'H' | 'K' | 'k' => c::HOUR,
+            'm' => c::MINUTE,
+            's' => c::SECOND,
+            _ => continue,
+        };
+        // 1 "2-digit", 2 "numeric" (NUMERIC and the first two MONTH values).
+        if matches!(out.0[i], 1 | 2) {
+            out.0[i] = if n == 2 { 1 } else { 2 };
+        }
+    }
+    out
 }
 
 // ---- formatToParts: the pattern field types ---------------------------------------------------
@@ -1205,8 +1244,10 @@ fn resolved_options<'s>(
         cx.create_data_property_or_throw(o, "hour12", h12)?;
     }
     if r.styles.date_style.is_none() && r.styles.time_style.is_none() {
+        // The widths of the selected pattern (W4 Codex r1 F5).
+        let shown = selected_components(&r);
         for (i, (prop, _, _)) in COMPONENTS.iter().enumerate() {
-            let Some(v) = r.components.get(i) else {
+            let Some(v) = shown.get(i) else {
                 continue;
             };
             if i == c::FRACTIONAL_SECOND_DIGITS {
