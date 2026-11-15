@@ -11,7 +11,8 @@
 //!                                  └─ components:
 //!                                     drop the time fields ICU4X adds ({minute, second} -> "mm:ss")
 //!                                     dayPeriod: the T3 flexible day period "B" (in the morning)
-//!                                     weekday / month text width per field (a second ICU4X run)
+//!                                     weekday / month text width per field (a second ICU4X run;
+//!                                       narrow: the ICU4X names data)
 //!                                     numeric month / day width of the CLDR availableFormats
 //!                                       (T3 yMd, yM, Md: de "d.M.y")
 //!                                     year "2-digit"; one numeric field alone ("6" for second)
@@ -424,6 +425,131 @@ fn text_in_width(
         .map(|p| p.text)
 }
 
+/// The narrow name (UTS 35 count 5) of the weekday or month field `ch` ('E' or 'c', 'M' or
+/// 'L': the format or the stand-alone names) of `input` in the locale and calendar of `r`,
+/// read from the ICU4X names data (the baked provider does the locale fallback). `None` when
+/// the data has no plain name for the month (a leap month, or a leap-pattern table): the
+/// caller keeps the ICU4X text.
+fn narrow_text(
+    r: &Resolved,
+    input: &ZonedDateTime<Iso, TimeZoneInfo<AtTime>>,
+    ch: char,
+) -> Option<String> {
+    use icu_calendar::{AnyCalendar, AnyCalendarKind, Ref};
+    use icu_datetime::provider::Baked;
+    use icu_datetime::provider::names::{
+        DatetimeNamesMonthBuddhistV1, DatetimeNamesMonthChineseV1, DatetimeNamesMonthCopticV1,
+        DatetimeNamesMonthDangiV1, DatetimeNamesMonthEthiopianV1, DatetimeNamesMonthGregorianV1,
+        DatetimeNamesMonthHebrewV1, DatetimeNamesMonthHijriV1, DatetimeNamesMonthIndianV1,
+        DatetimeNamesMonthJapaneseV1, DatetimeNamesMonthPersianV1, DatetimeNamesMonthRocV1,
+        DatetimeNamesWeekdayV1,
+    };
+    use icu_datetime::provider::semantic_skeletons::marker_attrs::{NARROW, NARROW_STANDALONE};
+    use icu_provider::prelude::*;
+
+    let attributes = if matches!(ch, 'L' | 'c') {
+        NARROW_STANDALONE
+    } else {
+        NARROW
+    };
+    let locale = DataLocale::from(&tag::icu_locale(&tag::remove_unicode_extension(&r.locale)));
+    let req = DataRequest {
+        id: DataIdentifierBorrowed::for_marker_attributes_and_locale(attributes, &locale),
+        ..Default::default()
+    };
+    if matches!(ch, 'E' | 'c') {
+        let names = DataProvider::<DatetimeNamesWeekdayV1>::load(&Baked, req).ok()?;
+        return names
+            .payload
+            .get()
+            .get(input.date.weekday())
+            .map(str::to_string);
+    }
+    let kind = match r.calendar.as_str() {
+        "buddhist" => AnyCalendarKind::Buddhist,
+        "chinese" => AnyCalendarKind::Chinese,
+        "coptic" => AnyCalendarKind::Coptic,
+        "dangi" => AnyCalendarKind::Dangi,
+        "ethioaa" => AnyCalendarKind::EthiopianAmeteAlem,
+        "ethiopic" => AnyCalendarKind::Ethiopian,
+        "gregory" | "iso8601" => AnyCalendarKind::Gregorian,
+        "hebrew" => AnyCalendarKind::Hebrew,
+        "indian" => AnyCalendarKind::Indian,
+        "islamic-civil" => AnyCalendarKind::HijriTabularTypeIIFriday,
+        "islamic-tbla" => AnyCalendarKind::HijriTabularTypeIIThursday,
+        "islamic-umalqura" => AnyCalendarKind::HijriUmmAlQura,
+        "japanese" => AnyCalendarKind::Japanese,
+        "persian" => AnyCalendarKind::Persian,
+        "roc" => AnyCalendarKind::Roc,
+        _ => return None,
+    };
+    let calendar = AnyCalendar::new(kind);
+    let month = input.date.to_calendar(Ref(&calendar)).month();
+    let nu = r.numbering_system.as_str();
+    match kind {
+        AnyCalendarKind::Buddhist => month_name::<DatetimeNamesMonthBuddhistV1>(req, month, nu),
+        AnyCalendarKind::Chinese => month_name::<DatetimeNamesMonthChineseV1>(req, month, nu),
+        AnyCalendarKind::Coptic => month_name::<DatetimeNamesMonthCopticV1>(req, month, nu),
+        AnyCalendarKind::Dangi => month_name::<DatetimeNamesMonthDangiV1>(req, month, nu),
+        AnyCalendarKind::Ethiopian | AnyCalendarKind::EthiopianAmeteAlem => {
+            month_name::<DatetimeNamesMonthEthiopianV1>(req, month, nu)
+        }
+        AnyCalendarKind::Hebrew => month_name::<DatetimeNamesMonthHebrewV1>(req, month, nu),
+        AnyCalendarKind::Indian => month_name::<DatetimeNamesMonthIndianV1>(req, month, nu),
+        AnyCalendarKind::HijriTabularTypeIIFriday
+        | AnyCalendarKind::HijriTabularTypeIIThursday
+        | AnyCalendarKind::HijriUmmAlQura => {
+            month_name::<DatetimeNamesMonthHijriV1>(req, month, nu)
+        }
+        AnyCalendarKind::Japanese => month_name::<DatetimeNamesMonthJapaneseV1>(req, month, nu),
+        AnyCalendarKind::Persian => month_name::<DatetimeNamesMonthPersianV1>(req, month, nu),
+        AnyCalendarKind::Roc => month_name::<DatetimeNamesMonthRocV1>(req, month, nu),
+        _ => month_name::<DatetimeNamesMonthGregorianV1>(req, month, nu),
+    }
+}
+
+/// The name of `month` in the month names of the marker `M` for `req`: the plain name of a
+/// month that is not a leap month or a leap base (ICU4X `get_name_for_month`), or the month
+/// number (digits of `nu`) when the table is numeric. `None` for a leap month or a leap base
+/// (their name is a pattern around the plain name; the ICU4X text stays).
+fn month_name<M>(
+    req: icu_provider::DataRequest,
+    month: icu_calendar::types::MonthInfo,
+    nu: &str,
+) -> Option<String>
+where
+    M: icu_provider::DataMarker<DataStruct = icu_datetime::provider::names::MonthNames<'static>>,
+    icu_datetime::provider::Baked: icu_provider::DataProvider<M>,
+{
+    use icu_calendar::types::LeapStatus;
+    use icu_datetime::provider::names::MonthNames;
+    let names = icu_provider::DataProvider::<M>::load(&icu_datetime::provider::Baked, req).ok()?;
+    let normal = month.leap_status() == LeapStatus::Normal;
+    let index = usize::from(month.number()).checked_sub(1)?;
+    match names.payload.get() {
+        MonthNames::Linear(l) if normal => l.get(index).map(str::to_string),
+        // The last two entries are the leap and leap-base patterns (not names).
+        MonthNames::LeapPattern(l) if normal && index + 2 < l.len() => {
+            l.get(index).map(str::to_string)
+        }
+        MonthNames::Numeric => Some(number_text(month.number(), nu)),
+        MonthNames::LeapNumeric(_) | MonthNames::LeapNumericWithBase(_) if normal => {
+            Some(number_text(month.number(), nu))
+        }
+        _ => None,
+    }
+}
+
+/// The decimal digits of `n` in the numbering system `nu` (ASCII digits for a system with
+/// no simple digits).
+fn number_text(n: u8, nu: &str) -> String {
+    let ascii = n.to_string();
+    match cldr::numbering_system_digits(nu) {
+        Some(ds) => ascii.bytes().map(|b| ds[usize::from(b - b'0')]).collect(),
+        None => ascii,
+    }
+}
+
 /// The local time of the ICU4X input: hour, minute, second.
 pub(super) struct Clock {
     pub(super) hour: u8,
@@ -528,8 +654,16 @@ pub(super) fn adjust(
         if (ch == 'M' || ch == 'L') && n < 3 {
             continue;
         }
-        if text_class(n) == want || want == 5 {
-            // ICU4X has no narrow run (the field bag maps narrow to the abbreviated length).
+        if text_class(n) == want {
+            continue;
+        }
+        if want == 5 {
+            // ICU4X has no narrow run (the field bag maps narrow to the abbreviated length):
+            // the narrow name from the names data. No name: the ICU4X text stays.
+            if let Some(text) = narrow_text(r, input, ch) {
+                p.text = text;
+                p.field = Some((ch, 5));
+            }
             continue;
         }
         if let Some(text) = text_in_width(r, input, ch, want) {

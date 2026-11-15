@@ -68,3 +68,33 @@ fn h24_writes_24_at_midnight() {
         ])
     );
 }
+
+const NARROW: &str = r#"const d = Date.UTC(2024, 0, 1, 2, 35, 6, 789);
+const f = (l, o, x = d) => new Intl.DateTimeFormat(l, Object.assign({timeZone: "UTC"}, o)).format(x);
+const p = (l, o, x = d) => new Intl.DateTimeFormat(l, Object.assign({timeZone: "UTC"}, o)).formatToParts(x).map(q => q.type + ":" + q.value).join("/");
+print(f("en", {month: "narrow"}), "|", f("en", {weekday: "narrow"}), "|", f("en", {weekday: "narrow", month: "long", day: "numeric"}), "|", p("en", {month: "narrow", day: "numeric"}), "|", f("de", {month: "narrow"}), "|", f("ja", {weekday: "narrow"}));
+print(f("en", {weekday: "narrow", month: "narrow", day: "numeric"}), "|", f("en", {weekday: "long", month: "narrow", day: "numeric"}), "|", f("en", {weekday: "narrow", year: "numeric", month: "short", day: "numeric"}), "|", f("ru", {month: "narrow"}), "|", f("ru", {month: "narrow", day: "numeric"}), "|", f("zh", {weekday: "narrow"}));
+print(f("en-u-ca-buddhist", {month: "narrow", year: "numeric"}), "|", f("en-u-ca-japanese", {month: "narrow"}), "|", f("en-u-ca-roc", {month: "narrow"}), "|", f("fr-u-ca-iso8601", {month: "narrow"}));
+print(["hebrew", "chinese", "dangi", "islamic-umalqura", "persian", "indian", "coptic", "ethioaa"].map(ca => f("en-u-ca-" + ca, {month: "narrow"})).join(" "), "|", f("fr-u-ca-hebrew", {month: "narrow"}));
+const ro = new Intl.DateTimeFormat("en", {month: "narrow", weekday: "narrow"}).resolvedOptions();
+print(ro.month, ro.weekday);
+"#;
+
+/// month and weekday "narrow" (W4 Codex r1 F4): the ICU4X field bag maps narrow to the
+/// abbreviated length (or wide when another field is long), so the narrow name comes from
+/// the ICU4X names data per field (format or stand-alone), in the calendar of the format (a
+/// number where the data is numeric). Not here: a leap month (Hebrew "Adar II" is "7" in node,
+/// a leap pattern in ICU4X), which keeps the ICU4X text.
+#[test]
+fn narrow_weekday_and_month_names() {
+    assert_eq!(
+        run_both(NARROW),
+        lines(&[
+            "J | M | M, January 1 | month:J/literal: /day:1 | J | 月",
+            "M, J 1 | Monday, J 1 | M, Jan 1, 2024 | Я | 1 Я | 一",
+            "J 2567 BE | J | J | J",
+            "4 11 11 6 10 10 4 4 | 4",
+            "narrow narrow",
+        ])
+    );
+}
