@@ -541,7 +541,8 @@ impl Record {
     /// IsValidDuration ( years, ..., nanoseconds ) (Temporal): one sign for
     /// all fields; years, months and weeks below 2**32; the time part (days to nanoseconds)
     /// below 2**53 seconds. The time part is an exact `i128` sum in nanoseconds
-    /// (INTL-V2-FP4): its bound is about 9.0072e24 ns.
+    /// (INTL-V2-FP4): its bound is about 9.0072e24 ns, and the test is on both sides (no `abs`:
+    /// the sum can be `i128::MIN`, whose `abs` overflows).
     pub fn is_valid(&self) -> bool {
         let mut sign = 0i8;
         for v in self.0 {
@@ -575,7 +576,8 @@ impl Record {
             };
             total = t;
         }
-        total.abs() < MAX_SECONDS * 1_000_000_000
+        let bound = MAX_SECONDS * 1_000_000_000;
+        -bound < total && total < bound
     }
 }
 
@@ -1157,6 +1159,15 @@ mod tests {
         f[9] = f64::MAX;
         assert!(!record(f).is_valid());
         f[9] = -f64::MAX;
+        assert!(!record(f).is_valid());
+        // Days and nanoseconds whose exact sum is i128::MIN (-2**127 ns): far past the bound,
+        // so not valid (no `abs` overflow); the mirror sum 2**127 overflows the i128 add.
+        let mut f = [0.0; 10];
+        f[3] = -1_969_226_660_422_097_529_995_264.0;
+        f[9] = -5_140_096_494_115_884_105_728.0;
+        assert!(!record(f).is_valid());
+        f[3] = -f[3];
+        f[9] = -f[9];
         assert!(!record(f).is_valid());
     }
 

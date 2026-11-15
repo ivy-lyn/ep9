@@ -155,7 +155,7 @@ const near = 9007199254740990926258176;
 print(digital.format({nanoseconds: near}), digital.format({nanoseconds: -near}), digital.format({seconds: 9007199254740991, nanoseconds: 999999999}));
 print(JSON.stringify(digital.formatToParts({nanoseconds: -near}).map(p => p.value)));
 const r = [];
-for (const d of [{seconds: 9007199254740991, nanoseconds: 1_000_000_000}, {nanoseconds: 9007199254740992000000000}, {days: 104249991375}, {days: 104249991374}]) {
+for (const d of [{seconds: 9007199254740991, nanoseconds: 1_000_000_000}, {nanoseconds: 9007199254740992000000000}, {days: 104249991375}, {days: 104249991374}, {days: -1969226660422097529995264, nanoseconds: -5140096494115884105728}]) {
   try { digital.format(d); r.push("ok"); } catch (e) { r.push(e.constructor.name); }
 }
 print(r.join(" "));
@@ -177,7 +177,7 @@ fn sub_second_sums_are_exact_near_9e24_ns() {
             r#"0:00:9007199254740991.975424 | -0:00:9007199254740991.975424 | 9,007,199,254,740,991.975424 seconds | -9,007,199,254,740,991,975.42ms"#,
             r#"0:00:9007199254740990.926258176 -0:00:9007199254740990.926258176 0:00:9007199254740991.999999999"#,
             r#"["-","0",":","00",":","9007199254740990",".","926258176"]"#,
-            r#"RangeError RangeError RangeError ok"#,
+            r#"RangeError RangeError RangeError ok RangeError"#,
         ])
     );
 }
