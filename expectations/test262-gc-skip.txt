@@ -2,16 +2,16 @@
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
 # 63 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2,
-# 1 INTL W3 and 3 INTL W4 tests. 9 of them also fail without GC-stress and are listed in every
+# 1 INTL W3 and 3 INTL W4 tests. 7 of them also fail without GC-stress and are listed in every
 # expectations/test262.<triple>.jit.txt: the 5 month-2 tco-* tests, the M3-P1 test
-# two-digit-years.js, the 2 INTL W2 supportedLocalesOf-* tests (they also needed
-# Intl.DateTimeFormat) and the INTL W4 test compare-to-temporal-lunisolar.js. Since M7-P2 (the
+# two-digit-years.js and the INTL W4 test compare-to-temporal-lunisolar.js. Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
-# 42331111457), and ownkeys-linear.js passes too. The other 54 pass without GC-stress: the
-# other 6 month-2 tests, the other 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test, the 7
-# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the 2 INTL W2 NumberFormat tests, the
-# INTL W3 test and the other 2 INTL W4 tests.
+# 42331111457), and ownkeys-linear.js passes too. Since INTL W4 (Intl.DateTimeFormat) the 2
+# INTL W2 supportedLocalesOf-* tests pass without GC-stress too (W4 took them out of the jit
+# files). The other 56 pass without GC-stress: the other 6 month-2 tests, the other 9 M3-P1
+# tests, the 22 M3-P2 tests, the M3-P3 test, the 7 M4-P3 tests, the 2 B0 tests, the 2 M7-P2
+# tests, the 4 INTL W2 tests, the INTL W3 test and the other 2 INTL W4 tests.
 # The 8 month-2 tests that failed without GC-stress when they were listed:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists). They failed at the first lone surrogate, 0xD800, until the M7-P2 shim; now they
@@ -99,8 +99,9 @@
 # - supportedLocalesOf-consistent-with-resolvedOptions.js and
 #   supportedLocalesOf-unicode-extensions-ignored.js: hard timeout on linux-x64 and
 #   windows-x64; on macos-arm64 the sloppy run ran past 60 s (it returned after the deadline);
-#   no timeout on linux-arm64. Both fail without GC-stress (no Intl.DateTimeFormat yet) and stay
-#   in every jit file.
+#   no timeout on linux-arm64. Both failed without GC-stress until INTL W4 (no
+#   Intl.DateTimeFormat). Since W4 both pass without GC-stress (0.4 s each, mac a64) and are not
+#   in the jit files.
 # INTL W3 (TZ-FIX; M6-ORCH-530): Temporal/ZonedDateTime/prototype/equals/canonical-not-equal.js
 # failed fast before W3 (it stopped at the first Asia/Hanoi pair). Since TZ-FIX it compares all
 # 445 x 444 / 2 = 98,790 pairs of time zones (2 ZonedDateTime objects per pair). It passes
