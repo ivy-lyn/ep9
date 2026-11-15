@@ -6,6 +6,8 @@
 //!   Options: `--cldr DIR`, `--pin FILE`, `--out DIR`.
 //! - `collator-search` (feature `datagen`): the search collations, from the pinned ICU export
 //!   data (`collator_search` module). Options: `--icuexport ZIP`, `--pin FILE`, `--out DIR`.
+//! - `t3`: T3, the flexible day periods and the numeric date patterns, from the pinned CLDR
+//!   JSON (`t3` module). Options: `--cldr DIR`, `--pin FILE`, `--out DIR`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -21,11 +23,13 @@ const MODES: &[Mode] = &[
         &["--icuexport", "--pin", "--out"],
         collator_search,
     ),
+    ("t3", &["--cldr", "--pin", "--out"], t3),
 ];
 
 /// The usage line.
 const USAGE: &str = "usage: cldr-tables [tables] [--check] [--cldr DIR] [--pin FILE] [--out DIR]\n       \
-                     cldr-tables collator-search [--check] [--icuexport ZIP] [--pin FILE] [--out DIR]";
+                     cldr-tables collator-search [--check] [--icuexport ZIP] [--pin FILE] [--out DIR]\n       \
+                     cldr-tables t3 [--check] [--cldr DIR] [--pin FILE] [--out DIR]";
 
 /// The parsed options of a mode: `--check` and the path options it names.
 struct Args {
@@ -232,4 +236,49 @@ fn collator_search(_: Args) -> ExitCode {
          --manifest-path tools/cldr-tables/Cargo.toml --features datagen -- collator-search)"
     );
     ExitCode::from(2)
+}
+
+/// The `t3` mode: T3, the flexible day periods and the numeric date patterns.
+fn t3(a: Args) -> ExitCode {
+    use cldr_tables::t3;
+    let (cldr, pin, out) = cldr_tables::default_paths();
+    let (cldr, pin, out) = (
+        a.path("--cldr", cldr),
+        a.path("--pin", pin),
+        a.path("--out", out),
+    );
+    let t = match cldr_tables::read_pin(&pin).and_then(|p| t3::read(&cldr, &p)) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("cldr-tables: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let text = t3::render(&t);
+    let len = text.len();
+    let files = std::collections::BTreeMap::from([(t3::OUTPUT_FILE, text)]);
+    let what = format!("CLDR {} T3", t.cldr_version);
+    if let Err(code) = write_or_check(
+        &out,
+        &files,
+        a.check,
+        &what,
+        "cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- t3",
+    ) {
+        return code;
+    }
+    if !a.check {
+        println!(
+            "cldr-tables t3: CLDR {} ({}): {} rule locales, {} texts, {} name records, {} sets, \
+             {} locales, {len} B",
+            t.cldr_version,
+            t.cldr_commit,
+            t.rule_locales.len(),
+            t.texts.len(),
+            t.names.len(),
+            t.sets.len(),
+            t.locales.len()
+        );
+    }
+    ExitCode::SUCCESS
 }

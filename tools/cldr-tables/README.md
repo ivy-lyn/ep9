@@ -82,3 +82,28 @@ asset `icu4x-icuexportdata-<version>.zip` and its sha256), and run the commands.
 This crate has its own `[workspace]` and lock; the root `Cargo.toml` lists `tools/cldr-tables`
 in `exclude`. It is a tool, never part of the engine graph. The CLDR data is Unicode-3.0
 (`deny.toml` allows it).
+
+## T3: the flexible day periods and the numeric date patterns (`t3`)
+
+ICU4X has no data for the flexible day periods ("in the morning"; UTS 35 "B", the ECMA-402
+option `dayPeriod`), and its date patterns give a numeric month and day other widths than the
+CLDR availableFormats that ICU4C uses ("02.01." against "2.1." in German). The mode `t3` reads
+them from the same pinned CLDR JSON (the `sync-cldr-json.sh` paths `dayPeriods.json` and
+`cldr-dates-full/main/*/ca-gregorian.json`) and writes `crates/ep9_intl/src/cldr/gen/t3.rs`
+(`crate::date_time_format::pattern` reads it through `crate::cldr`):
+
+```text
+cldr-core/supplemental/dayPeriods.json      the day period of each hour, noon, midnight
+ca-gregorian.json dayPeriods.format          the names: abbreviated, narrow, wide
+ca-gregorian.json availableFormats           the patterns of yMd, yM, Md
+numbers.json symbols-numberSystem-<nu>       the decimal sign per numbering system (not "latn")
+```
+
+```sh
+tools/cldr-tables/sync-cldr-json.sh
+cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- t3            # write
+cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- t3 --check    # check
+```
+
+`cargo test` checks that `t3.rs` is the generator's output (`t3::tests`), so the CI step
+above also covers it.

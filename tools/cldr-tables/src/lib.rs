@@ -39,6 +39,7 @@
 
 #[cfg(feature = "datagen")]
 pub mod collator_search;
+pub mod t3;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;

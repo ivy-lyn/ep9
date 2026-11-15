@@ -21,6 +21,11 @@ CLDR_PATHS=(
   /cldr-json/cldr-units-full/package.json
   '/cldr-json/cldr-units-full/main/*/units.json'
   /LICENSE
+  # T3 (the `t3` mode, src/t3.rs): the day period rules and the Gregorian date patterns (and
+  # the numbers.json files above).
+  /cldr-json/cldr-core/supplemental/dayPeriods.json
+  /cldr-json/cldr-dates-full/package.json
+  '/cldr-json/cldr-dates-full/main/*/ca-gregorian.json'
 )
 want="$rev $(printf '%s\n' "${CLDR_PATHS[@]}" | git hash-object --stdin)"
 if [ -d "$dir/.git" ] && [ "$(cat "$dir/.git/ep9-stamp" 2>/dev/null || true)" = "$want" ] &&
