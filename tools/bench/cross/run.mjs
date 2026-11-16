@@ -7,6 +7,12 @@
 //     --count target/release/ep9-bench --out run.json --md run.md
 //
 //   --ep9 PATH          the ep9 binary (release build; required)
+//   --ep9-jitless PATH  both builds in one run (plan v14 V14-D11): the jitless ep9 build runs as
+//                       the engine ep9-jitless in the same paired rounds as --ep9 (the jit preset
+//                       build), QuickJS and node. The run gives one ep9-cross/v1 result per build
+//                       (see "Both builds" below): --out is the --ep9 build, --out-jitless the
+//                       jitless one, each as m2gate.mjs reads it
+//   --out-jitless FILE  with --ep9-jitless: the JSON of the jitless build
 //   --commit SHA        check: the commit that the ep9 binary names must be SHA. The JSON's
 //                       commit.ep9 is the binary's own (its `ep9 --version` build line on
 //                       stderr, P0-BUILDID): null when it has none or was built dirty
@@ -79,6 +85,13 @@
 //   - steal: the steal field of the "cpu" line of /proc/stat (all CPUs) before and after the
 //     run, in the same ticks.
 //
+// Both builds (--ep9-jitless; V14-D11, Path B: the series drift 3-7% between two runs, so the two
+// builds run in the same rounds). The engine ep9-jitless joins the rotation of every round. The
+// statistics are made once per build: the --ep9 view has the engines without ep9-jitless; the
+// jitless view has the samples of ep9-jitless as the subject "ep9" and the same comparator
+// samples. Both views have the same rounds, load readings and host block, and a both_builds
+// block that names the pairing. The two binaries must name the same commit.
+//
 // Exit status: 0 done; 1 refused or another error; 2 usage error; 3 host busy.
 // Tests (fake engines, no shells needed): node --test tools/bench/cross/run.test.mjs
 
@@ -102,6 +115,8 @@ export const MIN_ROUNDS = 10;
 /** Engines. `shell` names a line of third_party/shells/versions.txt. */
 export const ENGINES = {
   ep9: { label: "ep9 T0", shell: null, args: [], role: "subject" },
+  // The jitless build in a both-builds run (--ep9-jitless); its view names it "ep9".
+  "ep9-jitless": { label: "ep9 jitless build", shell: null, args: [], role: "subject" },
   qjs: { label: "QuickJS", shell: "quickjs", args: [], role: "gate" },
   "node-jitless": { label: "node --jitless", shell: "node", args: ["--jitless"], role: "gate" },
   "d8-jitless": { label: "d8 --jitless", shell: "d8", args: ["--jitless"], role: "context" },
@@ -157,6 +172,8 @@ export class HostBusy extends Error {}
 export function parseArgs(argv) {
   const o = {
     ep9: null,
+    ep9Jitless: null,
+    outJitless: null,
     commit: null,
     engines: DEFAULT_ENGINES,
     shells: path.join(ROOT, "third_party/shells/versions.txt"),
@@ -193,6 +210,8 @@ export function parseArgs(argv) {
     };
     switch (a) {
       case "--ep9": o.ep9 = path.resolve(val()); break;
+      case "--ep9-jitless": o.ep9Jitless = path.resolve(val()); break;
+      case "--out-jitless": o.outJitless = path.resolve(val()); break;
       case "--commit": o.commit = val(); break;
       case "--engines": o.engines = val().split(","); break;
       case "--shells": o.shells = path.resolve(val()); break;
@@ -225,9 +244,14 @@ export function parseArgs(argv) {
   if (!Number.isInteger(o.warmup)) throw new UsageError("--warmup must be an integer");
   if (!Number.isInteger(o.countRuns) || o.countRuns < 1) throw new UsageError("--count-runs must be >= 1");
   if (!o.engines.includes("ep9")) throw new UsageError("--engines must include ep9");
+  // Both builds: ep9-jitless right after ep9, unless --engines names it.
+  if (o.ep9Jitless && !o.engines.includes("ep9-jitless")) o.engines = o.engines.flatMap((e) => (e === "ep9" ? ["ep9", "ep9-jitless"] : [e]));
+  if (o.engines.includes("ep9-jitless") && !o.ep9Jitless) throw new UsageError("engine ep9-jitless needs --ep9-jitless");
+  if (o.outJitless && !o.ep9Jitless) throw new UsageError("--out-jitless needs --ep9-jitless");
   if (new Set(o.engines).size !== o.engines.length) throw new UsageError("--engines has a duplicate");
   if (o.engines.length < 2) throw new UsageError("--engines needs ep9 and at least one other engine");
   for (const e of o.engines) if (!ENGINES[e]) throw new UsageError(`unknown engine ${e} (known: ${Object.keys(ENGINES).join(", ")})`);
+  if (!o.engines.some((e) => ENGINES[e].role !== "subject")) throw new UsageError("--engines needs ep9 and at least one other engine");
   if (new Set(o.workloads).size !== o.workloads.length) throw new UsageError("--workloads has a duplicate");
   o.workloads = expandWorkloads(o.workloads);
   for (const w of o.workloads) if (!WORKLOADS[w]) throw new UsageError(`unknown workload ${w} (known: ${Object.keys(WORKLOADS).join(", ")})`);
@@ -262,7 +286,7 @@ export function parseVersions(text) {
 }
 
 /** Engine ids -> { id, label, role, bin, args, version }. */
-export function resolveEngines(ids, { ep9, shellsFile }) {
+export function resolveEngines(ids, { ep9, ep9Jitless = null, shellsFile }) {
   let shells = null;
   const need = ids.filter((id) => ENGINES[id].shell);
   if (need.length) {
@@ -280,11 +304,12 @@ export function resolveEngines(ids, { ep9, shellsFile }) {
   return ids.map((id) => {
     const d = ENGINES[id];
     if (!d.shell) {
-      const v = spawnSync(ep9, ["--version"], { encoding: "utf8" });
-      if (v.error) throw new UsageError(`--ep9 ${ep9}: ${v.error.message}`);
+      const bin = id === "ep9-jitless" ? ep9Jitless : ep9;
+      const v = spawnSync(bin, ["--version"], { encoding: "utf8" });
+      if (v.error) throw new UsageError(`--${id} ${bin}: ${v.error.message}`);
       // The first line, and the build line of M5-P0 (`engine_build`, null for an older binary);
       // the freshness line of P0-BUILDID (`build`, null for an older binary).
-      return { id, label: d.label, role: d.role, bin: ep9, args: d.args, ...splitVersion(v.stdout || ""), build: parseBuild(v.stderr) };
+      return { id, label: d.label, role: d.role, bin, args: d.args, ...splitVersion(v.stdout || ""), build: parseBuild(v.stderr) };
     }
     const s = shells.shells[d.shell];
     if (!s) throw new UsageError(`${shellsFile} has no ${d.shell} line (engine ${id})`);
@@ -588,8 +613,9 @@ export function countAll(o, engines, files, commit) {
       for (const e of engines) {
         const out = path.join(tmp, `${w}-${e.id}.json`);
         const args = ["--runs", String(o.countRuns), "--warmup", String(o.countWarmup), "--name", `${w}@${e.id}`, "--out", out, "--expect-stdout", expect, "--", e.bin, ...e.args, files[w].file];
-        const env = { ...process.env, EP9_COMMIT: e.id === "ep9" ? commit : "" };
-        if (e.id === "ep9") env.EP9_HASH_SEED = o.hashSeed;
+        const ep9 = ENGINES[e.id]?.role === "subject";
+        const env = { ...process.env, EP9_COMMIT: ep9 ? commit : "" };
+        if (ep9) env.EP9_HASH_SEED = o.hashSeed;
         else delete env.EP9_HASH_SEED;
         const r = spawnSync(o.count, args, {
           encoding: "utf8",
@@ -659,13 +685,18 @@ export async function run(o, deps = {}) {
     reasons.push("no host file (not a gate host)");
   }
 
-  const engines = resolveEngines(o.engines, { ep9: o.ep9, shellsFile: o.shells });
+  const engines = resolveEngines(o.engines, { ep9: o.ep9, ep9Jitless: o.ep9Jitless, shellsFile: o.shells });
   // The measured binary names its commit (P0-BUILDID), not this checkout: null when it has no
   // build line or was built with uncommitted engine changes, so m2-exit reads the run as OPEN.
   const build = engines.find((e) => e.id === "ep9")?.build ?? null;
   const commit = cleanCommit(build);
   if (o.commit && build?.commit && o.commit !== build.commit) {
     throw new UsageError(`--commit ${o.commit}: the ep9 binary names commit ${build.commit}`);
+  }
+  // Both builds: one commit (a pair of two trees is no pairing; each view names its own build).
+  const jitlessBuild = engines.find((e) => e.id === "ep9-jitless")?.build ?? null;
+  if (o.ep9Jitless && build?.commit && jitlessBuild?.commit && build.commit !== jitlessBuild.commit) {
+    throw new UsageError(`--ep9-jitless: the jitless binary names commit ${jitlessBuild.commit}, the --ep9 binary ${build.commit}`);
   }
   const runnerCommit = git(["rev-parse", "HEAD"]);
   const runnerDirty = git(["status", "--porcelain", "--untracked-files=no"]);
@@ -751,43 +782,67 @@ export async function run(o, deps = {}) {
     }
 
     const provisional = reasons.length > 0;
-    const m = label(
-      analyze(samples, { subject: "ep9", comparators: o.engines.filter((e) => e !== "ep9"), workloads: mWorkloads, warmup: o.warmup }),
-      provisional,
-    );
 
     // Class R counts (after the guard: counting is load too).
     const r = o.count ? countAll(o, engines, files, commit ?? "") : null;
 
-    return {
-      schema: SCHEMA,
-      label: o.label,
-      started,
-      finished: new Date().toISOString(),
-      commit: { ep9: commit, binary: build, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "", dirty },
-      host: {
-        file: o.host && path.relative(ROOT, o.host),
-        id: hostFile?.id ?? null,
-        gate_host: hostFile?.gate_host ?? false,
-        idle_baseline_load1: hostFile?.idle_baseline_load1 ?? null,
-        measured,
-      },
-      load: { margin: LOAD_MARGIN, before, after, after_each_round: roundLoad },
-      provisional,
-      provisional_reasons: reasons,
-      options: { rounds: o.rounds, warmup: o.warmup, settle_s: o.settleS, wait_min: o.waitMin, after_s: o.afterS, allow_busy: o.allowBusy },
-      // The binary by file name only: the version (ep9: the commit) names the build, and ep9's
-      // engine_build its features and preset (MC-w17-5; null for the other engines).
-      engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, build: e.build ?? null, bin: path.basename(e.bin), args: e.args })),
-      workloads: Object.values(files).map(({ file, ...w }) => ({ ...w, file: path.basename(file) })),
-      M: {
-        ratio: "t(engine) / t(ep9) per round; > 1: ep9 is faster",
-        samples,
-        ...m,
-        cpu: cpuTable(samples, { engines: o.engines, workloads: [...mWorkloads, EMPTY] }),
-      },
-      R: r,
+    // One result per build (see "Both builds" at the top): the subject engine `sub` is "ep9" in
+    // its view, and the other build's engine is left out.
+    const view = (sub) => {
+      const other = sub === "ep9" ? "ep9-jitless" : "ep9";
+      const ids = o.engines.filter((e) => e !== other);
+      const rename = (id) => (id === sub ? "ep9" : id);
+      const vs = samples.filter((x) => x.engine !== other).map((x) => ({ ...x, engine: rename(x.engine) }));
+      const vEngines = engines.filter((e) => e.id !== other).map((e) => ({ ...e, id: rename(e.id) }));
+      const vBuild = vEngines.find((e) => e.id === "ep9")?.build ?? null;
+      const m = label(
+        analyze(vs, { subject: "ep9", comparators: ids.filter((e) => e !== sub), workloads: mWorkloads, warmup: o.warmup }),
+        provisional,
+      );
+      return {
+        schema: SCHEMA,
+        label: o.label,
+        started,
+        finished: new Date().toISOString(),
+        commit: { ep9: cleanCommit(vBuild), binary: vBuild, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "", dirty },
+        host: {
+          file: o.host && path.relative(ROOT, o.host),
+          id: hostFile?.id ?? null,
+          gate_host: hostFile?.gate_host ?? false,
+          idle_baseline_load1: hostFile?.idle_baseline_load1 ?? null,
+          measured,
+        },
+        load: { margin: LOAD_MARGIN, before, after, after_each_round: roundLoad },
+        provisional,
+        provisional_reasons: reasons,
+        options: { rounds: o.rounds, warmup: o.warmup, settle_s: o.settleS, wait_min: o.waitMin, after_s: o.afterS, allow_busy: o.allowBusy },
+        // Both builds: this view is one build of a run whose rounds held both (V14-D11).
+        ...(o.ep9Jitless
+          ? {
+              both_builds: {
+                build: sub === "ep9" ? "jit preset (--ep9)" : "jitless (--ep9-jitless)",
+                round_engines: o.engines,
+                note: "the jit preset and the jitless ep9 build ran in the same paired rounds; this view has one of them as ep9",
+              },
+            }
+          : {}),
+        // The binary by file name only: the version (ep9: the commit) names the build, and ep9's
+        // engine_build its features and preset (MC-w17-5; null for the other engines).
+        engines: vEngines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, build: e.build ?? null, bin: path.basename(e.bin), args: e.args })),
+        workloads: Object.values(files).map(({ file, ...w }) => ({ ...w, file: path.basename(file) })),
+        M: {
+          ratio: "t(engine) / t(ep9) per round; > 1: ep9 is faster",
+          samples: vs,
+          ...m,
+          cpu: cpuTable(vs, { engines: ids.map(rename), workloads: [...mWorkloads, EMPTY] }),
+        },
+        R: r && { ...r, rows: r.rows.filter((x) => x.engine !== other).map((x) => ({ ...x, engine: rename(x.engine) })) },
+      };
     };
+    const res = view("ep9");
+    // The jitless view rides on the result; main() writes it to --out-jitless.
+    if (o.ep9Jitless) res.jitless = view("ep9-jitless");
+    return res;
   } finally {
     if (!o.work) rmSync(work, { recursive: true, force: true });
   }
@@ -913,8 +968,10 @@ async function main() {
     }
     throw e;
   }
-  const md = renderMarkdown(res);
-  if (o.out) writeFileSync(o.out, `${JSON.stringify(res, null, 1)}\n`);
+  const { jitless, ...jit } = res;
+  const md = jitless ? `${renderMarkdown(jit)}\nThe jitless build, in the same paired rounds (--ep9-jitless):\n\n${renderMarkdown(jitless)}` : renderMarkdown(jit);
+  if (o.out) writeFileSync(o.out, `${JSON.stringify(jit, null, 1)}\n`);
+  if (o.outJitless) writeFileSync(o.outJitless, `${JSON.stringify(jitless, null, 1)}\n`);
   if (o.md) writeFileSync(o.md, md);
   process.stdout.write(md);
 }
