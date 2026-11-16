@@ -15,12 +15,12 @@
 //!   RX1: ep9_rx1::parse(text as UTF-16, flags)
 //!        Ok -> valid; StackOverflow (the nesting cap) -> skip; other error -> invalid
 //!   1. front end (only if the text is a RegularExpressionBody: no line terminator, no
-//!      unescaped / outside a class, no trailing \, not empty, no * first; and not if the
-//!      text has a code point that the front end and RX1 take differently in a group name,
-//!      the known front-end difference below; such a code point outside the list is a crash)
+//!      unescaped / outside a class, no trailing \, not empty, no * first)
 //!        check_early_errors("/<text>/<flags>") as a sloppy script
 //!        Ok -> valid; Syntax -> invalid; Range (the depth caps) -> no check
-//!        valid != RX1 valid -> panic
+//!        valid != RX1 valid -> panic, except the known front-end difference below (front
+//!        end valid, RX1 InvalidCaptureGroupName, a group name has a listed code point; a
+//!        group-name code point that the two take differently outside the list is a crash)
 //!   2. RX0: ep9_regexp::Rx0::compile(text, flags)
 //!        valid != RX1 valid -> panic, except the known RX0 differences below
 //!        both valid: exec on the pattern text as the subject, at most POLLS polls;
@@ -194,13 +194,18 @@
 //!   (UCD 17, DL M9-PRE-UNICODE) have different ID_Start and ID_Continue tables: at the M9-P1
 //!   merge, 12,860 code points in 38 ranges are ID_Continue for the front end and not for
 //!   RX1 (12,823 in 27 ranges also ID_Start; U+3D000..U+3FC3F is 11,328 of them), and 0 the
-//!   other way. These 38 ranges are a reviewed list (`KNOWN_ID_DIFFERENCE`). The target asks
-//!   both parsers about each code point of a text (`id_differs`). Check 1 does not compare a
-//!   text with a code point that they take differently and that is in the list (any `\`
-//!   counts as an escape start: skipping more is safe); checks 2 and 3 still run. A code
-//!   point that they take differently and that is not in the list is a crash ("new
-//!   front-end/RX1 identifier difference at U+XXXX"): a new find, for example after an oxc or
-//!   RX1 update. At start (`fuzz_target!` init), the target probes a sample of the list (the
+//!   other way. These 38 ranges are a reviewed list (`KNOWN_ID_DIFFERENCE`). Check 1 compares
+//!   validity first. It accepts a difference only when the front end takes the text, RX1
+//!   says InvalidCaptureGroupName, and a group name of the text (`(?<..>`, and `\k<..>` with
+//!   `u`, `v` or a named group) has a code point that the two parsers take differently
+//!   (`id_differs`; the names are decoded: raw, `\u{..}` with hex digits only, so
+//!   `\u{+558}` is no code point, `\uHHHH` and a `\uHHHH\uHHHH` surrogate pair). Such a
+//!   code point in a literal or elsewhere outside a group name gives no skip (M9-P1 Codex r2
+//!   F2). A group-name code point that they take differently and that is not in the list is a
+//!   crash ("new front-end/RX1 identifier difference at U+XXXX"): a new find, for example
+//!   after an oxc or RX1 update. Check 2 does not compare an RX0 refusal with `v` (the RX0 row
+//!   above); this skip needs an RX1 refusal, so check 1 still compares every text that RX1
+//!   takes with `v`. At start (`fuzz_target!` init), the target probes a sample of the list (the
 //!   first, middle and last code point of each range must differ, the code point before and
 //!   after each range must not), so a stale list stops the run. The move of RX1 to Unicode 18
 //!   is in the M2-exit G8 batch; that change must make the list again (the start check stops
@@ -208,7 +213,6 @@
 #![no_main]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use ep9_frontend::{CompileError, SourceOpts, Strictness};
 use ep9_regexp::{Backend, ExecResult, Input, Rx0, Rx0Scratch};
@@ -318,21 +322,52 @@ fn probe_id_differs(c: u32) -> bool {
         })
 }
 
-/// True if [`probe_id_differs`] for `c` (the answer of each code point is kept for the
-/// process). Panics if the two parsers take `c` differently and `c` is not in
+/// The number of `u64` words of one bit per code point U+0000..U+10FFFF.
+const SCALAR_WORDS: usize = 0x11_0000 / 64;
+
+/// The kept answers of [`probe_id_differs`]: one `known` and one `differs` bit per code point,
+/// a fixed size (2 x 136 KiB) for the whole process (M9-P1 Codex r2 F3).
+struct IdAnswers {
+    known: Box<[u64; SCALAR_WORDS]>,
+    differs: Box<[u64; SCALAR_WORDS]>,
+}
+
+impl IdAnswers {
+    fn new() -> Self {
+        let zero = || -> Box<[u64; SCALAR_WORDS]> {
+            vec![0; SCALAR_WORDS]
+                .into_boxed_slice()
+                .try_into()
+                .expect("SCALAR_WORDS words")
+        };
+        IdAnswers {
+            known: zero(),
+            differs: zero(),
+        }
+    }
+}
+
+/// True if [`probe_id_differs`] for `c`. ASCII, a surrogate and a value above U+10FFFF are
+/// never asked (false); the answer of each other code point is kept for the process in
+/// [`IdAnswers`]. Panics if the two parsers take `c` differently and `c` is not in
 /// [`KNOWN_ID_DIFFERENCE`]: a new difference (the module doc).
 fn id_differs(c: u32) -> bool {
-    thread_local! {
-        static ANSWERS: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
+    if c < 0x80 || (0xd800..=0xdfff).contains(&c) || c > 0x10_ffff {
+        return false;
     }
-    let differs = match ANSWERS.with_borrow(|a| a.get(&c).copied()) {
-        Some(known) => known,
-        None => {
-            let differs = probe_id_differs(c);
-            ANSWERS.with_borrow_mut(|a| a.insert(c, differs));
-            differs
+    thread_local! {
+        static ANSWERS: RefCell<IdAnswers> = RefCell::new(IdAnswers::new());
+    }
+    let (word, bit) = (c as usize / 64, 1_u64 << (c % 64));
+    let differs = ANSWERS.with_borrow_mut(|a| {
+        if a.known[word] & bit == 0 {
+            a.known[word] |= bit;
+            if probe_id_differs(c) {
+                a.differs[word] |= bit;
+            }
         }
-    };
+        a.differs[word] & bit != 0
+    });
     assert!(
         !differs || is_known_id_difference(c),
         "new front-end/RX1 identifier difference at U+{c:04X}"
@@ -394,45 +429,69 @@ fn is_literal_body(text: &str) -> bool {
     true
 }
 
-/// True if `text` has a code point that [`id_differs`]: raw, as `\u{..}`, as a `\uHHHH\uHHHH`
-/// surrogate pair or as one `\uHHHH`. Any `\u` counts, also after a `\\` (skipping more is
-/// safe).
-fn has_id_difference(text: &str) -> bool {
-    if text.chars().any(|c| id_differs(u32::from(c))) {
-        return true;
-    }
-    let units: Vec<u16> = text.encode_utf16().collect();
-    (0..units.len()).any(|i| {
-        if !(unit_is(&units, i, b'\\') && unit_is(&units, i + 1, b'u')) {
-            return false;
-        }
-        if unit_is(&units, i + 2, b'{') {
-            let close = (i + 3..units.len()).find(|&j| unit_is(&units, j, b'}'));
-            let value = close
-                .and_then(|j| String::from_utf16(&units[i + 3..j]).ok())
-                .and_then(|digits| u32::from_str_radix(&digits, 16).ok());
-            return value.is_some_and(id_differs);
-        }
-        match (hex4(&units, i + 2), hex4(&units, i + 8)) {
-            (Some(lead), Some(trail))
-                if unit_is(&units, i + 6, b'\\')
-                    && unit_is(&units, i + 7, b'u')
-                    && surrogate_pair(Some(lead), Some(trail)) =>
-            {
-                let c = 0x1_0000 + ((u32::from(lead) - 0xd800) << 10) + (u32::from(trail) - 0xdc00);
-                id_differs(c)
+/// True if a group name of the text has a code point that [`id_differs`]. The names are
+/// those of [`group_names`]: `(?<..>`, and `\k<..>` with `u` or `v` or when the text has a
+/// group name. Each name is decoded with [`name_char`].
+fn group_name_has_id_difference(units: &[u16], flags: Flags) -> bool {
+    let with_k = flags.either_unicode() || !group_names(units, false).is_empty();
+    group_names(units, with_k).iter().any(|&(start, end)| {
+        let name = &units[start..end];
+        let mut i = 0;
+        while i < name.len() {
+            let (c, len) = name_char(name, i);
+            if c.is_some_and(id_differs) {
+                return true;
             }
-            (Some(unit), _) => id_differs(u32::from(unit)),
-            _ => false,
+            i += len;
         }
+        false
     })
 }
 
-/// Check 1: the front end and RX1 agree on "valid or not". A text with a code point that
-/// [`id_differs`] is not compared (the known front-end difference, the module doc); a
-/// difference outside [`KNOWN_ID_DIFFERENCE`] panics.
-fn check_front_end(text: &str, flags: Flags, rx1_valid: bool) {
-    if !is_literal_body(text) || has_id_difference(text) {
+/// The code point at `name[i]` of a group name, and its length in units: raw (a surrogate
+/// pair is one code point), `\u{..}` (hex digits only: `u32::from_str_radix` takes a `+`
+/// sign, so `\u{+558}` is no code point), a `\uHHHH\uHHHH` surrogate pair or one `\uHHHH`.
+/// None for a malformed `\u`, another escape (2 units) or a lone surrogate.
+fn name_char(name: &[u16], i: usize) -> (Option<u32>, usize) {
+    if !unit_is(name, i, b'\\') {
+        return match char::decode_utf16(name[i..].iter().copied()).next() {
+            Some(Ok(ch)) => (Some(u32::from(ch)), ch.len_utf16()),
+            _ => (None, 1),
+        };
+    }
+    if !unit_is(name, i + 1, b'u') {
+        return (None, 2);
+    }
+    if unit_is(name, i + 2, b'{') {
+        let Some(close) = (i + 3..name.len()).find(|&j| unit_is(name, j, b'}')) else {
+            return (None, 2);
+        };
+        let value = String::from_utf16(&name[i + 3..close])
+            .ok()
+            .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|d| u32::from_str_radix(&d, 16).ok());
+        return (value, close + 1 - i);
+    }
+    match (hex4(name, i + 2), hex4(name, i + 8)) {
+        (Some(lead), Some(trail))
+            if unit_is(name, i + 6, b'\\')
+                && unit_is(name, i + 7, b'u')
+                && surrogate_pair(Some(lead), Some(trail)) =>
+        {
+            let c = 0x1_0000 + ((u32::from(lead) - 0xd800) << 10) + (u32::from(trail) - 0xdc00);
+            (Some(c), 12)
+        }
+        (Some(unit), _) => (Some(u32::from(unit)), 6),
+        _ => (None, 2),
+    }
+}
+
+/// Check 1: the front end and RX1 agree on "valid or not". The one known difference (the
+/// module doc): the front end takes the text, RX1 says InvalidCaptureGroupName, and a group
+/// name has a code point that [`id_differs`] (a difference outside [`KNOWN_ID_DIFFERENCE`]
+/// panics there).
+fn check_front_end(text: &str, units: &[u16], flags: Flags, rx1_error: Option<&ParseError>) {
+    if !is_literal_body(text) {
         return;
     }
     let source = format!("/{text}/{}", flags.to_letters());
@@ -442,10 +501,16 @@ fn check_front_end(text: &str, flags: Flags, rx1_valid: bool) {
             Err(CompileError::Syntax(_)) => false,
             Err(CompileError::Range(_)) => return,
         };
-    assert!(
-        rx1_valid == oxc_valid,
-        "RX1 and the front end disagree: rx1 valid {rx1_valid}, oxc valid {oxc_valid}"
-    );
+    let rx1_valid = rx1_error.is_none();
+    if rx1_valid == oxc_valid {
+        return;
+    }
+    if rx1_error.is_some_and(|e| e.error == Error::InvalidCaptureGroupName)
+        && group_name_has_id_difference(units, flags)
+    {
+        return;
+    }
+    panic!("RX1 and the front end disagree: rx1 valid {rx1_valid}, oxc valid {oxc_valid}");
 }
 
 /// One RX0 exec of `program` on `subject` from 0, stopped after [`POLLS`] polls.
@@ -1001,7 +1066,7 @@ libfuzzer_sys::fuzz_target!(init: check_known_id_difference(), |data: &[u8]| {
         Err(e) if e.error.is_stack_overflow() => return,
         Err(e) => Err(e),
     };
-    check_front_end(text, flags, rx1.is_ok());
+    check_front_end(text, &units, flags, rx1.as_ref().err());
     let rx0 = Rx0::compile(&units, ep9_regexp::Flags::from_bits(bits));
     match (&rx1, &rx0) {
         (Ok(p), Ok(program)) => {
