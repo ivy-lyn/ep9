@@ -45,7 +45,7 @@ mod worker;
 
 pub use bytecodegen::{
     CodegenError, CompileOptions, Determinism, Unsupported, check_determinism, compile,
-    compile_module, compile_script,
+    compile_module, compile_script, compile_script_with_completion,
 };
 pub use depth::{AST_CAP, DepthLayer, PRESCAN_CAP};
 pub use eval::compile_eval;

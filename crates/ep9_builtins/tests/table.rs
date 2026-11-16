@@ -79,20 +79,30 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_builtins::bigint::BLOCK, 18);
     // The Temporal modules are one run, in the order of ep9_temporal::MODULES (not a pin on the
     // end of the table: a later module can follow them).
-    // The Intl modules (INTL-I1-D1) are one run too, in the order of ep9_intl::MODULES.
-    for crate_modules in [ep9_temporal::MODULES, ep9_intl::MODULES] {
-        let start = got
+    let crate_modules = ep9_temporal::MODULES;
+    let start = got
+        .iter()
+        .position(|&(name, _)| name == crate_modules[0].name)
+        .unwrap();
+    let run = &MODULES[start..start + crate_modules.len()];
+    assert_eq!(
+        run.iter().map(|m| (m.name, m.block)).collect::<Vec<_>>(),
+        crate_modules
             .iter()
-            .position(|&(name, _)| name == crate_modules[0].name)
-            .unwrap();
-        let run = &MODULES[start..start + crate_modules.len()];
-        assert_eq!(
-            run.iter().map(|m| (m.name, m.block)).collect::<Vec<_>>(),
-            crate_modules
-                .iter()
-                .map(|m| (m.name, m.block))
-                .collect::<Vec<_>>()
-        );
+            .map(|m| (m.name, m.block))
+            .collect::<Vec<_>>()
+    );
+    // The Intl modules (INTL-I1-D1) are two runs, in the order of ep9_intl::MODULES: blocks
+    // 30-38 (INTL W1-W3), then, after the TypedArray blocks 39-44, blocks 45-46 (INTL W4; the
+    // INTL sync m8-p5 moved them after the TypedArray blocks, route INTL-W4-RENUMBER).
+    let intl: Vec<(&str, u8)> = ep9_intl::MODULES
+        .iter()
+        .map(|m| (m.name, m.block))
+        .collect();
+    let (w1_w3, w4): (Vec<_>, Vec<_>) = intl.into_iter().partition(|&(_, block)| block <= 38);
+    for (first_block, part) in [(30usize, w1_w3), (45, w4)] {
+        let run = &got[first_block - 1..first_block - 1 + part.len()];
+        assert_eq!(run, &part[..]);
     }
     // The Intl blocks follow disposable (block 29; M7-P3 SPEC-ERM), after iterator (block 28).
     assert_eq!(ep9_builtins::disposable::BLOCK, 29);
@@ -111,6 +121,10 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_builtins::typed_array::proto::BLOCK, 42);
     assert_eq!(ep9_builtins::typed_array::base64::BLOCK, 43);
     assert_eq!(ep9_builtins::atomics::BLOCK, 44);
+    // INTL W4: date_time_format, duration_format (after the TypedArray
+    // blocks 39-44; INTL sync m8-p5).
+    assert_eq!(ep9_intl::date_time_format::BLOCK, 45);
+    assert_eq!(ep9_intl::duration_format::BLOCK, 46);
 }
 
 #[test]

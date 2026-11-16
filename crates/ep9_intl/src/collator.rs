@@ -15,7 +15,7 @@
 //!                       [[Numeric]], [[CaseFirst]], [[Collation]]
 //!   2 [[BoundCompare]]  undefined, or the compare function (made by the first `compare` get)
 //! compare(x, y) ─ ToString both ─ cache::get_or_make(Service::Collator, data locale,
-//!                                  packed) ─> Rc<CollatorBorrowed>  ─ compare_utf16
+//!                                  packed) ─> Rc<Collator>  ─ compare_utf16
 //! ```
 //!
 //! Locale data (§10.2.3): `co` comes from the ICU4X tailoring data (a collation type is
@@ -25,9 +25,9 @@
 //! slot (INTL-I1-D7, plan rule 8): the constructor checks the options and resolves the locale
 //! with no ICU4X object; the first compare makes one through `crate::cache`.
 //!
-//! Known gap (INTL-I1 §5.3 row 12): the baked data has no `search` tailoring, so `usage:
-//! "search"` compares with the sort tailoring (resolvedOptions keeps `usage`), and its `co`
-//! list is « null » (the spec's `[[SearchLocaleData]]` then has no collation type).
+//! `usage: "search"` (`[[SearchLocaleData]]`): the compiled data has no search tailoring, so a
+//! search collator reads the search table of `cldr::collator_search` through `search`
+//! (INTL-V2-D17 Form A); its `co` list is « null » (no other collation type for search).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-collator.txt`.
@@ -42,7 +42,7 @@ use ep9_vm::{
 };
 use icu_collator::options::{AlternateHandling, CaseLevel, CollatorOptions, Strength};
 use icu_collator::preferences::{CollationCaseFirst, CollationNumericOrdering, CollationType};
-use icu_collator::{CollatorBorrowed, CollatorPreferences};
+use icu_collator::{Collator, CollatorBorrowed, CollatorPreferences};
 use icu_normalizer::DecomposingNormalizerBorrowed;
 use icu_normalizer::properties::{
     CanonicalCombiningClassMap, CanonicalCombiningClassMapBorrowed, CanonicalDecompositionBorrowed,
@@ -251,9 +251,10 @@ impl Packed {
         }
     }
 
-    /// The cache key: the options that change the ICU4X collator (all but the usage).
+    /// The cache key: the options that change the ICU4X collator (all of them; the usage
+    /// picks the search data).
     fn key(self) -> u64 {
-        u64::from(self.0 & !Self::SEARCH)
+        u64::from(self.0)
     }
 }
 
@@ -453,8 +454,10 @@ pub fn initialize<'s>(
 
 // ---- the ICU4X collator and CompareStrings (10.3.3.2) -----------------------------------------
 
-/// A new ICU4X collator for `data_locale` and `options` (`None` if the data has none).
-fn make_collator(data_locale: &str, options: Packed) -> Option<CollatorBorrowed<'static>> {
+/// A new ICU4X collator for `data_locale` and `options` (`None` if the data has none). Usage
+/// "search" takes the search tailoring of the locale (`-u-co-search`; "und" has one, so the
+/// locale fallback always finds one) from [`search::SearchProvider`].
+fn make_collator(data_locale: &str, options: Packed) -> Option<Collator> {
     let mut prefs = CollatorPreferences::from(&icu_locale(data_locale));
     prefs.collation_type = match options.collation() {
         "default" => None,
@@ -489,12 +492,18 @@ fn make_collator(data_locale: &str, options: Packed) -> Option<CollatorBorrowed<
     } else {
         AlternateHandling::NonIgnorable
     });
-    icu_collator::Collator::try_new(prefs, o).ok()
+    if options.usage() == "search" {
+        prefs.collation_type = Some(CollationType::Search);
+        return Collator::try_new_unstable(&search::SearchProvider, prefs, o).ok();
+    }
+    Collator::try_new(prefs, o)
+        .ok()
+        .map(CollatorBorrowed::static_to_owned)
 }
 
 /// The cached ICU4X collator of `locale` (a `[[Locale]]`) and `options` (crate::cache; the
 /// "und" data if the locale has none).
-fn collator_for(locale: &str, options: Packed) -> Option<std::rc::Rc<CollatorBorrowed<'static>>> {
+fn collator_for(locale: &str, options: Packed) -> Option<std::rc::Rc<Collator>> {
     let data_locale = tag::remove_unicode_extension(locale);
     cache::get_or_make(Service::Collator, &data_locale, options.key(), || {
         make_collator(&data_locale, options).or_else(|| make_collator("und", options))
@@ -612,7 +621,7 @@ const LONG_PREFIX: usize = 1024;
 ///   identical-prefix step, and `compare_utf16` equals the sort keys.
 ///
 /// The keys are Rust vectors that live only in this call (no GC slot).
-fn icu_compare(c: &CollatorBorrowed<'static>, x: &[u16], y: &[u16]) -> Ordering {
+fn icu_compare(c: &CollatorBorrowed<'_>, x: &[u16], y: &[u16]) -> Ordering {
     let (x, y) = (stream_safe(x), stream_safe(y));
     let prefix = x.iter().zip(y.iter()).take_while(|(a, b)| a == b).count();
     let shifted = c.resolved_options().alternate_handling == AlternateHandling::Shifted;
@@ -626,7 +635,7 @@ fn icu_compare(c: &CollatorBorrowed<'static>, x: &[u16], y: &[u16]) -> Ordering 
 }
 
 /// The ICU4X sort key of `s` (a stream-safe form).
-fn sort_key(c: &CollatorBorrowed<'static>, s: &[u16]) -> Vec<u8> {
+fn sort_key(c: &CollatorBorrowed<'_>, s: &[u16]) -> Vec<u8> {
     let mut key = Vec::with_capacity(s.len() * 3);
     let Ok(()) = c.write_sort_key_utf16_to(s, &mut key);
     key
@@ -638,7 +647,7 @@ fn sort_key(c: &CollatorBorrowed<'static>, s: &[u16]) -> Vec<u8> {
 /// (`stream_safe`).
 pub fn compare_strings(locale: &str, options: Packed, x: &[u16], y: &[u16]) -> Ordering {
     match collator_for(locale, options) {
-        Some(c) => icu_compare(&c, x, y),
+        Some(c) => icu_compare(&c.as_borrowed(), x, y),
         // No data at all (not the case with the compiled data): the code-unit order.
         None => x.cmp(y),
     }
@@ -672,7 +681,7 @@ pub fn locale_compare<'s>(
             make_collator(&r.locale, r.options).or_else(|| make_collator("und", r.options))
         });
         if let Some(c) = c {
-            return Ok(icu_compare(&c, s, that));
+            return Ok(icu_compare(&c.as_borrowed(), s, that));
         }
     }
     let r = initialize(cx, locales, options)?;
@@ -833,6 +842,186 @@ fn resolved_options<'s>(
     Ok(o.into())
 }
 
+// ---- the search collations (INTL-V2-D17 Form A, INTL-W4-CLDR) ---------------------------------
+
+/// The search collations (`usage: "search"`, `-u-co-search`): the table of
+/// `cldr::collator_search`, made by `tools/cldr-tables collator-search` from the ICU export data
+/// of the ICU4X 2.4 compiled data, and the data provider of a search collator.
+///
+/// ```text
+/// Collator::try_new_unstable(&SearchProvider, prefs (co "search"), options)
+///   CollationMetadataV1, CollationTailoringV1 with a "search*" type ─► SEARCH_COLLATIONS
+///                                    (the locale fallback chain of the compiled data, "und" last)
+///   every other request (root, jamo, diacritics, reordering, NFD) ─► the compiled data
+/// ```
+///
+/// The table is plain data (no `unsafe`, as the crate asks): a load makes the data struct with
+/// the checked constructors (`CodePointTrie::try_new`, owned `ZeroVec`s). The search data has
+/// no diacritics or reordering entry (the generator checks it), so the compiled data serves
+/// those markers. A collator is made once per locale and options (`crate::cache`).
+pub(crate) mod search {
+    use icu_collator::provider::{
+        Baked, CollationData, CollationDiacriticsV1, CollationJamoV1, CollationMetadata,
+        CollationMetadataV1, CollationReorderingV1, CollationRootV1, CollationSpecialPrimariesV1,
+        CollationTailoringV1,
+    };
+    use icu_collections::codepointtrie::{CodePointTrie, CodePointTrieHeader, TrieType};
+    use icu_locale::LocaleFallbacker;
+    use icu_normalizer::provider::{NormalizerNfdDataV1, NormalizerNfdTablesV1};
+    use icu_provider::prelude::*;
+    use zerovec::ZeroVec;
+
+    use crate::cldr::collator_search::SEARCH_COLLATIONS;
+
+    /// The parts of a `CodePointTrie<u32>`: the `CodePointTrieHeader` fields, the index and
+    /// the data.
+    #[derive(Debug)]
+    pub(crate) struct SearchTrie {
+        /// `high_start`.
+        pub(crate) high_start: u32,
+        /// `shifted12_high_start`.
+        pub(crate) shifted12_high_start: u16,
+        /// `index3_null_offset`.
+        pub(crate) index3_null_offset: u16,
+        /// `data_null_offset`.
+        pub(crate) data_null_offset: u32,
+        /// `null_value`.
+        pub(crate) null_value: u32,
+        /// `trie_type`: `Small` if true, else `Fast`.
+        pub(crate) small: bool,
+        /// The index array.
+        pub(crate) index: &'static [u16],
+        /// The data array.
+        pub(crate) data: &'static [u32],
+    }
+
+    /// One search collation: a data id (locale, collation type) with its `CollationMetadata`
+    /// bits and its `CollationData` (the tailoring).
+    #[derive(Debug)]
+    pub(crate) struct SearchCollation {
+        /// The data locale ("und", "de", "sr-Latn").
+        pub(crate) locale: &'static str,
+        /// The collation type ("search", "searchjl").
+        pub(crate) collation: &'static str,
+        /// `CollationMetadata::bits`.
+        pub(crate) metadata: u32,
+        /// `CollationData::trie`.
+        pub(crate) trie: SearchTrie,
+        /// `CollationData::ce32s`.
+        pub(crate) ce32s: &'static [u32],
+        /// `CollationData::ces`.
+        pub(crate) ces: &'static [u64],
+        /// `CollationData::contexts`.
+        pub(crate) contexts: &'static [u16],
+    }
+
+    impl SearchCollation {
+        /// The `CollationData` of this record (an error if the trie parts do not check).
+        pub(crate) fn data(&self) -> Result<CollationData<'static>, DataError> {
+            let t = &self.trie;
+            let header = CodePointTrieHeader {
+                high_start: t.high_start,
+                shifted12_high_start: t.shifted12_high_start,
+                index3_null_offset: t.index3_null_offset,
+                data_null_offset: t.data_null_offset,
+                null_value: t.null_value,
+                trie_type: if t.small {
+                    TrieType::Small
+                } else {
+                    TrieType::Fast
+                },
+            };
+            let trie = CodePointTrie::try_new(
+                header,
+                ZeroVec::alloc_from_slice(t.index),
+                ZeroVec::alloc_from_slice(t.data),
+            )
+            .map_err(|_| DataError::custom("search collation trie"))?;
+            Ok(CollationData {
+                trie,
+                ces: ZeroVec::alloc_from_slice(self.ces),
+                ce32s: ZeroVec::alloc_from_slice(self.ce32s),
+                contexts: ZeroVec::alloc_from_slice(self.contexts),
+            })
+        }
+    }
+
+    /// The record of the collation type of `req` on the locale fallback chain of its locale
+    /// (`M`'s fallback config: the chain of the compiled data), or a not-found error.
+    fn find<M: DataMarker>(req: DataRequest) -> Result<&'static SearchCollation, DataError> {
+        let attrs = req.id.marker_attributes.as_str();
+        let fallbacker = LocaleFallbacker::new().for_config(M::INFO.fallback_config);
+        let mut it = fallbacker.fallback_for(*req.id.locale);
+        loop {
+            let locale = it.get();
+            if let Some(r) = SEARCH_COLLATIONS
+                .iter()
+                .find(|r| r.collation == attrs && locale.strict_cmp(r.locale.as_bytes()).is_eq())
+            {
+                return Ok(r);
+            }
+            if locale.is_unknown() {
+                return Err(DataErrorKind::IdentifierNotFound.with_req(M::INFO, req));
+            }
+            it.step();
+        }
+    }
+
+    /// Whether `req` asks for a search collation type ("search", "searchjl").
+    fn is_search(req: &DataRequest) -> bool {
+        req.id.marker_attributes.as_str().starts_with("search")
+    }
+
+    /// The data provider of a search collator: the search table for the metadata and the
+    /// tailoring of a "search*" type, the compiled data for the rest.
+    pub(crate) struct SearchProvider;
+
+    impl DataProvider<CollationMetadataV1> for SearchProvider {
+        fn load(&self, req: DataRequest) -> Result<DataResponse<CollationMetadataV1>, DataError> {
+            if !is_search(&req) {
+                return Baked.load(req);
+            }
+            let r = find::<CollationMetadataV1>(req)?;
+            Ok(DataResponse {
+                metadata: Default::default(),
+                payload: DataPayload::from_owned(CollationMetadata { bits: r.metadata }),
+            })
+        }
+    }
+
+    impl DataProvider<CollationTailoringV1> for SearchProvider {
+        fn load(&self, req: DataRequest) -> Result<DataResponse<CollationTailoringV1>, DataError> {
+            if !is_search(&req) {
+                return Baked.load(req);
+            }
+            let data = find::<CollationTailoringV1>(req)?.data()?;
+            Ok(DataResponse {
+                metadata: Default::default(),
+                payload: DataPayload::from_owned(data),
+            })
+        }
+    }
+
+    /// The markers that the compiled data serves for every request.
+    macro_rules! compiled {
+        ($($provider:expr => $($marker:ty),+;)+) => {
+            $($(
+                impl DataProvider<$marker> for SearchProvider {
+                    fn load(&self, req: DataRequest) -> Result<DataResponse<$marker>, DataError> {
+                        $provider.load(req)
+                    }
+                }
+            )+)+
+        };
+    }
+
+    compiled! {
+        Baked => CollationRootV1, CollationSpecialPrimariesV1, CollationJamoV1,
+            CollationDiacriticsV1, CollationReorderingV1;
+        icu_normalizer::provider::Baked => NormalizerNfdDataV1, NormalizerNfdTablesV1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,6 +1168,7 @@ mod tests {
     /// order, S3 and S4) with the "en" collator of `p`.
     fn key_order(p: Packed, x: &[u16], y: &[u16]) -> Ordering {
         let c = collator_for("en", p).unwrap();
+        let c = c.as_borrowed();
         sort_key(&c, &stream_safe(x)).cmp(&sort_key(&c, &stream_safe(y)))
     }
 
@@ -1247,7 +1437,7 @@ mod tests {
                                     COLLATION_TYPES[co as usize - 1]
                                 };
                                 assert_eq!(p.collation(), want);
-                                assert_eq!(p.key() & 1, 0);
+                                assert_eq!(p.key(), u64::from(p.0));
                             }
                         }
                     }
@@ -1273,6 +1463,74 @@ mod tests {
         ] {
             assert!(!is_unicode_type(bad), "{bad}");
         }
+    }
+
+    /// Every record of the search table makes its CollationData (the trie parts check) and a
+    /// collator for its locale and type (the diacritics and reordering data that its metadata
+    /// asks for load), the ids are sorted and unique, and the root ("und") has a search
+    /// tailoring, so the locale fallback of a search collator always ends at a record.
+    #[test]
+    fn search_table_records_make_their_data() {
+        use crate::cldr::collator_search::SEARCH_COLLATIONS;
+        for w in SEARCH_COLLATIONS.windows(2) {
+            assert!(
+                (w[0].locale, w[0].collation) < (w[1].locale, w[1].collation),
+                "{} {}",
+                w[0].locale,
+                w[1].locale
+            );
+        }
+        for r in &SEARCH_COLLATIONS {
+            assert!(r.collation.starts_with("search"), "{}", r.collation);
+            let d = r.data().unwrap();
+            assert_eq!(d.ce32s.len(), r.ce32s.len());
+            let mut prefs = CollatorPreferences::from(&icu_locale(r.locale));
+            prefs.collation_type = Some(
+                CollationType::try_from(
+                    &icu_locale_core::extensions::unicode::Value::try_from_str(r.collation)
+                        .unwrap(),
+                )
+                .unwrap(),
+            );
+            let c = Collator::try_new_unstable(
+                &search::SearchProvider,
+                prefs,
+                CollatorOptions::default(),
+            );
+            assert!(c.is_ok(), "{} {}", r.locale, r.collation);
+        }
+        assert!(
+            SEARCH_COLLATIONS
+                .iter()
+                .any(|r| r.locale == "und" && r.collation == "search")
+        );
+    }
+
+    /// A search collator (usage bit set) compares with the search tailoring of its locale, or
+    /// of the root through the locale fallback; the sort collator of the same options does
+    /// not (node v26.13.1 gives the same results). The cache keeps the two apart.
+    #[test]
+    fn search_collators_take_the_search_tailoring() {
+        let u = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let cmp = |locale: &str, p: Packed, a: &str, b: &str| {
+            ordering_value(compare_strings(locale, p, &u(a), &u(b)))
+        };
+        let search = Packed::new(true, 3, false, false, 0, 0);
+        let sort = Packed::new(false, 3, false, false, 0, 0);
+        let base = Packed::new(true, 0, false, false, 0, 0);
+        assert_eq!(cmp("de", search, "AE", "\u{c4}"), -1);
+        assert_eq!(cmp("de", sort, "AE", "\u{c4}"), 1);
+        // Again, with the sort collator in the cache: the usage is part of the cache key.
+        assert_eq!(cmp("de", search, "AE", "\u{c4}"), -1);
+        assert_eq!(cmp("de", base, "ae", "\u{e4}"), 0);
+        assert_eq!(cmp("de-AT", base, "ae", "\u{e4}"), 0);
+        assert_eq!(cmp("en", base, "ae", "\u{e4}"), 1);
+        assert_eq!(cmp("en", base, "a", "\u{e4}"), 0);
+        assert_eq!(cmp("sv", base, "a", "\u{e4}"), -1);
+        assert_eq!(cmp("da", base, "aa", "\u{e5}"), 0);
+        assert_eq!(cmp("sr-Latn", base, "dj", "\u{111}"), -1);
+        assert_eq!(cmp("tr", base, "i", "\u{131}"), 1);
+        assert_eq!(cmp("es", base, "n", "\u{f1}"), -1);
     }
 
     /// The ICU4X collator follows the options: sensitivity, ignorePunctuation, numeric,

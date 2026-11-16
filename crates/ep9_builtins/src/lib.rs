@@ -20,8 +20,10 @@
 //!                             30    31      32        33            34
 //!                             list_format, segmenter, display_names, relative_time_format,
 //!                             35           36         37             38
-//!          array_buffer, data_view, typed_array, typed_array_proto, base64, atomics]
+//!          array_buffer, data_view, typed_array, typed_array_proto, base64, atomics,
 //!          39            40         41           42                 43      44
+//!          ep9_intl::MODULES (W4, after the TA blocks): date_time_format, duration_format]
+//!                                                       45                46
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -125,6 +127,10 @@ pub const MODULES: &[BuiltinModule] = &[
     typed_array::proto::MODULE,
     typed_array::base64::MODULE,
     atomics::MODULE,
+    // INTL W4 (the DTF-OPT skeleton; DTF-OPT and DURATION fill them): the lazy group "Intl";
+    // blocks 45 and 46, after the TypedArray blocks 39-44 (INTL sync m8-p5).
+    ep9_intl::date_time_format::MODULE,
+    ep9_intl::duration_format::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

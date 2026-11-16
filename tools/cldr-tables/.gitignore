@@ -1,3 +1,5 @@
 /target/
 # The CLDR JSON checkout of sync-cldr-json.sh (pinned by cldr-json.commit).
 /cldr-json/
+# The ICU export data of sync-icuexport.sh (pinned by icuexport.pin).
+/icuexport/

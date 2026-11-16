@@ -433,11 +433,24 @@ pub enum IntrinsicId {
     Float64ArrayPrototype,
     /// `%Atomics%` (§25.4, an ordinary object; made by `ep9_builtins` atomics, block 44).
     Atomics,
+    // ---- INTL W4 (ECMA-402; H20 part 2, H13 "index ids (append-only)") ----
+    /// `%Intl.DateTimeFormat%` (ECMA-402 §11.1; made by `ep9_intl` date_time_format.rs, block 45).
+    IntlDateTimeFormat,
+    /// `%Intl.DateTimeFormat.prototype%` (ECMA-402 §11.3, an ordinary object; made by `ep9_intl` date_time_format.rs).
+    IntlDateTimeFormatPrototype,
+    /// `%Intl.DurationFormat%` (ECMA-402 §13.1; made by `ep9_intl` duration_format.rs, block 46).
+    IntlDurationFormat,
+    /// `%Intl.DurationFormat.prototype%` (ECMA-402 §13.3, an ordinary object; made by `ep9_intl` duration_format.rs).
+    IntlDurationFormatPrototype,
+    /// ep9-internal, not a spec intrinsic: an ordinary object with a null prototype that keeps
+    /// `%Intl%.[[FallbackSymbol]]` (ECMA-402 §8) as a data property, one per realm (made by
+    /// `ep9_intl` intl.rs, block 30; no property names it).
+    IntlFallbackSymbolHolder,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 156] = [
+    pub const ALL: [IntrinsicId; 161] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -594,6 +607,11 @@ impl IntrinsicId {
         IntrinsicId::Float64Array,
         IntrinsicId::Float64ArrayPrototype,
         IntrinsicId::Atomics,
+        IntrinsicId::IntlDateTimeFormat,
+        IntrinsicId::IntlDateTimeFormatPrototype,
+        IntrinsicId::IntlDurationFormat,
+        IntrinsicId::IntlDurationFormatPrototype,
+        IntrinsicId::IntlFallbackSymbolHolder,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -756,6 +774,11 @@ impl IntrinsicId {
             IntrinsicId::Float64Array => "%Float64Array%",
             IntrinsicId::Float64ArrayPrototype => "%Float64Array.prototype%",
             IntrinsicId::Atomics => "%Atomics%",
+            IntrinsicId::IntlDateTimeFormat => "%Intl.DateTimeFormat%",
+            IntrinsicId::IntlDateTimeFormatPrototype => "%Intl.DateTimeFormat.prototype%",
+            IntrinsicId::IntlDurationFormat => "%Intl.DurationFormat%",
+            IntrinsicId::IntlDurationFormatPrototype => "%Intl.DurationFormat.prototype%",
+            IntrinsicId::IntlFallbackSymbolHolder => "%IntlFallbackSymbolHolder%",
         }
     }
 
@@ -918,7 +941,12 @@ impl IntrinsicId {
             | IntrinsicId::Float32ArrayPrototype
             | IntrinsicId::Float64Array
             | IntrinsicId::Float64ArrayPrototype
-            | IntrinsicId::Atomics => return None,
+            | IntrinsicId::Atomics
+            | IntrinsicId::IntlDateTimeFormat
+            | IntrinsicId::IntlDateTimeFormatPrototype
+            | IntrinsicId::IntlDurationFormat
+            | IntrinsicId::IntlDurationFormatPrototype
+            | IntrinsicId::IntlFallbackSymbolHolder => return None,
         })
     }
 
@@ -1049,6 +1077,11 @@ impl IntrinsicId {
             IntrinsicId::Float64Array => Some(120),
             IntrinsicId::Float64ArrayPrototype => Some(121),
             IntrinsicId::Atomics => Some(122),
+            IntrinsicId::IntlDateTimeFormat => Some(123),
+            IntrinsicId::IntlDateTimeFormatPrototype => Some(124),
+            IntrinsicId::IntlDurationFormat => Some(125),
+            IntrinsicId::IntlDurationFormatPrototype => Some(126),
+            IntrinsicId::IntlFallbackSymbolHolder => Some(127),
             _ => None,
         }
     }
@@ -1730,7 +1763,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 123;
+const INTRINSIC_SLOTS: usize = 128;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

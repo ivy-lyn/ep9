@@ -163,13 +163,13 @@ impl Builder<'_> {
             && matches!(binding.kind, BindingKind::Var | BindingKind::Function)
     }
 
-    /// `.result` or one of its backups: the names that the completion-value rewrite of eval
-    /// code (`eval.rs`) writes. No JS identifier can spell them.
+    /// `.result` or one of its backups: the names that the completion-value rewrite (`eval.rs`,
+    /// eval code and a completion Script) writes. No JS identifier can spell them.
     fn is_completion_name(&self, name: NameId) -> bool {
         self.names[name.index()].starts_with(EVAL_RESULT)
     }
 
-    /// Eval code: a root binding for each completion name. Mutable, no TDZ, never an eval var.
+    /// A root binding for each completion name. Mutable, no TDZ, never an eval or global var.
     fn declare_synthetic(&mut self) {
         let root = ScopeId(0);
         for r in 0..self.references.len() {
@@ -340,9 +340,9 @@ impl Builder<'_> {
 
     pub(super) fn resolve(&mut self, eval: Option<EvalKind>) {
         let direct = eval == Some(EvalKind::Direct);
-        if eval.is_some() {
-            self.declare_synthetic();
-        }
+        // Eval code and a Script compiled with its completion value (`.result` stores). No
+        // other source has a completion name, so this declares nothing there.
+        self.declare_synthetic();
 
         // 1. Direct eval sites.
         for i in 0..self.eval_sites.len() {
@@ -440,7 +440,7 @@ impl Builder<'_> {
                     Some(skip) => self.lookup_private(scope, name, skip, eval),
                     None => self.lookup(scope, name, false, eval),
                 },
-                // The completion names of eval code: always the root binding.
+                // The completion names (eval code, a completion Script): always the root binding.
                 _ if self.is_completion_name(name) => self.lookup(scope, name, false, None),
                 _ => self.lookup(scope, name, true, eval),
             };
@@ -531,8 +531,8 @@ impl Builder<'_> {
             return (BindingLocation::Global, None);
         }
         let binding = &self.bindings[b.index()];
-        // The completion value of eval code: no eval code can name it, so a direct eval does
-        // not need it in a context.
+        // The completion value (eval code, a completion Script): no eval code can name it, so a
+        // direct eval does not need it in a context.
         let synthetic = self.is_completion_name(binding.name);
         let (kind, captured, dynamic, exported, s) = (
             binding.kind,
@@ -549,7 +549,9 @@ impl Builder<'_> {
             f.simple_params,
             f.kind.is_derived_constructor(),
         );
-        if s.0 == 0 && scope_kind == ScopeKind::Script {
+        // A completion Script's `.result` is a register of function 0, never a global binding:
+        // a Script's top-level `let` is a global lexical one, and another Script can see it.
+        if s.0 == 0 && scope_kind == ScopeKind::Script && !synthetic {
             match kind {
                 K::Var | K::Function => return (BindingLocation::Global, None),
                 K::Let | K::Const | K::Class | K::Using => {

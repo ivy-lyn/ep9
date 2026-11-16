@@ -221,6 +221,7 @@ dependencies = [
  "icu_calendar",
  "icu_casemap",
  "icu_collator",
+ "icu_collections",
  "icu_datetime",
  "icu_decimal",
  "icu_experimental",
@@ -232,6 +233,7 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "icu_time",
+ "zerovec",
 ]
 
 [[package]]

@@ -37,6 +37,10 @@
 //! differ from its parent), so a row is the full answer for its locale. Output is deterministic:
 //! every list is sorted, and the text depends only on the inputs.
 
+#[cfg(feature = "datagen")]
+pub mod collator_search;
+pub mod t3;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

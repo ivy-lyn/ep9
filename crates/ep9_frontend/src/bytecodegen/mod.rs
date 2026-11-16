@@ -931,7 +931,46 @@ pub(crate) fn new_builder(
 /// into (`eval.rs`, the V8 Rewriter model). No JS source can name it.
 pub(crate) const EVAL_RESULT: &str = ".result";
 
+/// Compile a Script whose function 0 returns the Script's completion value (ECMA-262
+/// ScriptEvaluation, §16.1.6: the value of the script body), not undefined. The test262 host
+/// hook of `$262.evalScript` needs it (INTERPRETING.md: evalScript returns that value).
+///
+/// The completion comes from the eval code rewrite (`eval.rs` E5, `with_script_completion`):
+/// value-producing statements store into `.result`, a register of function 0 that never
+/// becomes a global binding or a property of the global object. A Script compiled by
+/// [`compile_script`] or [`compile`] does not get the rewrite and does not change.
+///
+/// # Errors
+///
+/// See [`CodegenError`].
+pub fn compile_script_with_completion(
+    source: &str,
+    strictness: Strictness,
+) -> Result<VerifiedUnit, CodegenError> {
+    crate::eval::with_script_completion(source, strictness, |fe| {
+        let analysis = crate::scope::analyze(fe)?;
+        generate(fe, &analysis, CompileOptions::default())
+    })
+}
+
 impl<'a> FnGen<'a, '_> {
+    /// The completion value of function 0 into the accumulator: the root binding `.result`
+    /// when the E5 rewrite made one (eval code, a completion Script), else undefined.
+    pub(crate) fn load_completion_value(&mut self) {
+        let result = self
+            .sa
+            .scope(ScopeId(0))
+            .bindings
+            .iter()
+            .copied()
+            .find(|&b| self.sa.name(self.binding(b).name) == EVAL_RESULT);
+        match result {
+            Some(b) => self.load_binding_here(b, false),
+            None => {
+                self.b.lda_undefined();
+            }
+        }
+    }
     /// Function 0 of eval code: ECMA-262 EvalDeclarationInstantiation (§19.2.1.3), the body,
     /// and the completion value (PerformEval steps 29-30).
     ///
@@ -977,17 +1016,7 @@ impl<'a> FnGen<'a, '_> {
             self.declare_eval_bindings(root)?;
         }
         self.statements(&program.body)?;
-        let result = root_info
-            .bindings
-            .iter()
-            .copied()
-            .find(|&b| self.sa.name(self.binding(b).name) == EVAL_RESULT);
-        match result {
-            Some(b) => self.load_binding_here(b, false),
-            None => {
-                self.b.lda_undefined();
-            }
-        }
+        self.load_completion_value();
         self.b.return_();
         Ok(())
     }

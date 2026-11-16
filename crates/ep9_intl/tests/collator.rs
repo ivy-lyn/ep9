@@ -261,3 +261,28 @@ print(c.compare("a͏b", "ab"), c.compare("e" + "́".repeat(31), "é" + "́".repe
         ])
     );
 }
+
+/// `usage: "search"` takes the search tailoring of the locale (`-u-co-search`; the ICU export
+/// data of `cldr::collator_search`): German "Ä" is "AE" at the primary level (test262
+/// `intl402/Collator/usage-de.js`), Danish "å" is "aa", locales with no search tailoring of
+/// their own ("en", "fr") take the root one, and `localeCompare` with the option does the
+/// same. node v26.13.1 gives the same lines.
+#[test]
+fn search_takes_the_search_tailoring() {
+    assert_eq!(
+        run_both(
+            r#"const s = (l, o) => new Intl.Collator(l, Object.assign({usage: "search"}, o));
+print(JSON.stringify(["AE", "Ä"].sort(s("de").compare)), JSON.stringify(["AE", "Ä"].sort(new Intl.Collator("de").compare)));
+const b = {sensitivity: "base"};
+print(s("de", b).compare("ae", "ä"), s("de-AT", b).compare("ae", "ä"), s("en", b).compare("ae", "ä"), s("en", b).compare("a", "ä"), s("fr", b).compare("é", "e"));
+print(s("sv", b).compare("a", "ä"), s("da", b).compare("aa", "å"), s("sr-Latn", b).compare("dj", "đ"), s("tr", b).compare("i", "ı"), s("es", b).compare("n", "ñ"));
+print("AE".localeCompare("Ä", "de", {usage: "search"}), "AE".localeCompare("Ä", "de"), s("de").compare("a", "b"), s("de").resolvedOptions().usage, s("de").resolvedOptions().collation);"#
+        ),
+        lines(&[
+            "[\"AE\",\"\u{c4}\"] [\"\u{c4}\",\"AE\"]",
+            "0 0 1 0 0",
+            "-1 0 -1 1 -1",
+            "-1 1 -1 search default",
+        ])
+    );
+}

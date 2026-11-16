@@ -20,6 +20,7 @@ cargo run           -> crates/ep9_intl/src/cldr/gen/
                                   two of them, and the "per" pattern, per CLDR locale and
                                   width (number_format/unit.rs)
 cargo run -- --check  writes nothing; exit 1 if a generated file differs (CI form)
+                    (`cargo run -- tables` is the same mode; `collator-search` is below)
 cargo test          the tables against the ICU4X compiled data of the same CLDR release,
                     the CLDR version against the ICU4X data README, the check, determinism
 ```
@@ -46,6 +47,63 @@ https://github.com/unicode-org/cldr-json.git refs/tags/<version>`), move the `ic
 dev-dependency pins in `Cargo.toml` to the new release, run the three commands, and commit the
 new `gen/` files. The test `cldr_version_equals_icu4x_data` fails until the two versions agree.
 
+## The search collations (`collator-search`)
+
+The ICU4X compiled data leaves out the search collations (`-u-co-search`, `-u-co-searchjl`),
+which `Intl.Collator` with `usage: "search"` needs (decision INTL-V2-D17 Form A, DL row
+INTL-W4-CLDR). The mode `collator-search` (feature `datagen`) reads them from the ICU export
+data release that `icuexport.pin` names (tag, file, sha256), with `icu_provider_source` of the
+same ICU4X release, and writes `crates/ep9_intl/src/cldr/gen/collator_search/mod.rs`: the
+metadata and the tailoring of the 22 `search*` ids as plain Rust data (`ep9_intl` has no
+`unsafe` and no `include!`, so not the ICU4X baked form; `ep9_intl` builds the data structs with
+the checked constructors). Before it writes, it checks that the pin tag is the source
+provider's tested tag, that the root collation and every tailoring that the compiled data holds
+under the same id are equal in the two data sets, and that no search id has diacritics or
+reordering data.
+
+```text
+sync-icuexport.sh   icuexport/<file> (git-ignored; one fetch from the GitHub release, sha256
+                      checked against icuexport.pin)
+cargo run --features datagen -- collator-search            -> cldr/gen/collator_search/mod.rs
+cargo run --features datagen -- collator-search --check    writes nothing; exit 1 if it differs
+```
+
+```sh
+tools/cldr-tables/sync-icuexport.sh
+cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml --features datagen -- collator-search
+cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml --features datagen -- collator-search --check
+```
+
+The feature is off in the CI form (the commands above without it), so CI does not build the
+source provider. At every ICU4X BUMP: move the `icu_provider_source` and `icu_collator` pins in
+`Cargo.toml` to the new release, set `icuexport.pin` to its `TESTED_ICUEXPORT_TAG` (the release
+asset `icu4x-icuexportdata-<version>.zip` and its sha256), and run the commands.
+
 This crate has its own `[workspace]` and lock; the root `Cargo.toml` lists `tools/cldr-tables`
 in `exclude`. It is a tool, never part of the engine graph. The CLDR data is Unicode-3.0
 (`deny.toml` allows it).
+
+## T3: the flexible day periods and the numeric date patterns (`t3`)
+
+ICU4X has no data for the flexible day periods ("in the morning"; UTS 35 "B", the ECMA-402
+option `dayPeriod`), and its date patterns give a numeric month and day other widths than the
+CLDR availableFormats that ICU4C uses ("02.01." against "2.1." in German). The mode `t3` reads
+them from the same pinned CLDR JSON (the `sync-cldr-json.sh` paths `dayPeriods.json` and
+`cldr-dates-full/main/*/ca-gregorian.json`) and writes `crates/ep9_intl/src/cldr/gen/t3.rs`
+(`crate::date_time_format::pattern` reads it through `crate::cldr`):
+
+```text
+cldr-core/supplemental/dayPeriods.json      the day period of each hour, noon, midnight
+ca-gregorian.json dayPeriods.format          the names: abbreviated, narrow, wide
+ca-gregorian.json availableFormats           the patterns of yMd, yM, Md
+numbers.json symbols-numberSystem-<nu>       the decimal sign per numbering system (not "latn")
+```
+
+```sh
+tools/cldr-tables/sync-cldr-json.sh
+cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- t3            # write
+cargo run --locked --manifest-path tools/cldr-tables/Cargo.toml -- t3 --check    # check
+```
+
+`cargo test` checks that `t3.rs` is the generator's output (`t3::tests`), so the CI step
+above also covers it.

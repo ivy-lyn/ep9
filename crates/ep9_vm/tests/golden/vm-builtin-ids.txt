@@ -204,3 +204,8 @@ intrinsic 152  %Float32Array.prototype%
 intrinsic 153  %Float64Array%
 intrinsic 154  %Float64Array.prototype%
 intrinsic 155  %Atomics%
+intrinsic 156  %Intl.DateTimeFormat%
+intrinsic 157  %Intl.DateTimeFormat.prototype%
+intrinsic 158  %Intl.DurationFormat%
+intrinsic 159  %Intl.DurationFormat.prototype%
+intrinsic 160  %IntlFallbackSymbolHolder%

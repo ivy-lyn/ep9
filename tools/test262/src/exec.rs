@@ -289,9 +289,9 @@ fn print<'s>(
 
 /// `$262.evalScript(source)` (INTERPRETING.md): ParseScript and ScriptEvaluation of
 /// ToString(source) in the current realm, through `Cx::evaluate_script` (the compiler hook
-/// `compile_script`; an early error throws a SyntaxError of this realm). v0 returns what the
-/// script's entry function returns (undefined), not its completion value. Source text with a
-/// lone surrogate throws the v0 not-implemented error (it cannot be `&str`).
+/// `compile_script`; an early error throws a SyntaxError of this realm). It returns the Script
+/// completion value (§16.1.6; the hook compiles with `compile_script_with_completion`). Source
+/// text with a lone surrogate throws the v0 not-implemented error (it cannot be `&str`).
 fn eval_script<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -592,9 +592,9 @@ fn hook_compile_function(kind: FunctionCtorKind, params: &str, body: &str) -> Co
         .map_err(hook_failure)
 }
 
+/// `compile_script` (`$262.evalScript`, the preludes): function 0 returns the completion value.
 fn hook_compile_script(source: &str) -> CompileResult {
-    let opts = SourceOpts::script(Strictness::Sloppy);
-    ep9_frontend::compile(source, opts, CompileOptions::default()).map_err(hook_failure)
+    ep9_frontend::compile_script_with_completion(source, Strictness::Sloppy).map_err(hook_failure)
 }
 
 /// A front-end error as the VM's [`CompileFailure`] (the message without a position).
@@ -2319,5 +2319,30 @@ mod tests {
             assert!(c.heap.generational && c.heap.verify_after_gc);
             assert_eq!(c.heap.stress_major_every, 64);
         }
+    }
+
+    /// `$262.evalScript` returns the Script completion value (ScriptEvaluation, §16.1.6;
+    /// INTERPRETING.md), through the hook `compile_script` (route EVALSCRIPT-COMPLETION). A
+    /// declaration gives no value (empty -> undefined; UpdateEmpty keeps an earlier value), the
+    /// `.result` binding never reaches the global object, and an error still throws.
+    #[test]
+    fn eval_script_returns_the_script_completion_value() {
+        let script = "var ev = __ep9_eval_script;\n\
+            print(ev('1 + 1'));\n\
+            print(ev('var x = 1;'), x);\n\
+            print(ev('let y = 3;'), y);\n\
+            print(ev('5; var z = 2;'), ev('6; function f() {}'), ev('7; class C {}'));\n\
+            print(ev('if (true) { 8; } else { 9; }'), ev('do { 10; break; } while (false)'));\n\
+            print(ev('\"s\"'), typeof ev('(function () {})'));\n\
+            print(Object.getOwnPropertyNames(globalThis).indexOf('.result'));\n\
+            try { ev('11; throw new RangeError(\"boom\");'); print('no throw'); }\n\
+            catch (e) { print(e instanceof RangeError, e.message); }\n\
+            try { ev('var = ;'); print('no throw'); }\n\
+            catch (e) { print(e instanceof SyntaxError); }\n\
+            print(ev('12'));\n";
+        let (out, error) = run_in_root("evalscript-completion", &[], script);
+        let want = "2\nundefined 1\nundefined 3\n5 6 7\n8 10\ns function\n-1\n\
+            true boom\ntrue\n12\n";
+        assert_eq!((out.as_str(), error.as_str()), (want, ""));
     }
 }

@@ -49,3 +49,4 @@
 0x0c2d   6.45         method       0       "strike"  (%String.prototype%.strike w-c)
 0x0c2e   6.46         method       0       "sub"  (%String.prototype%.sub w-c)
 0x0c2f   6.47         method       0       "sup"  (%String.prototype%.sup w-c)
+0x0c30   6.48         method       0       "normalize"  (%String.prototype%.normalize w-c)

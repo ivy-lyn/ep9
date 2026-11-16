@@ -649,9 +649,12 @@ fn group_is_complete(modules: &[BuiltinModule]) {
     assert_eq!(r, Ok(want));
 }
 
-/// The Intl ids of INTL W1, W2 and W3 (the group of the key `Intl`).
-const INTL_IDS: [IntrinsicId; 19] = [
+/// The Intl ids of INTL W1, W2, W3 and W4 (the group of the key `Intl`), in the order the group
+/// makes them: module order, then the intrinsics of each module (`intl` makes
+/// `%IntlFallbackSymbolHolder%` after `%Intl%`).
+const INTL_IDS: [IntrinsicId; 24] = [
     IntrinsicId::Intl,
+    IntrinsicId::IntlFallbackSymbolHolder,
     IntrinsicId::IntlLocale,
     IntrinsicId::IntlLocalePrototype,
     IntrinsicId::IntlCollator,
@@ -670,6 +673,10 @@ const INTL_IDS: [IntrinsicId; 19] = [
     IntrinsicId::IntlDisplayNamesPrototype,
     IntrinsicId::IntlRelativeTimeFormat,
     IntrinsicId::IntlRelativeTimeFormatPrototype,
+    IntrinsicId::IntlDateTimeFormat,
+    IntrinsicId::IntlDateTimeFormatPrototype,
+    IntrinsicId::IntlDurationFormat,
+    IntrinsicId::IntlDurationFormatPrototype,
 ];
 
 /// Design §4.6 case 1 for the Intl ids (INTL W1, C1): realm init makes no object of the Intl
@@ -692,7 +699,7 @@ fn realm_init_makes_no_intl_object() {
         .collect();
     assert_eq!(
         made, INTL_IDS,
-        "the Intl group makes the W1, W2 and W3 Intl ids"
+        "the Intl group makes the W1, W2, W3 and W4 Intl ids"
     );
     let after = common::on_big_stack(|| {
         let mut iso = isolate(false);

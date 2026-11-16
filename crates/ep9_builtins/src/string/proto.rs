@@ -1,7 +1,7 @@
 //! `%String.prototype%` methods without a pattern or a case mapping (§22.1.3): at, charAt,
 //! codePointAt, concat, endsWith, includes, indexOf, lastIndexOf, isWellFormed, toWellFormed,
-//! localeCompare, padStart, padEnd, repeat, slice, startsWith, substring, trim, trimStart,
-//! trimEnd.
+//! localeCompare, normalize, padStart, padEnd, repeat, slice, startsWith, substring, trim,
+//! trimStart, trimEnd.
 
 use core::cmp::Ordering;
 
@@ -697,4 +697,50 @@ pub(super) fn trim_start<'s>(
     // 1. Let S be the this value.
     // 2. Return ? TrimString(S, start).
     trim_string(cx, this, Where::Start, "trimStart")
+}
+
+/// String.prototype.normalize ( \[ form \] ) (§22.1.3.15). The normalization is
+/// `ep9_intl::normalize` (ICU4X; only `ep9_intl` depends on `icu_normalizer`, dep-guards check
+/// 25); lone surrogates pass through. A string that is normal already is returned as it is.
+pub(super) fn normalize<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // Function-local imports: the lines above this function keep their numbers (docs cite them).
+    use ep9_intl::normalize::{Form, normalize};
+    use std::borrow::Cow;
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
+    let s = this_string(cx, this, "normalize")?;
+    let form = args.get(0);
+    let f = if form.is_undefined() {
+        // 3. If form is undefined, let f be "NFC".
+        Form::Nfc
+    } else {
+        // 4. Else, let f be ? ToString(form).
+        let f = to_units(cx, form)?;
+        // 5. If f is not one of "NFC", "NFD", "NFKC", or "NFKD", throw a RangeError exception.
+        match Form::from_units(&f) {
+            Some(f) => f,
+            None => {
+                return Err(cx.throw_range_error(
+                    "The normalization form should be one of NFC, NFD, NFKC, NFKD.",
+                ));
+            }
+        }
+    };
+    // 6. Let ns be the String value that is the result of normalizing S into the normalization
+    //    form named by f as specified in the latest Unicode Standard, Normalization Forms.
+    // 7. Return ns.
+    //    The result stops at MAX_LENGTH: past it, the RangeError of a too long string, with
+    //    no buffer past the limit (W4 Codex r1 F2).
+    let units = units(cx, s)?;
+    match normalize(&units, f, MAX_LENGTH) {
+        Ok(Cow::Borrowed(_)) => Ok(s.value()),
+        Ok(Cow::Owned(ns)) => new_str(cx, &ns),
+        Err(_) => Err(cx.throw_range_error("Invalid string length")),
+    }
 }
