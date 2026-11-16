@@ -10,6 +10,7 @@
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
 //! | match loop (`--match-loop`) | For SP-Dispatch, whose 20-opcode x86-64 match loop LLVM threads (`ep9loop__<expansion>__<fn>`). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only. T0 (`ep9_vm`) releases sibling calls on every target (H15 ADR, 2026-10-21), so for T0 the loop line is a report, not a gate. |
+//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. The hot handlers (every handler whose name does not end in `_cold`) that build a frame on entry (the first instruction saves a register or grows the stack), with the registers each one saves on entry, must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). |
 //! | Mach-O data in code | x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE). The check drops what `llvm-objdump -d` decodes from those bytes, so table data never counts as jumps, calls, returns or stack accesses, and decodes the code after each table again from the table end, so a decode that ran across the table end cannot hide an instruction there. |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
@@ -37,6 +38,9 @@ usage: cargo xtask disasm-check [options]
   --expect N            every expansion must have exactly N handlers
   --max-args N          handler argument limit (default 4)
   --match-loop          also check the match loop (ep9loop__* symbols; rule on x86-64 only)
+  --frames GOLDEN       only the frame check: the hot handlers that build a frame on entry and
+                        their entry register saves must equal GOLDEN (one target, no --binary)
+  --bless               with --frames: write GOLDEN from this build instead of checking it
   --objdump PATH, --nm PATH   tools (default: rustup llvm-tools, then PATH)
   -v, --verbose         one line per handler";
 
@@ -66,6 +70,10 @@ struct Opts {
     expect: Option<usize>,
     max_args: usize,
     match_loop: bool,
+    /// `--frames`: the golden file of the frame check.
+    frames: Option<PathBuf>,
+    /// `--bless`: write the frame golden instead of checking it.
+    bless: bool,
     objdump: Option<PathBuf>,
     nm: Option<PathBuf>,
     verbose: bool,
@@ -91,6 +99,8 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         expect: None,
         max_args: 4,
         match_loop: false,
+        frames: None,
+        bless: false,
         objdump: None,
         nm: None,
         verbose: false,
@@ -114,6 +124,8 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--expect" => o.expect = Some(val()?.parse().map_err(|e| format!("--expect: {e}"))?),
             "--max-args" => o.max_args = val()?.parse().map_err(|e| format!("--max-args: {e}"))?,
             "--match-loop" => o.match_loop = true,
+            "--frames" => o.frames = Some(PathBuf::from(val()?)),
+            "--bless" => o.bless = true,
             "--objdump" => o.objdump = Some(PathBuf::from(val()?)),
             "--nm" => o.nm = Some(PathBuf::from(val()?)),
             "-v" | "--verbose" => o.verbose = true,
@@ -121,8 +133,21 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             _ => return Err(format!("unknown option {a}\n{USAGE}")),
         }
     }
+    if o.bless && o.frames.is_none() {
+        return Err(format!("--bless needs --frames\n{USAGE}"));
+    }
+    if o.frames.is_some() && !o.binaries.is_empty() {
+        return Err(format!(
+            "--frames builds the crate; it takes no --binary\n{USAGE}"
+        ));
+    }
     if o.targets.is_empty() && o.binaries.is_empty() {
         o.targets.push(host_triple()?);
+    }
+    if o.frames.is_some() && o.targets.len() != 1 {
+        return Err(format!(
+            "--frames checks one target (a golden file is per target)\n{USAGE}"
+        ));
     }
     Ok(o)
 }
@@ -210,6 +235,17 @@ pub fn main(args: &[String]) -> Result<bool, String> {
         nm: find_tool("llvm-nm", &o.nm)?,
         ar: find_tool("llvm-ar", &None)?,
     };
+    if let Some(golden) = &o.frames {
+        let t = &o.targets[0];
+        let (art, _) = build(&o, t)?;
+        let ok = check_frames(&tools, &art, t, golden, o.bless)?;
+        println!();
+        println!(
+            "disasm-check --frames {}: {t}",
+            if ok { "PASS" } else { "FAIL" }
+        );
+        return Ok(ok);
+    }
     let mut results = Vec::new();
     if o.binaries.is_empty() {
         for t in &o.targets {
@@ -1023,70 +1059,22 @@ fn check_file(
     ll: Option<&Path>,
     label: &str,
 ) -> Result<bool, String> {
-    let handlers = nm_handlers(&tools.nm, file)?;
-    if handlers.is_empty() {
+    let Some(Loaded {
+        arch,
+        abi,
+        format,
+        handlers,
+        raws,
+        blocks,
+    }) = load(tools, file)?
+    else {
         println!(
             "== {label}: {}\n   FAIL: no handler symbols ({PREFIX}*) found",
             file.display()
         );
         return Ok(false);
-    }
-    let raws: Vec<String> = {
-        let mut r: Vec<String> = handlers.iter().map(|h| h.raw.clone()).collect();
-        r.sort();
-        r.dedup();
-        r
     };
-    // An archive (staticlib) also holds every std and compiler_builtins member. Extract only
-    // the members with handlers and disassemble those.
-    let mut members: Vec<&str> = handlers.iter().map(|h| h.member.as_str()).collect();
-    members.sort();
-    members.dedup();
-    let mut format = String::new();
-    let mut blocks = Vec::new();
-    for m in members {
-        let (f, mut b) = in_member(tools, file, m, |obj| {
-            disassemble_reach(&raws, |names| disassemble(&tools.objdump, obj, names))
-        })?;
-        b.iter_mut().for_each(|blk| blk.member = m.to_string());
-        format = f;
-        blocks.append(&mut b);
-    }
-    let (arch, abi) = arch_of(&format)?;
     println!("== {label} ({abi}, {format}): {}", file.display());
-
-    // Find each handler's block by name. Fallback for a symbol that LLVM merged into another
-    // one (an alias at the same address): use that block, but only if exactly one block sits
-    // at that address. In objects with one section per function every function starts at
-    // address 0, so the fallback never applies there.
-    let block_of = |h: &Handler| -> Option<&Block> {
-        if let Some(mut i) = blocks
-            .iter()
-            .position(|b| b.raw == h.raw && b.member == h.member)
-        {
-            // Two labels at one address (an alias): objdump prints the first one with no
-            // instructions, then the second one with the code.
-            while blocks[i].insns.is_empty()
-                && blocks
-                    .get(i + 1)
-                    .is_some_and(|n| n.addr == blocks[i].addr && n.member == blocks[i].member)
-            {
-                i += 1;
-            }
-            return Some(&blocks[i]);
-        }
-        let mut same: Vec<&Block> = handlers
-            .iter()
-            .filter(|g| g.member == h.member && g.addr == h.addr && g.raw != h.raw)
-            .filter_map(|g| {
-                blocks
-                    .iter()
-                    .find(|b| b.raw == g.raw && b.member == g.member)
-            })
-            .collect();
-        same.dedup_by(|a, b| a.raw == b.raw);
-        if same.len() == 1 { Some(same[0]) } else { None }
-    };
 
     let handler_raws: BTreeSet<&str> = raws.iter().map(String::as_str).collect();
     let mut ok = true;
@@ -1100,7 +1088,7 @@ fn check_file(
         let mut aliases = 0;
         let mut framed: Vec<String> = Vec::new();
         for h in hs {
-            let Some(b) = block_of(h) else {
+            let Some(b) = block_of(&handlers, &blocks, h) else {
                 println!("   FAIL {}: not found in the disassembly", h.name);
                 ok = false;
                 continue;
@@ -1233,6 +1221,91 @@ fn check_file(
         ok &= check_loops(tools, file, arch, abi, fast_tail)?;
     }
     Ok(ok)
+}
+
+/// What [`load`] reads from one file.
+struct Loaded {
+    arch: Arch,
+    abi: &'static str,
+    /// The file format as llvm-objdump prints it.
+    format: String,
+    handlers: Vec<Handler>,
+    /// The handler symbol names, sorted, each once.
+    raws: Vec<String>,
+    /// The handlers and the helper code they jump to.
+    blocks: Vec<Block>,
+}
+
+/// Lists the handler symbols of `file` and disassembles them with the helpers they jump to.
+/// `None` if the file has no handler symbol.
+fn load(tools: &Tools, file: &Path) -> Result<Option<Loaded>, String> {
+    let handlers = nm_handlers(&tools.nm, file)?;
+    if handlers.is_empty() {
+        return Ok(None);
+    }
+    let raws: Vec<String> = {
+        let mut r: Vec<String> = handlers.iter().map(|h| h.raw.clone()).collect();
+        r.sort();
+        r.dedup();
+        r
+    };
+    // An archive (staticlib) also holds every std and compiler_builtins member. Extract only
+    // the members with handlers and disassemble those.
+    let mut members: Vec<&str> = handlers.iter().map(|h| h.member.as_str()).collect();
+    members.sort();
+    members.dedup();
+    let mut format = String::new();
+    let mut blocks = Vec::new();
+    for m in members {
+        let (f, mut b) = in_member(tools, file, m, |obj| {
+            disassemble_reach(&raws, |names| disassemble(&tools.objdump, obj, names))
+        })?;
+        b.iter_mut().for_each(|blk| blk.member = m.to_string());
+        format = f;
+        blocks.append(&mut b);
+    }
+    let (arch, abi) = arch_of(&format)?;
+    Ok(Some(Loaded {
+        arch,
+        abi,
+        format,
+        handlers,
+        raws,
+        blocks,
+    }))
+}
+
+/// Finds the block of handler `h` by name. Fallback for a symbol that LLVM merged into another
+/// one (an alias at the same address): use that block, but only if exactly one block sits at
+/// that address. In objects with one section per function every function starts at address 0,
+/// so the fallback never applies there.
+fn block_of<'a>(handlers: &[Handler], blocks: &'a [Block], h: &Handler) -> Option<&'a Block> {
+    if let Some(mut i) = blocks
+        .iter()
+        .position(|b| b.raw == h.raw && b.member == h.member)
+    {
+        // Two labels at one address (an alias): objdump prints the first one with no
+        // instructions, then the second one with the code.
+        while blocks[i].insns.is_empty()
+            && blocks
+                .get(i + 1)
+                .is_some_and(|n| n.addr == blocks[i].addr && n.member == blocks[i].member)
+        {
+            i += 1;
+        }
+        return Some(&blocks[i]);
+    }
+    let mut same: Vec<&Block> = handlers
+        .iter()
+        .filter(|g| g.member == h.member && g.addr == h.addr && g.raw != h.raw)
+        .filter_map(|g| {
+            blocks
+                .iter()
+                .find(|b| b.raw == g.raw && b.member == g.member)
+        })
+        .collect();
+    same.dedup_by(|a, b| a.raw == b.raw);
+    if same.len() == 1 { Some(same[0]) } else { None }
 }
 
 /// Runs `f` on `file`, or on archive member `m` of it (extracted to a temporary directory).
@@ -1449,6 +1522,268 @@ fn check_loops(
         println!("   LOOP {abi}: REPORT (no rule: the aarch64 release expansion is sibling calls)");
     }
     Ok(ok)
+}
+
+/// The comment head of a frame golden file (`--frames GOLDEN --bless` writes it).
+const FRAMES_HEAD: &str = "\
+# The hot ep9_vm handlers (name not ending in `_cold`) that build a frame on entry, and the
+# registers each one saves on entry: one `<expansion> <handler> <saves>` row per handler.
+# Checked by `cargo xtask disasm-check --frames <this file>` in the CI disasm job (plan rule 81:
+# no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). A new row,
+# a lost row or a changed count fails. A change that is meant updates this file in the same PR:
+# run the same command with `--bless`, or copy the rows that the CI log prints after `frame`.
+";
+
+/// One row of the frame golden: a hot handler that builds a frame on entry.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct FrameRow {
+    exp: String,
+    op: String,
+    /// The registers that the entry prologue saves ([`entry_saves`]).
+    saves: usize,
+}
+
+/// Registers that one prologue instruction saves, or `None` if the instruction is not part of
+/// a prologue. x86-64: a `push` saves 1; on Win64 a store of xmm6-xmm15 to the stack saves 1;
+/// `sub ..., %rsp` and setting `%rbp` from `%rsp` save 0. aarch64: an `stp` or `str` of
+/// callee-saved registers (x19-x30, d8-d15) to `[sp ...]` saves 1 per register; `sub sp, sp`,
+/// `pacibsp`/`paciasp` and setting x29 from sp save 0.
+fn prologue_saves(arch: Arch, win64: bool, text: &str) -> Option<usize> {
+    let t = text.replace(char::is_whitespace, " ");
+    let (m, ops) = t.split_once(' ').unwrap_or((t.as_str(), ""));
+    let ops = ops.trim();
+    match arch {
+        Arch::X64 => {
+            let vector_store = matches!(
+                m,
+                "movaps"
+                    | "movups"
+                    | "movdqa"
+                    | "movdqu"
+                    | "vmovaps"
+                    | "vmovups"
+                    | "vmovdqa"
+                    | "vmovdqu"
+            );
+            if m.starts_with("push") {
+                Some(1)
+            } else if m.starts_with("sub") && ops.ends_with("%rsp")
+                || m.starts_with("mov") && ops == "%rsp, %rbp"
+                || m.starts_with("lea") && ops.ends_with("(%rsp), %rbp")
+            {
+                Some(0)
+            } else if win64
+                && vector_store
+                && let Some((src, dst)) = ops.split_once(", ")
+                && src
+                    .strip_prefix("%xmm")
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .is_some_and(|n| (6..=15).contains(&n))
+                && dst.ends_with("(%rsp)")
+            {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        Arch::A64 => {
+            let callee_saved = |r: &str| match r.as_bytes().first() {
+                Some(b'x') => r[1..].parse::<u32>().is_ok_and(|n| (19..=30).contains(&n)),
+                Some(b'd') => r[1..].parse::<u32>().is_ok_and(|n| (8..=15).contains(&n)),
+                _ => r == "fp" || r == "lr",
+            };
+            if m == "sub" && ops.starts_with("sp, sp,")
+                || matches!(m, "pacibsp" | "paciasp")
+                || m == "mov" && ops == "x29, sp"
+                || m == "add" && ops.starts_with("x29, sp,")
+            {
+                Some(0)
+            } else if matches!(m, "stp" | "str")
+                && let Some((regs, mem)) = ops.split_once(", [")
+                && (mem.starts_with("sp]") || mem.starts_with("sp,"))
+            {
+                let regs: Vec<&str> = regs.split(", ").collect();
+                regs.iter().all(|r| callee_saved(r)).then_some(regs.len())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// The registers that the entry prologue of `b` saves: the sum of [`prologue_saves`] from the
+/// first instruction up to the first instruction that is not part of a prologue.
+fn entry_saves(arch: Arch, win64: bool, b: &Block) -> usize {
+    b.insns
+        .iter()
+        .map_while(|i| prologue_saves(arch, win64, &i.text))
+        .sum()
+}
+
+/// The hot handlers (name not ending in `_cold`) that build a frame on entry (the frame list
+/// of the default check, cold handlers left out), with their entry saves, sorted.
+fn frame_rows(
+    arch: Arch,
+    win64: bool,
+    handlers: &[Handler],
+    blocks: &[Block],
+) -> Result<Vec<FrameRow>, String> {
+    let mut rows = BTreeMap::new();
+    for h in handlers {
+        let op = h.name.rsplit("__").next().unwrap_or(&h.name);
+        if op.ends_with("_cold") {
+            continue;
+        }
+        let b = block_of(handlers, blocks, h)
+            .ok_or_else(|| format!("{}: not found in the disassembly", h.name))?;
+        if b.insns
+            .first()
+            .is_some_and(|i| is_frame_setup(arch, &i.text))
+        {
+            rows.insert((h.exp.clone(), op.to_string()), entry_saves(arch, win64, b));
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .map(|((exp, op), saves)| FrameRow { exp, op, saves })
+        .collect())
+}
+
+/// The golden file text for `rows` of `target`.
+fn frames_text(target: &str, rows: &[FrameRow]) -> String {
+    let mut s = format!("{FRAMES_HEAD}target {target}\n");
+    for r in rows {
+        s.push_str(&format!("{} {} {}\n", r.exp, r.op, r.saves));
+    }
+    s
+}
+
+/// Reads a golden file: its target and its rows, sorted.
+fn parse_frames(text: &str) -> Result<(String, Vec<FrameRow>), String> {
+    let mut target: Option<String> = None;
+    let mut rows = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let l = line.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        match l.split_whitespace().collect::<Vec<_>>().as_slice() {
+            ["target", t] => {
+                if target.replace(t.to_string()).is_some() {
+                    return Err(format!("frame golden line {}: a second target line", n + 1));
+                }
+            }
+            [exp, op, saves] => rows.push(FrameRow {
+                exp: exp.to_string(),
+                op: op.to_string(),
+                saves: saves
+                    .parse()
+                    .map_err(|e| format!("frame golden line {}: {e}: {l:?}", n + 1))?,
+            }),
+            _ => {
+                return Err(format!(
+                    "frame golden line {}: not `target <triple>` or `<expansion> <handler> <saves>`: {l:?}",
+                    n + 1
+                ));
+            }
+        }
+    }
+    let target = target.ok_or("frame golden: no `target` line")?;
+    rows.sort();
+    if let Some(w) = rows
+        .windows(2)
+        .find(|w| (&w[0].exp, &w[0].op) == (&w[1].exp, &w[1].op))
+    {
+        return Err(format!("frame golden: {} {} twice", w[0].exp, w[0].op));
+    }
+    Ok((target, rows))
+}
+
+/// The differences between the rows `got` of this build of `target` and the golden `text`;
+/// empty if they are equal. Every difference fails: a new frame or more saves breaks rule 81,
+/// and a lost frame or fewer saves leaves a stale golden that would hide a later return.
+fn frames_verdict(target: &str, text: &str, got: &[FrameRow]) -> Result<Vec<String>, String> {
+    let (want_target, want) = parse_frames(text)?;
+    let mut p = Vec::new();
+    if want_target != target {
+        p.push(format!(
+            "the golden is for {want_target}, this build is for {target}"
+        ));
+    }
+    let key = |r: &FrameRow| (r.exp.clone(), r.op.clone());
+    let w: BTreeMap<_, usize> = want.iter().map(|r| (key(r), r.saves)).collect();
+    let g: BTreeMap<_, usize> = got.iter().map(|r| (key(r), r.saves)).collect();
+    for ((exp, op), &gs) in &g {
+        match w.get(&(exp.clone(), op.clone())) {
+            None => p.push(format!("new frame: {exp} {op} ({gs} saves on entry)")),
+            Some(&ws) if gs > ws => p.push(format!("more saves: {exp} {op} {ws} -> {gs}")),
+            Some(&ws) if gs < ws => p.push(format!(
+                "fewer saves: {exp} {op} {ws} -> {gs} (a gain: update the golden)"
+            )),
+            Some(_) => {}
+        }
+    }
+    for ((exp, op), &ws) in &w {
+        if !g.contains_key(&(exp.clone(), op.clone())) {
+            p.push(format!(
+                "no frame now: {exp} {op} (golden: {ws} saves; a gain: update the golden)"
+            ));
+        }
+    }
+    Ok(p)
+}
+
+/// The frame check (`--frames`) of one built file: compares the frame rows with the golden
+/// file, or writes it (`--bless`). Prints every row, so a CI log holds the new golden.
+fn check_frames(
+    tools: &Tools,
+    file: &Path,
+    target: &str,
+    golden: &Path,
+    bless: bool,
+) -> Result<bool, String> {
+    let Some(l) = load(tools, file)? else {
+        println!(
+            "== {target}: {}\n   FAIL: no handler symbols ({PREFIX}*) found",
+            file.display()
+        );
+        return Ok(false);
+    };
+    let rows = frame_rows(l.arch, l.abi == "x64-win64", &l.handlers, &l.blocks)?;
+    println!("== {target} ({}, {}): {}", l.abi, l.format, file.display());
+    println!(
+        "   frames: {} hot handler rows build a frame on entry (<expansion> <handler> <saves>):",
+        rows.len()
+    );
+    for r in &rows {
+        println!("   frame {} {} {}", r.exp, r.op, r.saves);
+    }
+    if bless {
+        fs::write(golden, frames_text(target, &rows))
+            .map_err(|e| format!("{}: {e}", golden.display()))?;
+        println!("   wrote {}", golden.display());
+        return Ok(true);
+    }
+    let text = fs::read_to_string(golden).map_err(|e| format!("{}: {e}", golden.display()))?;
+    let p = frames_verdict(target, &text, &rows)?;
+    for line in &p {
+        println!("   FAIL {line}");
+    }
+    if !p.is_empty() {
+        println!(
+            "   The hot handler frames differ from {}. A new frame or a new entry save on a hot \
+             handler breaks plan rule 81 (docs/plan/10-quality.md). If the change is meant, run \
+             this command again with --bless (or copy the rows above after `frame`) and commit \
+             the golden in the same PR.",
+            golden.display()
+        );
+    }
+    println!(
+        "   RESULT frames {}: {}",
+        l.abi,
+        if p.is_empty() { "PASS" } else { "FAIL" }
+    );
+    Ok(p.is_empty())
 }
 
 #[cfg(test)]
@@ -1960,5 +2295,224 @@ Section
             json_string_array(l, "filenames"),
             vec!["/a/b/libx.a".to_string(), "C:\\t\\x.lib".to_string()]
         );
+    }
+
+    /// A frame-check fixture (tests/disasm_frames, plan v9 rule 24).
+    fn frames_fixture(name: &str) -> String {
+        fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/disasm_frames")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    const FRAMES_TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    /// The frame rows of a fixture dump (x86-64 SysV), with its handlers taken from the block
+    /// names (nm gives them in the real check).
+    fn fixture_rows(name: &str) -> Vec<FrameRow> {
+        let (format, blocks) = parse_disasm(&frames_fixture(name));
+        let (arch, abi) = arch_of(&format).unwrap();
+        assert_eq!(abi, "x64-sysv");
+        let handlers: Vec<Handler> = blocks
+            .iter()
+            .filter_map(|b| {
+                let (name, exp, class) = parse_handler(&b.raw)?;
+                Some(Handler {
+                    raw: b.raw.clone(),
+                    name,
+                    exp,
+                    class,
+                    member: b.member.clone(),
+                    addr: b.addr,
+                })
+            })
+            .collect();
+        assert_eq!(handlers.len(), 4);
+        frame_rows(arch, false, &handlers, &blocks).unwrap()
+    }
+
+    #[test]
+    fn frames_unchanged_list_passes() {
+        let rows = fixture_rows("base.txt");
+        // The cold handler builds a frame too, but only hot handlers are rows.
+        let names: Vec<(&str, usize)> = rows.iter().map(|r| (r.op.as_str(), r.saves)).collect();
+        assert_eq!(names, [("BadOpcode", 1), ("CallProperty0", 2)]);
+        let golden = frames_fixture("golden.txt");
+        assert_eq!(
+            frames_verdict(FRAMES_TARGET, &golden, &rows).unwrap(),
+            Vec::<String>::new()
+        );
+        // --bless writes a file that passes and reads back the same rows.
+        let text = frames_text(FRAMES_TARGET, &rows);
+        assert!(text.starts_with(FRAMES_HEAD));
+        assert_eq!(
+            parse_frames(&text).unwrap(),
+            (FRAMES_TARGET.to_string(), rows.clone())
+        );
+        assert!(
+            frames_verdict(FRAMES_TARGET, &text, &rows)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn frames_new_frame_or_push_fails() {
+        let rows = fixture_rows("head.txt");
+        let golden = frames_fixture("golden.txt");
+        assert_eq!(
+            frames_verdict(FRAMES_TARGET, &golden, &rows).unwrap(),
+            [
+                "more saves: sib CallProperty0 2 -> 3",
+                "new frame: sib GetNamedProperty (1 saves on entry)",
+            ]
+        );
+        // The golden of another target fails even with equal rows.
+        let base = fixture_rows("base.txt");
+        assert_eq!(
+            frames_verdict("x86_64-pc-windows-msvc", &golden, &base).unwrap(),
+            [
+                "the golden is for x86_64-unknown-linux-gnu, this build is for x86_64-pc-windows-msvc"
+            ]
+        );
+    }
+
+    #[test]
+    fn frames_golden_change_passes() {
+        let rows = fixture_rows("head.txt");
+        let golden = frames_fixture("golden-head.txt");
+        assert!(
+            frames_verdict(FRAMES_TARGET, &golden, &rows)
+                .unwrap()
+                .is_empty()
+        );
+        // The reverse (a lost frame, fewer saves) fails too, so the golden never goes stale.
+        let base = fixture_rows("base.txt");
+        assert_eq!(
+            frames_verdict(FRAMES_TARGET, &golden, &base).unwrap(),
+            [
+                "fewer saves: sib CallProperty0 3 -> 2 (a gain: update the golden)",
+                "no frame now: sib GetNamedProperty (golden: 1 saves; a gain: update the golden)",
+            ]
+        );
+    }
+
+    #[test]
+    fn frames_golden_format_errors() {
+        let t = "target x86_64-unknown-linux-gnu\n";
+        assert!(
+            parse_frames("sib Foo 1\n")
+                .unwrap_err()
+                .contains("no `target` line")
+        );
+        assert!(
+            parse_frames(&format!("{t}{t}"))
+                .unwrap_err()
+                .contains("a second target line")
+        );
+        assert!(
+            parse_frames(&format!("{t}sib Foo 1\nsib Foo 2\n"))
+                .unwrap_err()
+                .contains("sib Foo twice")
+        );
+        assert!(
+            parse_frames(&format!("{t}sib Foo\n"))
+                .unwrap_err()
+                .contains("line 2")
+        );
+        assert!(parse_frames(&format!("{t}sib Foo x\n")).is_err());
+        // CRLF and comments are fine.
+        assert_eq!(
+            parse_frames("# c\r\ntarget t\r\n\r\nsib Foo 1\r\n")
+                .unwrap()
+                .1
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn frames_opts() {
+        let a = |v: &[&str]| parse_opts(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(
+            a(&["--bless"])
+                .err()
+                .unwrap()
+                .contains("--bless needs --frames")
+        );
+        assert!(
+            a(&["--frames", "g.txt", "--binary", "x.a"])
+                .err()
+                .unwrap()
+                .contains("no --binary")
+        );
+        assert!(
+            a(&["--frames", "g.txt", "--target", "a", "--target", "b"])
+                .err()
+                .unwrap()
+                .contains("one target")
+        );
+        let o = a(&["--frames", "g.txt", "--target", "a", "--bless"]).unwrap();
+        assert_eq!(o.frames.as_deref(), Some(Path::new("g.txt")));
+        assert!(o.bless);
+    }
+
+    // Prologues from the m8-p5 builds of ep9_vm (llvm-objdump 1.99.1 text).
+    #[test]
+    fn prologue_saves_per_target() {
+        let a64 = |lines: &[&str]| entry_saves(Arch::A64, false, &block("h", lines));
+        // aarch64-apple-darwin CreateObjectLiteral: 12 callee-saved registers.
+        assert_eq!(
+            a64(&[
+                "sub\tsp, sp, #0x70",
+                "stp\tx28, x27, [sp, #0x10]",
+                "stp\tx26, x25, [sp, #0x20]",
+                "stp\tx24, x23, [sp, #0x30]",
+                "stp\tx22, x21, [sp, #0x40]",
+                "stp\tx20, x19, [sp, #0x50]",
+                "stp\tx29, x30, [sp, #0x60]",
+                "add\tx29, sp, #0x60",
+                "mov\tx19, x1",
+                "stp\tx19, x20, [sp]",
+            ]),
+            12
+        );
+        // aarch64-unknown-linux-gnu CallProperty: one register.
+        assert_eq!(
+            a64(&["str\tx19, [sp, #-0x10]!", "ldrb\tw16, [x1, #0x3]"]),
+            1
+        );
+        assert_eq!(a64(&["pacibsp", "stp\td9, d8, [sp, #-0x20]!"]), 2);
+        // An argument spill is not a save, and it ends the prologue.
+        assert_eq!(
+            a64(&[
+                "sub\tsp, sp, #0x20",
+                "stp\tx0, x1, [sp]",
+                "stp\tx20, x19, [sp, #0x10]"
+            ]),
+            0
+        );
+        let x64 = |win64, lines: &[&str]| entry_saves(Arch::X64, win64, &block("h", lines));
+        // x86_64-pc-windows-msvc StaContextSlot: 2 pushes, then the shadow space.
+        let sta = [
+            "pushq\t%r14",
+            "pushq\t%rbx",
+            "subq\t$0x28, %rsp",
+            "movsbq\t0x1(%rsi), %rax",
+            "pushq\t%rax",
+        ];
+        assert_eq!(x64(true, &sta), 2);
+        // Win64 saves xmm6-xmm15; on SysV every xmm is caller-saved, so the store is a spill.
+        let xmm = [
+            "subq\t$0x48, %rsp",
+            "movaps\t%xmm6, 0x30(%rsp)",
+            "pushq\t%rbx",
+        ];
+        assert_eq!(x64(true, &xmm), 2);
+        assert_eq!(x64(false, &xmm), 0);
+        assert_eq!(x64(true, &["movaps\t%xmm5, 0x30(%rsp)"]), 0);
+        assert_eq!(x64(false, &["movq\t%rsp, %rbp", "pushq\t%rbx"]), 1);
     }
 }
