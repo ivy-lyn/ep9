@@ -88,6 +88,7 @@ fn the_keep_call_context_store_keeps_the_barrier() {
 #[cfg(target_arch = "x86_64")]
 mod x64 {
     use core::sync::atomic::Ordering::Relaxed;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
     use ep9_heap::{BarrierState, Slot, gc_state, threshold};
     use ep9_value::{ShapeId, Value, Word0};
@@ -150,6 +151,15 @@ mod x64 {
         [RCX, RDX, RSI, RDI, a, b, c, R11]
     }
 
+    /// `clobber` writes the one static `SEEN`, and libtest runs tests on parallel threads. Each
+    /// test that calls `clobber` holds this lock, so no other call writes `SEEN` between a
+    /// test's call and its read.
+    static CLOBBER: Mutex<()> = Mutex::new(());
+
+    fn clobber_lock() -> MutexGuard<'static, ()> {
+        CLOBBER.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The wrapper keeps rcx, rdx, rsi, rdi and r8-r11 although its target changes every
     /// register it may; the target gets the 3 arguments, with rsp 8 mod 16 at its entry.
     #[test]
@@ -160,6 +170,7 @@ mod x64 {
             0x5555_AAAA_5555_AAAA,
         );
         let mut out = [0u64; 8];
+        let _clobber = clobber_lock();
         // SAFETY: the helper and the wrapper keep the SysV contract; `clobber` changes only
         // registers that its C ABI lets it change and writes only `SEEN` and its shadow space.
         unsafe { fill_and_call_clobber(&raw mut out, a, b, c) };
@@ -197,11 +208,17 @@ mod x64 {
         assert_eq!(slot.bits(), v, "the slow path does the store");
     }
 
-    /// A Rust caller of `keep_call!` keeps its values (integers and doubles, which LLVM may put
-    /// in any register the `asm!` block does not name) across a target that changes every
-    /// caller-saved register.
+    /// A Rust caller of `keep_call!` gets its integers and doubles back unchanged after a
+    /// target that changes every caller-saved register. This test does not prove the clobber
+    /// list of the `asm!` block: `cargo test` builds at opt-level 0, where LLVM keeps these
+    /// values in stack slots, not in registers, across the call. The clobber list rests on the
+    /// review of the `asm!` operands against the SysV and Win64 caller-saved sets
+    /// (`interp/keepcall.rs`, "Clobbers") and on the review of the release disasm of the
+    /// keep-call handlers (M9-P1 X86-KEEPCALL and its JIT review). `cargo xtask disasm-check`
+    /// counts only the entry saves; it does not check the clobber list.
     #[test]
     fn a_keep_call_caller_keeps_its_values() {
+        let _clobber = clobber_lock();
         let ints: [u64; 12] = core::hint::black_box(core::array::from_fn(|i| 0x100 + i as u64));
         let floats: [f64; 6] = core::hint::black_box(core::array::from_fn(|i| 0.5 + i as f64));
         let [i0, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11] = ints;
@@ -215,9 +232,11 @@ mod x64 {
         assert_eq!(after, (ints, floats));
     }
 
-    /// `slot_set_keep` against `Slot::set`, on hosts outside every heap (the slow path only
-    /// stores): every gc_state x the stage thresholds x a cell and non-cell values. The stored
-    /// bits and the host header agree.
+    /// `slot_set_keep` against `Slot::set`, on hosts outside every heap: every gc_state x the
+    /// stage thresholds x a cell and non-cell values. The stored bits and the host header
+    /// agree. This test cannot see which path ran: on a host outside every heap the slow path
+    /// only stores, as the fast path does. `the_keep_call_context_store_keeps_the_barrier`
+    /// proves that the slow path runs (the old host becomes GREY).
     #[test]
     fn the_keep_store_matches_slot_set() {
         let target = 0u64;
