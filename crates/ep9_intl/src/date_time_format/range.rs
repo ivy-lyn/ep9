@@ -7,10 +7,12 @@
 //!   ─ ToDateTimeFormattable x, y ─ Temporal: the same kind (else TypeError), the per-kind
 //!     format and the ISO fields (HandleDateTimeValue); a number: TimeClip (NaN -> RangeError)
 //!   ─ px, py: the pieces of format(x), format(y) (`format_pieces_at`, `pattern::adjust`)
-//!   ─ no shown date or time field differs ("practically equal") ─> px, all "shared"
+//!   ─ no local field value differs down to the smallest field of the format ("practically
+//!     equal"; the values, not the texts: `differences`) ─> px, all "shared"
 //!   ─ date and time fields, the date the same ─> the date of px, its joiner, the range of
 //!     the time pieces (ICU4C: the date plus the time range)
-//!   ─ a time-only format (or the time of the same date): the collapse (`collapse`): the
+//!   ─ a time-only format on the same date (or the time of the same date): the collapse
+//!     (`collapse`; a field that it writes once must be the same at both ends): the
 //!     ICU4X range output of the time field set (DateRangeFormatter<TimeFieldSet>), read
 //!     through writeable::PartsWrite: the fields of its RANGE_START part are a prefix of
 //!     the time fields of px, the fields of its RANGE_END part a suffix of those of py, and
@@ -41,7 +43,7 @@ use icu_time::zone::models::AtTime;
 use icu_time::{TimeZoneInfo, ZonedDateTime};
 use writeable::{Part, PartsWrite, Writeable};
 
-use super::pattern::Piece;
+use super::pattern::{self, Piece};
 use super::{
     Resolved, StyleCut, c, field_set, format_pieces_at, part_type, plain_input, prefs_tag, read,
     temporal_format, time_clip, zoned,
@@ -250,34 +252,121 @@ fn fields(ps: &[Piece]) -> Vec<(usize, &'static str)> {
         .collect()
 }
 
-/// Which of the fields of the range pattern fields (ECMA-402 Table 7: era, year, month, day,
-/// day period, hour, minute, second, fractional second; the weekday and the year names go
-/// with the date) differ between the formats `px` and `py`: (a date field, a time field).
-/// Fields whose types do not line up: both. The time zone name is not compared.
-fn differences(px: &[Piece], py: &[Piece]) -> (bool, bool) {
-    let compared = |ps: &[Piece]| -> Vec<(&'static str, bool, String)> {
+/// The Table 7 rank (ECMA-402 range pattern fields: era, year, month, day, AmPm and
+/// dayPeriod, hour, minute, second, fractional second) of the UTS 35 field letter `ch`; the
+/// weekday goes with the day, a year name with the year. `None`: not a Table 7 field (a time
+/// zone name).
+fn rank(ch: char) -> Option<u8> {
+    Some(match ch {
+        'G' => 0,
+        'y' | 'Y' | 'u' | 'U' | 'r' => 1,
+        'M' | 'L' => 2,
+        'd' | 'E' | 'c' | 'e' => 3,
+        'a' | 'b' | 'B' => 4,
+        'h' | 'H' | 'K' | 'k' => 5,
+        'm' => 6,
+        's' => 7,
+        'S' => 8,
+        _ => return None,
+    })
+}
+
+/// The local field values of an end of the range (ToLocalTime in the calendar of the
+/// format), in Table 7 order: era, year, month, day, (day period: the text), hour, minute,
+/// second, fractional second.
+fn local_fields(t: &Resolved, input: &Input) -> [i64; 8] {
+    use icu_calendar::{AnyCalendar, Ref};
+    // The era code and the year, month and day of the calendar of the format (the ISO
+    // values for a calendar that ICU4X does not have: not the case for a resolved calendar).
+    let (era, year, month, day) = match pattern::calendar_kind(&t.calendar) {
+        Some(kind) => {
+            let calendar = AnyCalendar::new(kind);
+            let d = input.date.to_calendar(Ref(&calendar));
+            let era = d.year().era().map_or(0, |e| era_number(e.era.as_str()));
+            (
+                era,
+                d.year().extended_year(),
+                d.month().ordinal,
+                d.day_of_month().0,
+            )
+        }
+        None => (
+            0,
+            input.date.year().extended_year(),
+            input.date.month().ordinal,
+            input.date.day_of_month().0,
+        ),
+    };
+    // FractionalSecondDigits: floor(ms × 10^(digits - 3)) (step 11.d.iv; 3 if none).
+    let digits = u32::from(t.components.0[c::FRACTIONAL_SECOND_DIGITS]);
+    let digits = if digits == 0 { 3 } else { digits.min(3) };
+    let ms = input.time.subsecond.number() / 1_000_000;
+    let fraction = ms / 10u32.pow(3 - digits);
+    [
+        era,
+        i64::from(year),
+        i64::from(month),
+        i64::from(day),
+        i64::from(input.time.hour.number()),
+        i64::from(input.time.minute.number()),
+        i64::from(input.time.second.number()),
+        i64::from(fraction),
+    ]
+}
+
+/// A number for the era code `code` (its bytes; the codes are short ASCII), so that two
+/// codes compare as two numbers.
+fn era_number(code: &str) -> i64 {
+    code.bytes()
+        .take(7)
+        .fold(1i64, |n, b| n << 8 | i64::from(b))
+}
+
+/// Which fields differ between the ends `ix` and `iy` of the range of `t` (with the formats
+/// `px` and `py`): (a date field, a time field). relevantFieldsEqual (PartitionDateTimeRange
+/// Pattern step 11): the local field values of each Table 7 field, in table order, down to
+/// the smallest field of the format (a smaller field has no range pattern: checkMoreFields
+/// is false); a field of the format that is not shown counts (the year of {month, day}: no
+/// two values of different years are equal); the day period is its text (step 11.d.iii: a
+/// string of the locale), the fractional second floor(ms × 10^(digits - 3)). Not the shown
+/// texts: the years 1920 and 2020 are both "20" with year "2-digit". Formats whose field
+/// types do not line up: both.
+fn differences(t: &Resolved, ix: &Input, iy: &Input, px: &[Piece], py: &[Piece]) -> (bool, bool) {
+    let compared = |ps: &[Piece]| -> Vec<&'static str> {
         ps.iter()
             .filter_map(|p| {
                 let (ch, _) = p.field?;
-                let t = part_type(ch);
-                (t != "timeZoneName" && t != "literal")
-                    .then(|| (t, is_time_letter(ch), p.text.clone()))
+                rank(ch).map(|_| part_type(ch))
             })
             .collect()
     };
-    let (a, b) = (compared(px), compared(py));
-    if a.len() != b.len() || a.iter().zip(&b).any(|(x, y)| x.0 != y.0) {
+    if compared(px) != compared(py) {
         return (true, true);
     }
+    let Some(smallest) = px.iter().filter_map(|p| rank(p.field?.0)).max() else {
+        return (false, false);
+    };
+    let (vx, vy) = (local_fields(t, ix), local_fields(t, iy));
+    // Table 7 rank of each value of `local_fields`.
+    const RANKS: [u8; 8] = [0, 1, 2, 3, 5, 6, 7, 8];
     let mut out = (false, false);
-    for (x, y) in a.iter().zip(&b) {
-        if x.2 != y.2 {
-            if x.1 {
-                out.1 = true;
-            } else {
+    for ((a, b), r) in vx.iter().zip(&vy).zip(RANKS) {
+        if r <= smallest && a != b {
+            if r <= 3 {
                 out.0 = true;
+            } else {
+                out.1 = true;
             }
         }
+    }
+    // The day period (AmPm and DayPeriod): the text of the field.
+    let period = |ps: &[Piece]| {
+        ps.iter()
+            .find(|p| p.field.is_some_and(|(ch, _)| rank(ch) == Some(4)))
+            .map(|p| p.text.clone())
+    };
+    if smallest >= 4 && period(px) != period(py) {
+        out.1 = true;
     }
     out
 }
@@ -288,7 +377,7 @@ fn differences(px: &[Piece], py: &[Piece]) -> (bool, bool) {
 fn range_pieces(t: &Resolved, ix: &Input, iy: &Input) -> Option<(Vec<(Piece, Origin)>, bool)> {
     let px = format_pieces_at(t, ix)?;
     let py = format_pieces_at(t, iy)?;
-    let (date_differs, time_differs) = differences(&px, &py);
+    let (date_differs, time_differs) = differences(t, ix, iy, &px, &py);
     // 14. relevantFieldsEqual: the format of x, every part "shared".
     if !date_differs && !time_differs {
         return Some((px.into_iter().map(|p| (p, Origin::X)).collect(), true));
@@ -321,7 +410,9 @@ fn range_pieces(t: &Resolved, ix: &Input, iy: &Input) -> Option<(Vec<(Piece, Ori
             }
             _ => fallback(t, &px, &py),
         },
-        (false, true) => time_range(t, ix, iy, &px, &py),
+        // A time format with the same date (no date shown: the date of the ends counts;
+        // another date is the [[Default]] range pattern, the fallback).
+        (false, true) if !date_differs => time_range(t, ix, iy, &px, &py),
         // A date range: the fallback (no date collapse, `range_formatter_for`).
         _ => fallback(t, &px, &py),
     };
@@ -558,6 +649,13 @@ fn collapse(
     }
     let types = |f: &[(usize, &'static str)]| f.iter().map(|(_, t)| *t).collect::<Vec<_>>();
     if types(&fx[..n1]) != start || types(&fy[n - n2..]) != end {
+        return None;
+    }
+    // A field that the template writes once (a field of x after its first n1, a field of y
+    // before its last n2) stands for both ends: it must be the same in both after
+    // `pattern::adjust` (ICU4X picks the template by the AM/PM field; "in the afternoon" and
+    // "in the evening" are both PM).
+    if (0..n).any(|i| (i >= n1 || i < n - n2) && px[fx[i].0].text != py[fy[i].0].text) {
         return None;
     }
     let (mut xs, mut ys) = (fx[..n1].iter(), fy[n - n2..].iter());

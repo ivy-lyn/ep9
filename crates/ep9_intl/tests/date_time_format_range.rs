@@ -91,3 +91,50 @@ fn format_range_and_to_parts() {
         ])
     );
 }
+
+const FIELD_VALUES: &str = r#"const U = (y, mo, d, h = 0, mi = 0) => Date.UTC(y, mo - 1, d, h, mi);
+const P = (parts) => parts.map(p => p.type + ":" + p.value + ":" + p.source).join("|");
+const f = (o) => new Intl.DateTimeFormat("en", Object.assign({timeZone: "UTC"}, o));
+const y2 = f({year: "2-digit"});
+print(y2.formatRange(U(1920, 1, 1), U(2020, 1, 1)), "|", P(y2.formatRangeToParts(U(1920, 1, 1), U(2020, 1, 1))));
+const narrow = f({month: "narrow"});
+print(narrow.formatRange(U(2019, 6, 1), U(2019, 7, 1)), "|", P(narrow.formatRangeToParts(U(2019, 6, 1), U(2019, 7, 1))));
+print(f({month: "short", day: "numeric"}).formatRange(U(2019, 1, 3), U(2020, 1, 3)));
+const hm = f({hour: "numeric", minute: "numeric"});
+print(hm.formatRange(U(2019, 1, 3, 13), U(2019, 1, 5, 13)), "|", hm.formatRange(U(2019, 1, 3, 13), U(2019, 1, 5, 15, 30)));
+print(f({year: "numeric"}).formatRange(U(2019, 1, 3), U(2019, 5, 3)), "|", f({month: "long", day: "numeric"}).formatRange(U(2019, 1, 3, 1), U(2019, 1, 3, 23)));
+const he = f({year: "numeric", calendar: "hebrew"});
+print(he.formatRange(U(2019, 12, 1), U(2020, 1, 1)), "|", he.formatRange(U(2019, 1, 1), U(2019, 12, 1)) !== he.format(U(2019, 1, 1)));
+const dp = f({hour: "numeric", minute: "numeric", dayPeriod: "long"});
+print(dp.formatRange(U(2019, 1, 3, 13), U(2019, 1, 3, 18)), "|", P(dp.formatRangeToParts(U(2019, 1, 3, 13), U(2019, 1, 3, 18))));
+print(dp.formatRange(U(2019, 1, 3, 13), U(2019, 1, 3, 15)), "|", P(dp.formatRangeToParts(U(2019, 1, 3, 13), U(2019, 1, 3, 15))));
+"#;
+
+/// relevantFieldsEqual (PartitionDateTimeRangePattern step 11) compares the local calendar
+/// field values, not the formatted text: the years 1920 and 2020 with year "2-digit" ("20")
+/// and June and July with month "narrow" ("J") are a range (Codex W5 r1 finding 1); a field
+/// of the format that is not shown counts too (the year of {month, day}, the day of a time
+/// format), a field below the smallest field of the format does not ({year}: January and May
+/// 2019; {month, day}: 1:00 and 23:00), the field values are those of the calendar of the
+/// format (Hebrew 5780 from December 2019 to January 2020). A collapse template that writes a
+/// field once needs that field the same at both ends (finding 2): "in the afternoon" and "in
+/// the evening" are both shown. Not V8's output: (1) "Jan 3 – Jan 3" and "1:00 PM – 1:00 PM",
+/// "1:00 PM – 3:30 PM": V8 (ICU4C) adds the year and the dates; the spec takes the
+/// [[Default]] range pattern of the format; (2) V8 gives "1:00 – 6:00 in the evening" (ICU4C
+/// picks the interval pattern by the AM/PM field).
+#[test]
+fn format_range_compares_the_field_values() {
+    assert_eq!(
+        run_both(FIELD_VALUES),
+        lines(&[
+            "20 – 20 | year:20:startRange|literal: – :shared|year:20:endRange",
+            "J – J | month:J:startRange|literal: – :shared|month:J:endRange",
+            "Jan 3 – Jan 3",
+            "1:00 PM – 1:00 PM | 1:00 PM – 3:30 PM",
+            "2019 | January 3",
+            "5780 | true",
+            "1:00 in the afternoon – 6:00 in the evening | hour:1:startRange|literal:::startRange|minute:00:startRange|literal: :startRange|dayPeriod:in the afternoon:startRange|literal: – :shared|hour:6:endRange|literal:::endRange|minute:00:endRange|literal: :endRange|dayPeriod:in the evening:endRange",
+            "1:00 – 3:00 in the afternoon | hour:1:startRange|literal:::startRange|minute:00:startRange|literal: – :shared|hour:3:endRange|literal:::endRange|minute:00:endRange|literal: :shared|dayPeriod:in the afternoon:shared",
+        ])
+    );
+}

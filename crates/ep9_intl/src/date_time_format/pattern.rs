@@ -457,6 +457,31 @@ fn text_in_width(
         .map(|p| p.text)
 }
 
+/// The icu_calendar kind of the calendar `calendar` of a format (`None` for a calendar that
+/// ICU4X does not have).
+pub(super) fn calendar_kind(calendar: &str) -> Option<icu_calendar::AnyCalendarKind> {
+    use icu_calendar::AnyCalendarKind;
+    let kind = match calendar {
+        "buddhist" => AnyCalendarKind::Buddhist,
+        "chinese" => AnyCalendarKind::Chinese,
+        "coptic" => AnyCalendarKind::Coptic,
+        "dangi" => AnyCalendarKind::Dangi,
+        "ethioaa" => AnyCalendarKind::EthiopianAmeteAlem,
+        "ethiopic" => AnyCalendarKind::Ethiopian,
+        "gregory" | "iso8601" => AnyCalendarKind::Gregorian,
+        "hebrew" => AnyCalendarKind::Hebrew,
+        "indian" => AnyCalendarKind::Indian,
+        "islamic-civil" => AnyCalendarKind::HijriTabularTypeIIFriday,
+        "islamic-tbla" => AnyCalendarKind::HijriTabularTypeIIThursday,
+        "islamic-umalqura" => AnyCalendarKind::HijriUmmAlQura,
+        "japanese" => AnyCalendarKind::Japanese,
+        "persian" => AnyCalendarKind::Persian,
+        "roc" => AnyCalendarKind::Roc,
+        _ => return None,
+    };
+    Some(kind)
+}
+
 /// The narrow name (UTS 35 count 5) of the weekday or month field `ch` ('E' or 'c', 'M' or
 /// 'L': the format or the stand-alone names) of `input` in the locale and calendar of `r`,
 /// read from the ICU4X names data (the baked provider does the locale fallback). `None` when
@@ -497,24 +522,7 @@ fn narrow_text(
             .get(input.date.weekday())
             .map(str::to_string);
     }
-    let kind = match r.calendar.as_str() {
-        "buddhist" => AnyCalendarKind::Buddhist,
-        "chinese" => AnyCalendarKind::Chinese,
-        "coptic" => AnyCalendarKind::Coptic,
-        "dangi" => AnyCalendarKind::Dangi,
-        "ethioaa" => AnyCalendarKind::EthiopianAmeteAlem,
-        "ethiopic" => AnyCalendarKind::Ethiopian,
-        "gregory" | "iso8601" => AnyCalendarKind::Gregorian,
-        "hebrew" => AnyCalendarKind::Hebrew,
-        "indian" => AnyCalendarKind::Indian,
-        "islamic-civil" => AnyCalendarKind::HijriTabularTypeIIFriday,
-        "islamic-tbla" => AnyCalendarKind::HijriTabularTypeIIThursday,
-        "islamic-umalqura" => AnyCalendarKind::HijriUmmAlQura,
-        "japanese" => AnyCalendarKind::Japanese,
-        "persian" => AnyCalendarKind::Persian,
-        "roc" => AnyCalendarKind::Roc,
-        _ => return None,
-    };
+    let kind = calendar_kind(&r.calendar)?;
     let calendar = AnyCalendar::new(kind);
     let month = input.date.to_calendar(Ref(&calendar)).month();
     let nu = r.numbering_system.as_str();
