@@ -3633,4 +3633,220 @@ mod tests {
         let rep = render(&c, v, Vec::new(), Vec::new());
         assert!(!exit_holds(&rep.cells, &rep.forms));
     }
+
+    /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (1), (6)): the windows Path B compare that
+    /// `.github/scripts/exit-inputs.mjs pathb` writes (fixture pathb-win.json, made by its
+    /// test) is a valid win32-x64 reading. Item 1 has no QuickJS run on Windows (no interval:
+    /// NO AGREEMENT); items 2 and 6 read AGREE above; the made-up TS cells read AGREE below, so
+    /// items 3, 10 and D11 read FAIL-SIDE. On Linux x64 the same compare is NO AGREEMENT.
+    #[test]
+    fn windows_reads_the_exit_inputs_path_b() {
+        use HostForm::{AgreeAbove, AgreeBelow, NoAgreement};
+        let r = repo("pathb-exit-inputs");
+        let o = Options {
+            pathb: Some(input(&r, "pathb-win.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
+        assert_eq!(
+            forms,
+            [
+                Some(NoAgreement),
+                Some(AgreeAbove),
+                Some(AgreeBelow),
+                Some(AgreeAbove),
+                Some(AgreeBelow),
+                Some(AgreeBelow)
+            ],
+            "{}",
+            rep.table
+        );
+        for i in SPEED {
+            assert!(
+                !rep.cells[i].evidence.contains("not a valid reading"),
+                "{}",
+                rep.cells[i].evidence
+            );
+        }
+        assert!(
+            rep.cells[0].evidence.contains(
+                "jit item 1 (threshold 1.33): box 1 no interval, box 2 no interval: NO AGREEMENT"
+            ),
+            "{}",
+            rep.cells[0].evidence
+        );
+        assert!(
+            rep.cells[2]
+                .evidence
+                .contains("jit item 3 (threshold 1): box 1 0.950 [0.930-0.970] below, box 2 0.960 [0.940-0.980] below: AGREE below"),
+            "{}",
+            rep.cells[2].evidence
+        );
+        let o = Options {
+            pathb: Some(input(&r, "pathb-win.json")),
+            ..opts(&r, LINUX_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(NoAgreement));
+            assert!(
+                rep.cells[i]
+                    .evidence
+                    .contains("the compare names the platform win32-x64, not linux-x64")
+            );
+        }
+    }
+
+    /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (4), (5)): a Windows MEMREAD run whose load guard reads
+    /// the typeperf source passes item 4; a win32 run whose load source is loadavg (always 0 on
+    /// Windows) has no load guard: mem.mjs writes the guard as failed, so the cell is OPEN.
+    #[test]
+    fn item4_windows_typeperf_guard_and_a_loadavg_run_has_no_load_guard() {
+        let r = repo("mem-win");
+        let o = |f: PathBuf| Options {
+            mem: Some(f),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let c = &run(&o(input(&r, "mem-win.json"))).unwrap().cells[3];
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        let none = "{ \"load1\": 0, \"limit\": 0.5, \"pass\": false, \"why\": \"no load guard: the load source loadavg is always 0 on Windows\", \"source\": \"loadavg\" }";
+        let old = fixture("mem-win.json")
+            .replace(SHA, &r.head)
+            .replace("\"load_source\": \"typeperf\"", "\"load_source\": \"loadavg\"")
+            .replace(
+                "{ \"load1\": 0.41, \"limit\": 0.92, \"pass\": true, \"why\": null, \"source\": \"typeperf\" }",
+                none,
+            )
+            .replace(
+                "{ \"load1\": 0.38, \"limit\": 0.92, \"pass\": true, \"why\": null, \"source\": \"typeperf\" }",
+                none,
+            );
+        assert_eq!(old.matches("no load guard").count(), 2);
+        write(&r.root, "inputs/mem-win-loadavg.json", &old);
+        let c = &run(&o(r.root.join("inputs/mem-win-loadavg.json")))
+            .unwrap()
+            .cells[3];
+        assert_eq!(c.status, Status::Open);
+        assert!(
+            c.evidence
+                .contains("the load guard did not pass before and after the run"),
+            "{}",
+            c.evidence
+        );
+        // The Windows run on another host column: the platform check (X12).
+        let rep = run(&Options {
+            mem: Some(input(&r, "mem-win.json")),
+            ..opts(&r, LINUX_X64)
+        })
+        .unwrap();
+        assert_eq!(
+            rep.cells[3].status,
+            Status::Fail,
+            "{}",
+            rep.cells[3].evidence
+        );
+    }
+
+    /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (3)): the exit-form P-gate file (the first table with
+    /// Gate and Result columns, docs/measurements/2026-11-16-p-gates-exit-form.md) reads PASS;
+    /// a table with a `Trips now?` column and no Result column (the 2026-11-09 form) gives no
+    /// row, so the cell is OPEN.
+    #[test]
+    fn item9_reads_the_exit_form_p_gate_file() {
+        let rows = p_gate_rows(&fixture("p-gates-exit-form.md"));
+        let want: Vec<(String, String)> = ["P1", "P2", "P4"]
+            .iter()
+            .map(|g| (g.to_string(), "not tripped".to_string()))
+            .collect();
+        assert_eq!(rows, want);
+        let r = repo("p-gates-exit");
+        let exit = "docs/measurements/2026-11-16-p-gates-exit-form.md";
+        let report = "docs/measurements/2026-11-09-p-gates-report.md";
+        write(&r.root, exit, &fixture("p-gates-exit-form.md"));
+        write(
+            &r.root,
+            report,
+            "| Gate | Trigger | Reading | Trips now? |\n|---|---|---|---|\n| P1 | t | r | No |\n| P2 | t | r | No |\n| P4 | t | r | No |\n",
+        );
+        git_in(&r.root, &["add", "-A"]);
+        git_in(&r.root, &["commit", "-q", "-m", "p-gates"]);
+        let o = |f: &str| Options {
+            p_gates: Some(r.root.join(f)),
+            ..opts(&r, HOST)
+        };
+        let c = &run(&o(exit)).unwrap().cells[8];
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(
+            c.evidence
+                .contains("P1 not tripped, P2 not tripped, P4 not tripped"),
+            "{}",
+            c.evidence
+        );
+        let c = &run(&o(report)).unwrap().cells[8];
+        assert_eq!(c.status, Status::Open);
+        assert!(c.evidence.contains("no P1 row"), "{}", c.evidence);
+    }
+
+    /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (1)): the per-platform MEMREAD and JetStream inputs of
+    /// the exit-inputs job. Linux arm64 has no d8 (jsvu has no linux-arm64 V8 build,
+    /// third_party/shells.toml), so its MEMREAD run has no d8 rows and item 4 is OPEN there; with
+    /// the d8 rows it passes. The JetStream run names its node platform and arch per host.
+    #[test]
+    fn per_platform_mem_and_jetstream_inputs() {
+        let r = repo("per-platform");
+        let arm = fixture("mem.json").replace(SHA, &r.head).replace(
+            "\"platform\": \"darwin-arm64\"",
+            "\"platform\": \"linux-arm64\"",
+        );
+        write(&r.root, "inputs/mem-arm.json", &arm);
+        let no_d8 = arm
+            .lines()
+            .filter(|l| !l.contains("\"engine\": \"d8-jitless\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write(&r.root, "inputs/mem-arm-no-d8.json", &no_d8);
+        let mem = |f: &str| {
+            run(&Options {
+                mem: Some(r.root.join(f)),
+                ..opts(&r, LINUX_A64)
+            })
+            .unwrap()
+            .cells[3]
+                .clone()
+        };
+        let c = mem("inputs/mem-arm.json");
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        let c = mem("inputs/mem-arm-no-d8.json");
+        assert_eq!(c.status, Status::Open);
+        assert!(
+            c.evidence
+                .contains("no d8-jitless row with a peak RSS for richards"),
+            "{}",
+            c.evidence
+        );
+        for (host, platform, arch) in [
+            (LINUX_A64, "linux", "arm64"),
+            (WINDOWS_X64, "win32", "x64"),
+            (LINUX_X64, "linux", "x64"),
+        ] {
+            let js = fixture("jetstream.json").replace(SHA, &r.head).replace(
+                "\"platform\": \"darwin\", \"arch\": \"arm64\"",
+                &format!("\"platform\": \"{platform}\", \"arch\": \"{arch}\""),
+            );
+            let f = format!("inputs/jetstream-{platform}-{arch}.json");
+            write(&r.root, &f, &js);
+            let o = Options {
+                jetstream: Some(r.root.join(&f)),
+                ..opts(&r, host)
+            };
+            let c = &run(&o).unwrap().cells[6];
+            assert_eq!(c.status, Status::Pass, "{host}: {}", c.evidence);
+            let o = Options {
+                jetstream: Some(input(&r, "jetstream.json")),
+                ..opts(&r, host)
+            };
+            assert_eq!(run(&o).unwrap().cells[6].status, Status::Fail, "{host}");
+        }
+    }
 }
