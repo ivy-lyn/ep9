@@ -11,7 +11,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { cpuModel, parseToml, readHostFile } from "../../tools/bench/lib/host.mjs";
-import { platformId } from "../../tools/bench/cross/run.mjs";
+import { analyze, label, platformId } from "../../tools/bench/cross/run.mjs";
+import { EMPTY, TS_WORKLOAD, V8V7_7 } from "../../tools/bench/cross/workloads.mjs";
 import { agreement, BUILDS, CELLS, compare, host, hostToml, pairLegs, parseArgs, parseIdle, PATHB_ROUNDS, readLeg, renderMarkdown, SCHEMA, side } from "./exit-inputs.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -142,6 +143,79 @@ test("compare: the pair's run checks and the 8 cells (the m2-exit fixture pathb-
   assert.ok(thrown.cells.every((x) => x.result === "NO AGREEMENT"));
   // Two platforms in the pair: the compare names none (m2-exit then reads NO AGREEMENT).
   assert.equal(compare([leg("w2"), leg("w3", { platform: "linux-x64" })], { readGate }).platform, null);
+});
+
+/**
+ * A both-builds run view of a windows leg with M2 data that the real reader reads (run.mjs
+ * analyze and label, then m2gate.mjs readM2Gate in compare): the v8-v7 kernels and the TS
+ * workload against node --jitless, 31 paired rounds, no QuickJS. ep9 takes 100 ms per kernel
+ * and 10 ms for the empty script, node --jitless 20% more (net ratio 1.2). `noisy` lists the
+ * workloads whose node --jitless time moves by up to 15% from round to round (a void row);
+ * `netBad` is a workload whose ep9 time is below the empty-script time in round 3 (net invalid).
+ */
+function m2RunView(build, { noisy = [], netBad = null } = {}) {
+  const workloads = [...V8V7_7, TS_WORKLOAD];
+  const samples = [];
+  for (let round = 0; round < PATHB_ROUNDS; round++) {
+    const small = 1 + 0.001 * ((round * 7) % 5);
+    const big = 1 + 0.15 * (((round % 4) - 1.5) / 1.5);
+    for (const workload of [...workloads, EMPTY]) {
+      const ep9 = workload === EMPTY ? 10 : workload === netBad && round === 3 ? 5 : 100;
+      const node = (workload === EMPTY ? 12 : 120) * (noisy.includes(workload) ? big : small);
+      samples.push({ round, warmup: false, workload, engine: "ep9", ms: ep9 }, { round, warmup: false, workload, engine: "node-jitless", ms: node });
+    }
+  }
+  const m = label(analyze(samples, { subject: "ep9", comparators: ["node-jitless"], workloads, warmup: 0 }), true);
+  return {
+    ...runView(build),
+    engines: [{ id: "ep9", engine_build: build === "jit" ? "features jit; preset jit" : "features gc; preset jitless" }],
+    provisional: true,
+    provisional_reasons: ["host gha-win32-x64 is not a gate host"],
+    workloads: workloads.map((name) => ({ name, harness: name === TS_WORKLOAD ? "octane-base" : "base" })),
+    options: { rounds: PATHB_ROUNDS, warmup: 0 },
+    M: { ...m, rounds: PATHB_ROUNDS, samples },
+  };
+}
+
+const m2Leg = (name, opts) => ({ name, cpu: WIN_CPU, platform: "win32-x64", jit: m2RunView("jit", opts), jitless: m2RunView("jitless", opts), error: null });
+
+/** The jit cells of a compare of 2 legs with the same data, through readM2Gate. */
+function jitCells(opts) {
+  const c = compare([m2Leg("w1", opts), m2Leg("w2", opts)]);
+  return Object.fromEntries(c.cells.filter((x) => x.build === "jit").map((x) => [x.cell.split(":")[0], x]));
+}
+
+// M9-P1 Codex r1 F1: m2-exit pathb_form reads only the box intervals, so a reading that the
+// gates refuse must not give one. The runs are provisional (a runner is not a gate host): that
+// alone does not stop an interval.
+test("compare through readM2Gate: a not-gate-host run gives intervals; void, gross-only and void-kernel readings give none", () => {
+  const clean = jitCells();
+  for (const item of ["item 2", "item 3", "item 6"]) {
+    assert.equal(clean[item].result, "AGREE above", item);
+    assert.equal(clean[item].box1.note, "net, provisional", item);
+  }
+  assert.equal(clean["item 1"].result, "NO AGREEMENT", "no QuickJS on Windows");
+  // A void kernel row (richards): the v8-v7 geomean is not void, but the gates refuse it.
+  const kernel = jitCells({ noisy: ["richards"] });
+  assert.equal(kernel["item 2"].result, "NO AGREEMENT");
+  assert.equal(kernel["item 2"].box1.interval, null);
+  assert.match(kernel["item 2"].box1.note, /^net, provisional; no interval: kernel richards: void \(IQR /);
+  assert.equal(kernel["item 6"].result, "AGREE above", "splay is not the noisy kernel");
+  // A void reading (splay): its interval is above 1.0, but it is void.
+  const splay = jitCells({ noisy: ["splay"] });
+  assert.equal(splay["item 6"].result, "NO AGREEMENT");
+  assert.match(splay["item 6"].box1.note, /no interval: the per-round geomeans are void/);
+  assert.equal(splay["item 2"].result, "NO AGREEMENT", "splay is a v8-v7 kernel too");
+  // Net invalid in one round (deltablue): the reading falls back to the gross ratios.
+  const gross = jitCells({ netBad: "deltablue" });
+  assert.equal(gross["item 2"].result, "NO AGREEMENT");
+  assert.match(gross["item 2"].box1.note, /^gross, provisional; no interval: no net ratio \(gross only\)/);
+  assert.equal(gross["item 6"].result, "AGREE above");
+  // A void TS ratio to node --jitless.
+  const ts = jitCells({ noisy: [TS_WORKLOAD] });
+  assert.equal(ts["item 3"].result, "NO AGREEMENT");
+  assert.match(ts["item 3"].box1.note, /^net, provisional, void; no interval: the net ratio to node --jitless is void/);
+  assert.equal(ts["item 2"].result, "AGREE above");
 });
 
 test("host: the runner host file from idle.mjs; a busy runner gives none", () => {

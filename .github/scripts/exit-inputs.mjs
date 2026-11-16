@@ -22,6 +22,9 @@
 //       leg and its CPU model), checks (box, build,
 //       commit_ok, rounds, load) and cells (items 1, 2, 3, 6 per build: the 2 box intervals
 //       against the M2 threshold, "AGREE above", "AGREE below", "OPPOSITE" or "NO AGREEMENT").
+//       A box reading that the gates refuse (void, gross only, a void or net invalid kernel row,
+//       any other m2gate reason except the run labels of a runner that is not a gate host and,
+//       for item 3, the QuickJS ratio) gives no interval (boxBlockers).
 //       No 2 legs of one CPU model: the file says pair null and the exit status is 3. Then the
 //       dispatch runs again once; a second miss is NOT-RUN (a DL line; plan v14 section 4.1 (6)).
 //       The Markdown also gives the TS ratio to node --jitless per box and build (V14-D59).
@@ -127,18 +130,64 @@ export function agreement(s1, s2) {
   return "NO AGREEMENT";
 }
 
-/** The box value of one cell from an m2gate result: { median, interval, note }. */
+/**
+ * The m2gate reasons that a GitHub runner always has (the run is provisional because the
+ * runner is not a gate host). Path B reads such runs (V14-D12): m2-exit checks the commit, the
+ * rounds and the load guard of each run itself (pathb_form), so these reasons alone do not
+ * stop a box interval. Any other reason does.
+ */
+const RUN_REASONS = [/^not a gate host$/, /^provisional run \(/];
+/** The TS reasons of the QuickJS ratio: not part of the item 3 cell (no QuickJS on Windows). */
+const QJS_REASONS = [/^no qjs row$/, /^the net ratio to qjs /, /^ratios to qjs void /, /^the qjs row is not valid: /];
+
+/**
+ * Why a box reading must not give the cell an interval (empty: it can). Gates read valid net
+ * readings only (m2gate.mjs, exit2.mjs `reading`): a void reading (IQR > 5%), a void or net
+ * invalid kernel row, a gross fallback (no net ratio, or net ratios not paired round by round),
+ * and every other m2gate reason except those of RUN_REASONS (a missing interval gives no side
+ * anyway). A run label of a kernel row is "provisional" or "valid"; any other label (void, net
+ * invalid) stops it.
+ */
+export function boxBlockers(r, spec) {
+  const why = [];
+  if (r.status === "incomplete") why.push("no reading");
+  if (spec.id === TS.id) {
+    const v = r.vs_node_jitless?.net;
+    if (!v || !Number.isFinite(v.median)) why.push("no net ratio to node --jitless");
+    else if (v.void) why.push("the net ratio to node --jitless is void");
+  } else {
+    if (!r.net) why.push("no net ratio (gross only)");
+    else if (r.net.void) why.push("the per-round geomeans are void");
+    for (const k of r.kernels ?? []) {
+      const bad = (k.status ?? []).filter((x) => x !== "provisional" && x !== "valid");
+      if (bad.length) why.push(`kernel ${k.workload}: ${bad.join(", ")}`);
+    }
+  }
+  const allowed = spec.id === TS.id ? [...RUN_REASONS, ...QJS_REASONS] : RUN_REASONS;
+  for (const x of r.reasons ?? []) if (!allowed.some((re) => re.test(x)) && !why.includes(x)) why.push(x);
+  return why;
+}
+
+/**
+ * The box value of one cell from an m2gate result: { median, interval, note }. The interval is
+ * null when boxBlockers gives a reason (the note names them): m2-exit pathb_form reads only the
+ * interval, so the producer must not give one for a reading that the gates refuse (M9-P1 Codex
+ * r1 F1).
+ */
 export function boxValue(gate, spec, build) {
   const r = gate?.readings?.find((x) => x.id === spec.id && x.build === build);
   if (!r) return { median: null, interval: null, note: "no reading" };
+  const why = boxBlockers(r, spec);
+  // An interval that a reason stops is dropped, and the note says why.
+  const box = (median, interval, note) => (interval && why.length ? { median, interval: null, note: `${note}; no interval: ${why.join("; ")}` } : { median, interval, note });
   if (spec.id === TS.id) {
     // The TS cell is the net ratio to node --jitless (the Linux x64 rule; gates read net only).
     const v = r.vs_node_jitless?.net;
     if (!v) return { median: null, interval: null, note: "no net ratio to node --jitless" };
-    return { median: v.median, interval: v.interval ?? null, note: ["net", r.status, v.void ? "void" : null].filter(Boolean).join(", ") };
+    return box(v.median, v.interval ?? null, ["net", r.status, v.void ? "void" : null].filter(Boolean).join(", "));
   }
   const metric = r.net ? "net" : "gross";
-  return { median: r.value ?? null, interval: r.interval ?? null, note: [metric, r.status].filter(Boolean).join(", ") };
+  return box(r.value ?? null, r.interval ?? null, [metric, r.status].filter(Boolean).join(", "));
 }
 
 /** Pairs the legs: the first 2 of the first CPU model that has 2, in the order given. */
