@@ -250,24 +250,50 @@ function fakeWinChild(pid) {
 // command that runGroup runs and when it runs it.
 test("runGroup on Windows: a timeout runs taskkill /T /F on the wrapper's pid (M9-P1 Codex r1 F2)", async () => {
   assert.deepEqual(winTreeKill(4242), ["taskkill", ["/PID", "4242", "/T", "/F"]]);
-  for (const [taskkill, fallback] of [[0, []], [128, ["SIGKILL"]]]) {
+  const child = fakeWinChild(4242);
+  const calls = [];
+  const deps = {
+    platform: "win32",
+    spawn: (program, args, opts) => (calls.push(["spawn", program, args, opts.detached]), child),
+    // taskkill ends the tree, and the wrapper's pipes close.
+    spawnSync: (cmd, args) => (calls.push(["spawnSync", cmd, args]), child.close(1), { status: 0, error: null }),
+  };
+  const r = await runGroup("powershell", ["-File", "peak.ps1"], 0.05, deps);
+  assert.deepEqual(calls, [
+    ["spawn", "powershell", ["-File", "peak.ps1"], false],
+    ["spawnSync", "taskkill", ["/PID", "4242", "/T", "/F"]],
+  ]);
+  assert.match(r.error ?? "", /^timed out after 0\.05 s \(the process tree was killed\)$/);
+  assert.deepEqual(child.killed, [], "taskkill ended the tree: no wrapper kill");
+});
+
+// M9-P1 Codex r2 F1: when taskkill cannot start (ENOENT) or exits nonzero, the engine may still
+// run and hold the wrapper's pipes open, so no close comes. The fake child models that: it never
+// closes. The run must still end in bounded time, kill the wrapper, destroy its pipes and give
+// the error, so the reading is void. The old code waited for a close that never came.
+test("runGroup on Windows: a failed taskkill ends the run with an error (M9-P1 Codex r2 F1)", async () => {
+  for (const [result, code] of [
+    [{ status: 128, error: null }, "128"],
+    [{ status: null, error: Object.assign(new Error("spawnSync taskkill ENOENT"), { code: "ENOENT" }) }, "ENOENT"],
+  ]) {
     const child = fakeWinChild(4242);
-    const calls = [];
-    const deps = {
-      platform: "win32",
-      spawn: (program, args, opts) => (calls.push(["spawn", program, args, opts.detached]), child),
-      // taskkill ends the tree, and the wrapper's pipes close; or it fails (exit 128).
-      spawnSync: (cmd, args) => (calls.push(["spawnSync", cmd, args]), child.close(1), { status: taskkill, error: null }),
-    };
-    const r = await runGroup("powershell", ["-File", "peak.ps1"], 0.05, deps);
-    assert.deepEqual(calls, [
-      ["spawn", "powershell", ["-File", "peak.ps1"], false],
-      ["spawnSync", "taskkill", ["/PID", "4242", "/T", "/F"]],
+    let sync = 0;
+    const deps = { platform: "win32", spawn: () => child, spawnSync: () => (sync++, result) };
+    let hang;
+    const r = await Promise.race([
+      runGroup("powershell", [], 0.05, deps),
+      new Promise((ok) => (hang = setTimeout(() => ok("hang"), 2000))),
     ]);
-    assert.match(r.error ?? "", /^timed out after 0\.05 s \(the process tree was killed\)$/);
-    assert.deepEqual(child.killed, fallback, "the wrapper alone is killed only when taskkill fails");
+    clearTimeout(hang);
+    assert.notEqual(r, "hang", `taskkill ${code}: the run does not end`);
+    assert.equal(r.error, `timed out after 0.05 s; process tree kill failed (taskkill ${code}); the engine may still run`);
+    assert.deepEqual([r.status, sync, child.killed], [null, 1, ["SIGKILL"]]);
+    assert.ok(child.stdout.destroyed && child.stderr.destroyed, "the pipes are destroyed");
+    assert.throws(() => checkMemRun({ ...r, rss: 10 }, { engine: "e", workload: "w", expect: "" }), /process tree kill failed/);
   }
-  // A run that ends in time runs no taskkill.
+});
+
+test("runGroup on Windows: a run that ends in time runs no taskkill", async () => {
   const child = fakeWinChild(7);
   let sync = 0;
   const p = runGroup("powershell", [], 30, { platform: "win32", spawn: () => child, spawnSync: () => (sync++, { status: 0 }) });
@@ -277,7 +303,8 @@ test("runGroup on Windows: a timeout runs taskkill /T /F on the wrapper's pid (M
   assert.deepEqual([r.status, r.error, r.stdout, sync], [0, null, "42\n", 0]);
 });
 
-test("runGroup on Windows: an interrupt of the runner runs taskkill /T /F first (M9-P1 Codex r1 F2)", { skip: !["darwin", "linux"].includes(process.platform) && "a POSIX signal to the runner" }, async (t) => {
+// M9-P1 Codex r2 F1: a failed taskkill (exit 1) on an interrupt goes to stderr.
+for (const status of [0, 1]) test(`runGroup on Windows: an interrupt of the runner runs taskkill /T /F first, taskkill exit ${status} (M9-P1 Codex r1 F2, r2 F1)`, { skip: !["darwin", "linux"].includes(process.platform) && "a POSIX signal to the runner" }, async (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-mem-wintree-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const runner = path.join(dir, "runner.mjs");
@@ -292,18 +319,22 @@ const child = Object.assign(new EventEmitter(), { pid: 4242, stdout: new PassThr
 const p = runGroup("powershell", [], 30, {
   platform: "win32",
   spawn: () => child,
-  spawnSync: (cmd, args) => (appendFileSync(process.argv[2], [cmd, ...args].join(" ") + "\\n"), { status: 0 }),
+  spawnSync: (cmd, args) => (appendFileSync(process.argv[2], [cmd, ...args].join(" ") + "\\n"), { status: Number(process.argv[3]) }),
 });
 process.stdout.write("ready\\n");
 await p;
 `,
   );
-  const r = spawn(process.execPath, [runner, log], { stdio: ["ignore", "pipe", "inherit"] });
+  const r = spawn(process.execPath, [runner, log, String(status)], { stdio: ["ignore", "pipe", "pipe"] });
+  let err = "";
+  r.stderr.setEncoding("utf8").on("data", (d) => (err += d));
   await new Promise((ok) => r.stdout.once("data", ok));
   const ended = new Promise((ok) => r.on("exit", (code, signal) => ok(signal ?? code)));
   r.kill("SIGINT");
   assert.equal(await ended, "SIGINT", "the runner ends by the signal");
   assert.equal(readFileSync(log, "utf8"), "taskkill /PID 4242 /T /F\n");
+  const report = "mem.mjs: the cleanup of process 4242 failed: process tree kill failed (taskkill 1); the engine may still run\n";
+  assert.equal(err, status ? report : "");
 });
 
 test("checkMemRun: a failed run, a wrong output or no RSS is refused", () => {
