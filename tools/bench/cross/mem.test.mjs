@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { cpuModel } from "../lib/host.mjs";
-import { analyze, CAPS, checkMemRun, measureRss, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, renderMarkdown, rssTool, run, runGroup, SCHEMA } from "./mem.mjs";
+import { analyze, CAPS, checkMemRun, measureRss, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, parseWinPeak, renderMarkdown, rssTool, run, runGroup, SCHEMA, WIN_PEAK_SCRIPT, winPeakCommand, winQuote } from "./mem.mjs";
 import { platformId, Refusal, schedule } from "./run.mjs";
 import { SETS, V8V7_7, WORKLOADS } from "./workloads.mjs";
 
@@ -56,7 +56,41 @@ test("RSS tools: macOS time -l in bytes, GNU time %M in KiB", () => {
   assert.equal(rssTool("darwin", {}).name, "macos-time-l-maximum-resident-set-size");
   assert.deepEqual(rssTool("linux", {}).args("f"), ["-f", "%M", "-o", "f"]);
   assert.equal(rssTool("linux", { EP9_MEM_TIME: "/x/time" }).program, "/x/time");
-  assert.equal(rssTool("win32", {}), null);
+  // Windows: the PeakWorkingSetSize wrapper (plan v14 section 4.1 (5)); before, no tool, and
+  // the reader stopped with "no peak RSS tool for win32".
+  assert.equal(rssTool("win32", {}).name, "windows-peak-working-set-size");
+  assert.equal(rssTool("win32", {}).program, "powershell");
+  assert.equal(rssTool("win32", {}).unit, "bytes");
+  assert.equal(rssTool("freebsd", {}), null);
+});
+
+test("RSS tools: the Windows wrapper's command line, quoting and report", () => {
+  assert.equal(parseWinPeak("PeakWorkingSetSize 51462144\r\n"), 51462144);
+  assert.equal(parseWinPeak("PeakWorkingSetSize\n"), null);
+  assert.equal(parseWinPeak(""), null);
+  // The MSVCRT rules: quote when needed; a quote gets a backslash and the backslashes before
+  // it double; trailing backslashes in a quoted argument double.
+  assert.deepEqual(["a", "--jitless", "a b", "", 'x"y', "c:\\d\\", 'q \\"z', "c:\\w d\\"].map(winQuote), [
+    "a",
+    "--jitless",
+    '"a b"',
+    '""',
+    '"x\\"y"',
+    "c:\\d\\",
+    '"q \\\\\\"z"',
+    '"c:\\w d\\\\"',
+  ]);
+  const argv = winPeakCommand("C:\\t\\time.txt", ["C:\\a b\\ep9.exe", "--jitless", "C:\\w d\\x.js"], "C:\\t\\peak.ps1");
+  assert.deepEqual(argv.slice(0, 8), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\t\\peak.ps1", "C:\\t\\time.txt", "C:\\a b\\ep9.exe"]);
+  // The engine's command line goes in base64, so PowerShell cannot read "--jitless" as a name.
+  assert.equal(Buffer.from(argv[8], "base64").toString("utf8"), '--jitless "C:\\w d\\x.js"');
+  assert.equal(winPeakCommand("r", ["e"], "s")[8], "");
+  // The wrapper keeps the process handle, reads the counters after the exit and passes the
+  // exit code on.
+  for (const part of ["GetProcessMemoryInfo", "PeakWorkingSetSize", "$h = $p.Handle", "$p.WaitForExit()", "exit $p.ExitCode", "FromBase64String"]) {
+    assert.ok(WIN_PEAK_SCRIPT.includes(part), part);
+  }
+  assert.ok(WIN_PEAK_SCRIPT.indexOf("$h = $p.Handle") < WIN_PEAK_SCRIPT.indexOf("$p.WaitForExit()"));
 });
 
 test("options: the mem set is the 7 v8-v7 kernels; >= 5 runs; ep9-jitless needs its binary", () => {

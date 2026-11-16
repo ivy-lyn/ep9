@@ -32,8 +32,12 @@
 //
 // Peak RSS. The OS reports the high-water resident set of the engine process when it exits:
 // macOS `/usr/bin/time -l` "maximum resident set size" (bytes); Linux GNU `/usr/bin/time -f %M`
-// (KiB; the `time` package on Debian and Ubuntu). EP9_MEM_TIME names another program of the same
-// form (tests use a fake). No other wrapper: valgrind or perf would add their own memory.
+// (KiB; the `time` package on Debian and Ubuntu); Windows the PeakWorkingSetSize of the engine
+// process (bytes), which a PowerShell wrapper reads with GetProcessMemoryInfo on the process
+// handle after the process exits (WIN_PEAK_SCRIPT; plan v14 section 4.1 (5)). The engine's
+// stdout and stderr pass through. EP9_MEM_TIME names another program of the same form (tests use
+// a fake; on Windows another PowerShell). No other wrapper: valgrind or perf would add their own
+// memory. On Windows a timeout kills the wrapper, not the engine (no process group).
 //
 // Order. A round runs every workload on every engine once. The workload order rotates by one per
 // round, and per workload the engine order rotates too (run.mjs `schedule`), so no engine always
@@ -51,6 +55,7 @@
 // Tests: node --test tools/bench/cross/mem.test.mjs
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -149,16 +154,102 @@ export function parseArgs(argv) {
   return o;
 }
 
-/** The peak RSS tool of this platform: { program, args(reportFile), parse(text) -> bytes, name }. */
+/**
+ * The peak RSS tool of this platform: { name, unit, program, command(reportFile, engineArgv) ->
+ * the program's arguments, parse(text) -> bytes }.
+ */
 export function rssTool(platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    const program = env.EP9_MEM_TIME || "powershell";
+    return { name: "windows-peak-working-set-size", unit: "bytes", program, command: winPeakCommand, parse: parseWinPeak };
+  }
   const program = env.EP9_MEM_TIME || "/usr/bin/time";
   if (platform === "darwin") {
-    return { name: "macos-time-l-maximum-resident-set-size", unit: "bytes", program, args: (f) => ["-l", "-o", f], parse: parseTimeL };
+    const args = (f) => ["-l", "-o", f];
+    return { name: "macos-time-l-maximum-resident-set-size", unit: "bytes", program, args, command: (f, argv) => [...args(f), ...argv], parse: parseTimeL };
   }
   if (platform === "linux") {
-    return { name: "gnu-time-f-M", unit: "KiB", program, args: (f) => ["-f", "%M", "-o", f], parse: parseGnuM };
+    const args = (f) => ["-f", "%M", "-o", f];
+    return { name: "gnu-time-f-M", unit: "KiB", program, args, command: (f, argv) => [...args(f), ...argv], parse: parseGnuM };
   }
   return null;
+}
+
+/**
+ * The PowerShell wrapper of the Windows tool: it starts the engine (`$Exe` with the command line
+ * `$ArgLine`, UTF-8 in base64 so that PowerShell never reads a leading `-` of it as a parameter
+ * name; stdio inherited), keeps its process handle, waits, reads PeakWorkingSetSize with
+ * GetProcessMemoryInfo (the counters stay readable while a handle is open), writes
+ * "PeakWorkingSetSize <bytes>" to `-Out` and exits with the engine's exit code.
+ */
+export const WIN_PEAK_SCRIPT = `param([string]$Out, [string]$Exe, [string]$ArgLine)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Ep9PeakRss {
+  [StructLayout(LayoutKind.Sequential)]
+  struct Counters {
+    public uint cb; public uint PageFaultCount;
+    public UIntPtr PeakWorkingSetSize; public UIntPtr WorkingSetSize;
+    public UIntPtr QuotaPeakPagedPoolUsage; public UIntPtr QuotaPagedPoolUsage;
+    public UIntPtr QuotaPeakNonPagedPoolUsage; public UIntPtr QuotaNonPagedPoolUsage;
+    public UIntPtr PagefileUsage; public UIntPtr PeakPagefileUsage;
+  }
+  [DllImport("psapi.dll", SetLastError = true)]
+  static extern bool GetProcessMemoryInfo(IntPtr process, out Counters counters, uint size);
+  public static ulong Peak(IntPtr process) {
+    Counters c;
+    if (!GetProcessMemoryInfo(process, out c, (uint)Marshal.SizeOf(typeof(Counters)))) {
+      throw new System.ComponentModel.Win32Exception();
+    }
+    return c.PeakWorkingSetSize.ToUInt64();
+  }
+}
+'@
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $Exe
+$psi.Arguments = if ($ArgLine) { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($ArgLine)) } else { '' }
+$psi.UseShellExecute = $false
+$p = [System.Diagnostics.Process]::Start($psi)
+$h = $p.Handle
+$p.WaitForExit()
+$peak = [Ep9PeakRss]::Peak($h)
+[System.IO.File]::WriteAllText($Out, "PeakWorkingSetSize $peak\n")
+exit $p.ExitCode
+`;
+
+/**
+ * One argument in a Windows command line (the MSVCRT rules that CommandLineToArgvW and the
+ * engines read): quoted when empty or when it holds a space, a tab or a quote; a quote gets a
+ * backslash, and the backslashes before a quote or the closing quote are doubled.
+ */
+export function winQuote(arg) {
+  if (arg !== "" && !/[\s"]/.test(arg)) return arg;
+  return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`;
+}
+
+let winScript = null;
+/** The wrapper script file (written once per process into the temp dir, named by its hash). */
+function winScriptFile() {
+  if (!winScript) {
+    const h = createHash("sha256").update(WIN_PEAK_SCRIPT).digest("hex").slice(0, 12);
+    winScript = path.join(os.tmpdir(), `ep9-mem-peak-${h}.ps1`);
+    writeFileSync(winScript, WIN_PEAK_SCRIPT);
+  }
+  return winScript;
+}
+
+/** The PowerShell arguments of one Windows run: the wrapper, the report file and the engine. */
+export function winPeakCommand(report, [exe, ...args], script = winScriptFile()) {
+  const line = Buffer.from(args.map(winQuote).join(" "), "utf8").toString("base64");
+  return ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, report, exe, line];
+}
+
+/** The Windows wrapper's report: "PeakWorkingSetSize <bytes>". */
+export function parseWinPeak(text) {
+  const m = (text ?? "").match(/^PeakWorkingSetSize (\d+)\s*$/m);
+  return m ? Number(m[1]) : null;
 }
 
 /** macOS `time -l`: the "maximum resident set size" line, in bytes. */
@@ -264,7 +355,8 @@ export async function measureRss(tool, engine, file, timeoutS) {
   try {
     const report = path.join(tmp, "time.txt");
     const t0 = process.hrtime.bigint();
-    const r = await runGroup(tool.program, [...tool.args(report), engine.bin, ...engine.args, file], timeoutS);
+    const argv = [engine.bin, ...engine.args, file];
+    const r = await runGroup(tool.program, tool.command ? tool.command(report, argv) : [...tool.args(report), ...argv], timeoutS);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     let text = "";
     try {
