@@ -293,6 +293,42 @@ test("runGroup on Windows: a failed taskkill ends the run with an error (M9-P1 C
   }
 });
 
+// M9-P1 Codex r3: spawnSync blocks the event loop until taskkill exits. Without a deadline, a
+// stalled taskkill blocks the run for ever: no fallback, no finish, no cleanup report. taskkill
+// gets a deadline of 10 s and SIGKILL at the end of it.
+test("runGroup on Windows: taskkill gets a deadline of 10 s (M9-P1 Codex r3)", async () => {
+  const child = fakeWinChild(4242);
+  let opts;
+  const deps = { platform: "win32", spawn: () => child, spawnSync: (cmd, args, o) => ((opts = o), child.close(1), { status: 0, error: null }) };
+  await runGroup("powershell", [], 0.05, deps);
+  assert.deepEqual([opts?.timeout, opts?.killSignal], [10_000, "SIGKILL"]);
+});
+
+// M9-P1 Codex r3: at the deadline spawnSync kills taskkill and returns ETIMEDOUT with the signal
+// set (plain Node: { status: null, signal: "SIGKILL", error.code: "ETIMEDOUT" }). The engine may
+// still run, so the child never closes. The run must end in bounded time with the error.
+test("runGroup on Windows: a taskkill past its deadline ends the run with an error (M9-P1 Codex r3)", async () => {
+  const etimedout = () => Object.assign(new Error("spawnSync taskkill ETIMEDOUT"), { code: "ETIMEDOUT" });
+  for (const result of [
+    { status: null, signal: "SIGKILL", error: etimedout() },
+    { status: null, signal: "SIGKILL", error: null },
+  ]) {
+    const child = fakeWinChild(4242);
+    let sync = 0;
+    const deps = { platform: "win32", spawn: () => child, spawnSync: () => (sync++, result) };
+    let hang;
+    const r = await Promise.race([
+      runGroup("powershell", [], 0.05, deps),
+      new Promise((ok) => (hang = setTimeout(() => ok("hang"), 2000))),
+    ]);
+    clearTimeout(hang);
+    assert.notEqual(r, "hang", "the run does not end");
+    assert.equal(r.error, "timed out after 0.05 s; process tree kill failed (taskkill timed out after 10 s); the engine may still run");
+    assert.deepEqual([r.status, sync, child.killed], [null, 1, ["SIGKILL"]]);
+    assert.ok(child.stdout.destroyed && child.stderr.destroyed, "the pipes are destroyed");
+  }
+});
+
 test("runGroup on Windows: a run that ends in time runs no taskkill", async () => {
   const child = fakeWinChild(7);
   let sync = 0;

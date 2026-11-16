@@ -310,6 +310,13 @@ function unhookGroups() {
   process.off("exit", killLiveGroups);
 }
 
+/**
+ * The deadline for taskkill. spawnSync blocks the event loop until taskkill exits, so a stalled
+ * taskkill gets SIGKILL at this deadline, and the run ends through the failed-kill path
+ * (M9-P1 Codex r3).
+ */
+export const TASKKILL_TIMEOUT_S = 10;
+
 /** The Windows command that ends `pid` and every process it started (the engine under the wrapper). */
 export function winTreeKill(pid) {
   return ["taskkill", ["/PID", String(pid), "/T", "/F"]];
@@ -320,10 +327,12 @@ export function winTreeKill(pid) {
  * runner gets a SIGINT, SIGTERM or SIGHUP. POSIX: the process has its own process group, and
  * the whole group gets SIGKILL, so the engine under the RSS tool stops too, not only the tool
  * (M7-P0 Codex r1 BENCH10-2, r2 C2-4). Windows: `taskkill /T /F` on the wrapper's pid ends its
- * tree, the engine too (winTreeKill; M9-P1 Codex r1 F2). If taskkill cannot start or exits
- * nonzero, the engine may still run and hold the pipes open, so no close may come: the wrapper
+ * tree, the engine too (winTreeKill; M9-P1 Codex r1 F2). taskkill has a deadline of
+ * TASKKILL_TIMEOUT_S (M9-P1 Codex r3). If taskkill cannot start, exits nonzero or passes its
+ * deadline, the engine may still run and hold the pipes open, so no close may come: the wrapper
  * is killed, its stdout and stderr are destroyed, and the run ends at once with the error
- * "process tree kill failed (taskkill <code>); the engine may still run", so the reading is void
+ * "process tree kill failed (taskkill <code>); the engine may still run" (<code> is the exit
+ * code, the spawn error code or "timed out after <N> s"), so the reading is void
  * (M9-P1 Codex r2 F1). Resolves to { status, signal, error, stdout, stderr } when the process
  * closes. `deps` (platform, spawn, spawnSync) is for tests.
  */
@@ -352,9 +361,11 @@ export function runGroup(program, args, timeoutS, deps = {}) {
         return null;
       }
       const [cmd, cmdArgs] = winTreeKill(child.pid);
-      const r = spawnSyncFn(cmd, cmdArgs, { stdio: "ignore", windowsHide: true });
+      const r = spawnSyncFn(cmd, cmdArgs, { stdio: "ignore", windowsHide: true, timeout: TASKKILL_TIMEOUT_S * 1000, killSignal: "SIGKILL" });
       if (!r.error && r.status === 0) return null;
-      const code = r.error ? (r.error.code ?? r.error.message) : (r.status ?? r.signal);
+      // At the deadline spawnSync kills taskkill: error.code ETIMEDOUT, and the signal is set.
+      const expired = r.error ? r.error.code === "ETIMEDOUT" : r.signal != null;
+      const code = expired ? `timed out after ${TASKKILL_TIMEOUT_S} s` : r.error ? (r.error.code ?? r.error.message) : (r.status ?? r.signal);
       killError = `process tree kill failed (taskkill ${code}); the engine may still run`;
       try {
         child.kill("SIGKILL");
