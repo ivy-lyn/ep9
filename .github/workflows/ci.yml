@@ -21,7 +21,7 @@
 #                      6 shards (S0 with the dispatch input gc_mode)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
 #                      SoftFma vs hardware FMA
-#   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
+#   disasm ........... ep9_vm handler check (H15); handler frame golden (rule 81); ep9_heap barrier  (4 targets)
 #   spikes ........... SP-Dispatch, SP-GC and SP-JIT-mem host gates  (4 targets)
 #                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR);
 #                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
