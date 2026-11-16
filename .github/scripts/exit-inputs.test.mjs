@@ -1,0 +1,224 @@
+// node --test .github/scripts/exit-inputs.test.mjs
+// The exit-inputs helpers (plan v14 section 4.1): the runner host file and the Path B compare of
+// the windows legs. Synthetic inputs and fake engines (tools/bench/cross/testdata): no shells, no
+// ep9 build, no GitHub runner. `EP9_BLESS=1` writes the m2-exit fixture pathb-win.json.
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { cpuModel, parseToml, readHostFile } from "../../tools/bench/lib/host.mjs";
+import { platformId } from "../../tools/bench/cross/run.mjs";
+import { agreement, BUILDS, CELLS, compare, host, hostToml, pairLegs, parseArgs, parseIdle, PATHB_ROUNDS, readLeg, renderMarkdown, SCHEMA, side } from "./exit-inputs.mjs";
+
+const DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(DIR, "../..");
+const SCRIPT = path.join(DIR, "exit-inputs.mjs");
+// The commit placeholder of the m2-exit fixtures (its tests put their scratch HEAD there).
+const SHA = "0123456789abcdef0123456789abcdef01234567";
+const FIXTURE = path.join(ROOT, "tools/xtask/tests/m2_exit/pathb-win.json");
+const WIN_CPU = "AMD EPYC 7763 64-Core Processor";
+
+/** A both-builds run view of a windows leg, cut to the fields that compare() reads. */
+function runView(build, { cpu = WIN_CPU, platform = "win32-x64", dirty = false, rounds = PATHB_ROUNDS, commit = SHA } = {}) {
+  const guard = (load1) => ({ load1, limit: 1.2, pass: true, why: null, source: "typeperf" });
+  return {
+    schema: "ep9-cross/v1",
+    commit: { ep9: dirty ? null : commit, binary: { commit, dirty } },
+    host: { id: "gha-win32-x64", gate_host: false, measured: { cpu, platform, load_source: "typeperf" } },
+    load: { margin: 0.5, before: guard(0.41), after: guard(0.38) },
+    M: { rounds },
+    both_builds: { build },
+  };
+}
+
+const leg = (name, opts = {}) => ({ name, cpu: opts.cpu ?? WIN_CPU, platform: opts.platform ?? "win32-x64", jit: runView("jit", opts), jitless: runView("jitless", opts), error: null });
+
+/** Made-up m2gate readings of one box: each cell's ratio is `base` plus a per-item step. */
+function gateOf(base) {
+  const r = (x) => Number(x.toFixed(4));
+  const readings = [];
+  for (const build of BUILDS) {
+    const b = build === "jit" ? 0 : -0.02;
+    const geo = (id, m, half) => ({ id, build, value: r(m), interval: [r(m - half), r(m + half)], net: { median: r(m) }, status: "provisional" });
+    // Octane-7 vs QuickJS: no QuickJS on Windows (sync-shells.sh), so no reading.
+    readings.push({ id: "octane7-vs-qjs", build, value: null, interval: null, net: null, status: "incomplete" });
+    readings.push(geo("v8v7-7-vs-node-jitless", base + 0.1 + b, 0.02));
+    readings.push(geo("splay-vs-node-jitless", base + 0.2 + b, 0.03));
+    readings.push({ id: "ts", build, status: "provisional", vs_node_jitless: { net: { median: r(base - 0.1 + b), interval: [r(base - 0.12 + b), r(base - 0.08 + b)], void: false } } });
+  }
+  return { builds: BUILDS.map((build) => ({ build })), readings };
+}
+
+test("side and agreement follow the m2-exit rule (pathb_side, pathb_form)", () => {
+  assert.equal(side([1.0, 1.2], 1), "above");
+  assert.equal(side([0.8, 0.99], 1), "below");
+  assert.equal(side([0.9, 1.1], 1), "straddles");
+  assert.equal(side(null, 1), null);
+  assert.equal(side([1.2, 1.1], 1), null);
+  assert.equal(agreement("above", "above"), "AGREE above");
+  assert.equal(agreement("below", "below"), "AGREE below");
+  assert.equal(agreement("above", "below"), "OPPOSITE");
+  assert.equal(agreement("above", "straddles"), "NO AGREEMENT");
+  assert.equal(agreement(null, null), "NO AGREEMENT");
+  assert.deepEqual(CELLS.map((c) => [c.item, c.threshold]), [[1, 1.33], [2, 1], [3, 1], [6, 1]]);
+});
+
+test("pairing: the first 2 legs of the first CPU model with 2, in leg order", () => {
+  const l = (name, cpu) => ({ name, cpu });
+  assert.deepEqual(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "B"), l("w4", "A")]), { cpu: "A", boxes: [l("w1", "A"), l("w4", "A")] });
+  assert.deepEqual(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "B"), l("w4", "C")]), { cpu: "B", boxes: [l("w2", "B"), l("w3", "B")] });
+  assert.equal(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "C"), l("w4", "D")]), null);
+  assert.equal(pairLegs([l("w1", null), l("w2", null)]), null);
+});
+
+test("compare: no pair names every runner and no cell; the CLI exits 3", (t) => {
+  const c = compare([leg("w1", { cpu: "A" }), leg("w2", { cpu: "B" }), leg("w3", { cpu: "C" }), { name: "w4", cpu: null, platform: null, error: "no run-jit.json", jit: null, jitless: null }]);
+  assert.equal(c.schema, SCHEMA);
+  assert.equal(c.pair, null);
+  assert.match(c.result, /^NO PAIR: .*run the dispatch again once, then the reading is NOT-RUN/);
+  assert.deepEqual(c.runners.map((r) => [r.leg, r.cpu]), [["w1", "A"], ["w2", "B"], ["w3", "C"], ["w4", null]]);
+  assert.deepEqual([c.checks, c.cells, c.commit, c.platform], [[], [], null, null]);
+  assert.match(renderMarkdown(c), /\*\*NO PAIR/);
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-exit-inputs-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const legs = ["A", "B"].map((cpu, i) => {
+    const d = path.join(dir, `w${i + 1}`);
+    mkdirSync(d);
+    for (const b of BUILDS) writeFileSync(path.join(d, `run-${b}.json`), JSON.stringify(runView(b, { cpu })));
+    return d;
+  });
+  const out = path.join(dir, "c.json");
+  const r = spawnSync(process.execPath, [SCRIPT, "pathb", "--leg", legs[0], "--leg", legs[1], "--out", out], { encoding: "utf8" });
+  assert.equal(r.status, 3, r.stderr);
+  assert.equal(JSON.parse(readFileSync(out, "utf8")).pair, null);
+  assert.deepEqual(readLeg(path.join(dir, "none")).error !== null, true);
+});
+
+test("compare: the pair's run checks and the 8 cells (the m2-exit fixture pathb-win.json)", () => {
+  const gates = { w2: gateOf(1.05), w3: gateOf(1.06) };
+  const readGate = (runs) => gates[runs[0].source.split("/")[0]];
+  const legs = [leg("w1", { cpu: "Intel Xeon Platinum 8370C" }), leg("w2"), leg("w3"), leg("w4", { cpu: "Intel Xeon Platinum 8370C" })];
+  const c = compare(legs, { readGate });
+  assert.deepEqual(c.pair, { cpu: "Intel Xeon Platinum 8370C", legs: ["w1", "w4"] });
+  // The legs of the first model with 2: w1 and w4 (not w2 and w3).
+  const c2 = compare([legs[1], legs[0], legs[2], legs[3]], { readGate });
+  assert.deepEqual(c2.boxes, ["w2", "w3"]);
+  assert.equal(c2.platform, "win32-x64");
+  assert.equal(c2.commit, SHA);
+  assert.deepEqual(c2.checks.map((k) => [k.box, k.build, k.commit_ok, k.rounds, k.load.before.pass, k.load.after.pass]), [
+    [1, "jit", true, 31, true, true],
+    [1, "jitless", true, 31, true, true],
+    [2, "jit", true, 31, true, true],
+    [2, "jitless", true, 31, true, true],
+  ]);
+  assert.deepEqual(c2.cells.map((x) => [x.build, x.cell.split(":")[0], x.result]), [
+    ["jit", "item 1", "NO AGREEMENT"],
+    ["jit", "item 2", "AGREE above"],
+    ["jit", "item 3", "AGREE below"],
+    ["jit", "item 6", "AGREE above"],
+    ["jitless", "item 1", "NO AGREEMENT"],
+    ["jitless", "item 2", "AGREE above"],
+    ["jitless", "item 3", "AGREE below"],
+    ["jitless", "item 6", "AGREE above"],
+  ]);
+  const ts = c2.cells.find((x) => x.build === "jit" && x.cell.startsWith("item 3:"));
+  assert.deepEqual(ts.box1, { median: 0.95, interval: [0.93, 0.97], note: "net, provisional" });
+  assert.match(renderMarkdown(c2), /TS ratio to node --jitless \(V14-D59 input\): jit box 1 0\.950, box 2 0\.960; jitless box 1 0\.930, box 2 0\.940\./);
+  // The fixture of `cargo xtask m2-exit --pathb` on x86_64-pc-windows-msvc is this output.
+  const text = `${JSON.stringify(c2, null, 1)}\n`;
+  if (process.env.EP9_BLESS === "1") writeFileSync(FIXTURE, text);
+  assert.equal(readFileSync(FIXTURE, "utf8"), text, "run EP9_BLESS=1 node --test .github/scripts/exit-inputs.test.mjs");
+  // A dirty binary, another commit or a gate that cannot read the pair: commit_ok false.
+  const bad = compare([leg("w2", { dirty: true }), leg("w3")], { readGate });
+  assert.deepEqual(bad.checks.map((k) => k.commit_ok), [false, false, true, true]);
+  const other = compare([leg("w2"), leg("w3", { commit: "f".repeat(40) })], { readGate });
+  assert.deepEqual(other.checks.map((k) => k.commit_ok), [true, true, false, false]);
+  const thrown = compare([leg("w2"), leg("w3")], { readGate: () => { throw new Error("one host per m2gate file"); } });
+  assert.ok(thrown.checks.every((k) => !k.commit_ok && k.error === "one host per m2gate file"));
+  assert.ok(thrown.cells.every((x) => x.result === "NO AGREEMENT"));
+  // Two platforms in the pair: the compare names none (m2-exit then reads NO AGREEMENT).
+  assert.equal(compare([leg("w2"), leg("w3", { platform: "linux-x64" })], { readGate }).platform, null);
+});
+
+test("host: the runner host file from idle.mjs; a busy runner gives none", () => {
+  assert.equal(parseIdle("# samples\nidle_baseline_load1 = 0.42\nload_source = \"typeperf\"\n"), 0.42);
+  assert.equal(parseIdle("# NOT IDLE\n"), null);
+  const info = { cpu: 'Odd "CPU" #1', cores: 4, platform: "win32-x64", osText: "Windows_NT 10.0.26100", source: "typeperf" };
+  const seen = [];
+  const r = host({ id: "gha-w1", minutes: 10, everyS: 120 }, { idle: (args) => (seen.push(args), { status: 0, stdout: "idle_baseline_load1 = 0.42\n" }), info });
+  assert.deepEqual(seen, [["--minutes", "10", "--every-s", "120"]]);
+  assert.equal(r.status, 0);
+  const h = parseToml(r.text);
+  assert.deepEqual(
+    { id: h.id, cpu: h.cpu, cores: h.cores, platform: h.platform, gate_host: h.gate_host, idle: h.idle_baseline_load1, source: h.load_source },
+    { id: "gha-w1", cpu: "Odd _CPU_ _1", cores: 4, platform: "win32-x64", gate_host: false, idle: 0.42, source: "typeperf" },
+  );
+  const busy = host({ id: "x", minutes: 10, everyS: 10 }, { idle: () => ({ status: 1, stdout: "# NOT IDLE: 2 sample(s) saw build or benchmark processes; no baseline.\n" }), info });
+  assert.equal(busy.status, 3);
+  assert.equal(busy.text, null);
+  assert.match(busy.why, /NOT IDLE/);
+  assert.match(hostToml({ ...info, id: "a", idle: 1, measured: "m" }), /^gate_host = false$/m);
+});
+
+test("options", () => {
+  assert.throws(() => parseArgs([]), /host or pathb/);
+  assert.throws(() => parseArgs(["host"]), /--out is required/);
+  assert.throws(() => parseArgs(["pathb", "--out", "x"]), /at least one --leg/);
+  assert.throws(() => parseArgs(["host", "--out", "x", "--leg", "d"]), /unknown option --leg for host/);
+  assert.throws(() => parseArgs(["host", "--out", "x", "--minutes", "0"]), /needs a number > 0/);
+  assert.deepEqual(parseArgs(["pathb", "--leg", "a", "--leg", "b", "--out", "c"]).legs, ["a", "b"]);
+  assert.equal(parseArgs(["host", "--out", "h", "--every-s", "120"]).everyS, 120);
+});
+
+const skipFakes = process.platform === "win32" && "shell-script fake engines";
+
+test("CLI: 2 both-builds legs of run.mjs (fake engines, 31 rounds) give a paired compare", { skip: skipFakes }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-exit-inputs-cli-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(ROOT, "tools/bench/cross/testdata/fake-engine.sh");
+  for (const n of ["ep9", "ep9-jitless", "node"]) symlinkSync(fake, path.join(dir, n));
+  writeFileSync(path.join(dir, "versions.txt"), `# host: ${platformId()}\nnode      fake 2  ${dir}/node\n`);
+  const hostFile = path.join(dir, "host.toml");
+  writeFileSync(hostFile, hostToml({ id: "gha-test", cpu: cpuModel(), cores: os.cpus().length, platform: `${process.platform}-${process.arch}`, osText: "test", idle: 1000, source: "loadavg", measured: "test" }));
+  assert.equal(readHostFile(hostFile).gate_host, false);
+  const legs = ["w1", "w2"].map((name) => {
+    const d = path.join(dir, name);
+    mkdirSync(d);
+    const r = spawnSync(
+      process.execPath,
+      [
+        path.join(ROOT, "tools/bench/cross/run.mjs"),
+        "--ep9", path.join(dir, "ep9"), "--ep9-jitless", path.join(dir, "ep9-jitless"),
+        "--engines", "ep9,ep9-jitless,node-jitless", "--shells", path.join(dir, "versions.txt"),
+        "--workloads", "t0-loop", "--rounds", String(PATHB_ROUNDS), "--warmup", "0",
+        "--settle-s", "0", "--after-s", "0", "--wait-min", "0", "--host", hostFile,
+        "--out", path.join(d, "run-jit.json"), "--out-jitless", path.join(d, "run-jitless.json"),
+      ],
+      { encoding: "utf8", env: { ...process.env, FAKE_ENGINE_BUILD_ep9: "features jit; preset jit", FAKE_BUILD_ep9: `commit ${SHA} clean`, FAKE_BUILD_ep9_jitless: `commit ${SHA} clean` } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return d;
+  });
+  const out = path.join(dir, "compare.json");
+  const md = path.join(dir, "compare.md");
+  const r = spawnSync(process.execPath, [SCRIPT, "pathb", "--leg", legs[0], "--leg", legs[1], "--out", out, "--md", md], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const c = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(c.boxes, ["w1", "w2"]);
+  assert.equal(c.commit, SHA);
+  assert.equal(c.platform, `${process.platform}-${process.arch}`);
+  assert.deepEqual(c.checks.map((k) => [k.box, k.build, k.commit_ok, k.rounds, k.load.before.pass, k.load.after.pass]), [
+    [1, "jit", true, 31, true, true],
+    [1, "jitless", true, 31, true, true],
+    [2, "jit", true, 31, true, true],
+    [2, "jitless", true, 31, true, true],
+  ]);
+  // The fake run has no M2 workload: every cell has no interval.
+  assert.equal(c.cells.length, 8);
+  assert.ok(c.cells.every((x) => x.result === "NO AGREEMENT"));
+  assert.ok(existsSync(md));
+});
