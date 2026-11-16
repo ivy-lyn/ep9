@@ -1544,27 +1544,17 @@ struct FrameRow {
 }
 
 /// Registers that one prologue instruction saves, or `None` if the instruction is not part of
-/// a prologue. x86-64: a `push` saves 1; on Win64 a store of xmm6-xmm15 to the stack saves 1;
-/// `sub ..., %rsp` and setting `%rbp` from `%rsp` save 0. aarch64: an `stp` or `str` of
-/// callee-saved registers (x19-x30, d8-d15) to `[sp ...]` saves 1 per register; `sub sp, sp`,
-/// `pacibsp`/`paciasp` and setting x29 from sp save 0.
-fn prologue_saves(arch: Arch, win64: bool, text: &str) -> Option<usize> {
+/// a prologue. x86-64: a `push` saves 1; `sub ..., %rsp` and setting `%rbp` from `%rsp` save 0
+/// (the handler ABI is sysv64 on every OS, `dsl::handler!`, so no xmm register is callee-saved,
+/// also on Win64). aarch64: an `stp` or `str` of callee-saved registers (x19-x30, d8-d15) to
+/// `[sp ...]` saves 1 per register; `sub sp, sp`, `pacibsp`/`paciasp` and setting x29 from sp
+/// save 0.
+fn prologue_saves(arch: Arch, text: &str) -> Option<usize> {
     let t = text.replace(char::is_whitespace, " ");
     let (m, ops) = t.split_once(' ').unwrap_or((t.as_str(), ""));
     let ops = ops.trim();
     match arch {
         Arch::X64 => {
-            let vector_store = matches!(
-                m,
-                "movaps"
-                    | "movups"
-                    | "movdqa"
-                    | "movdqu"
-                    | "vmovaps"
-                    | "vmovups"
-                    | "vmovdqa"
-                    | "vmovdqu"
-            );
             if m.starts_with("push") {
                 Some(1)
             } else if m.starts_with("sub") && ops.ends_with("%rsp")
@@ -1572,16 +1562,6 @@ fn prologue_saves(arch: Arch, win64: bool, text: &str) -> Option<usize> {
                 || m.starts_with("lea") && ops.ends_with("(%rsp), %rbp")
             {
                 Some(0)
-            } else if win64
-                && vector_store
-                && let Some((src, dst)) = ops.split_once(", ")
-                && src
-                    .strip_prefix("%xmm")
-                    .and_then(|n| n.parse::<u32>().ok())
-                    .is_some_and(|n| (6..=15).contains(&n))
-                && dst.ends_with("(%rsp)")
-            {
-                Some(1)
             } else {
                 None
             }
@@ -1611,11 +1591,12 @@ fn prologue_saves(arch: Arch, win64: bool, text: &str) -> Option<usize> {
     }
 }
 
-/// The callee-saved registers of the target ABI that one instruction stores to the stack.
-/// x86-64: the register of a `push` (SysV: rbx, rbp, r12-r15; Win64 also rdi, rsi), and on
-/// Win64 the xmm6-xmm15 source of a vector store to `(%rsp)`. aarch64: the x19-x30 and d8-d15
-/// registers of an `stp` or `str` to `[sp ...]` (`fp` and `lr` read as x29 and x30).
-fn stack_saved_regs(arch: Arch, win64: bool, text: &str) -> Vec<String> {
+/// The callee-saved registers of the handler ABI (x86-64: sysv64 on every OS, `dsl::handler!`;
+/// aarch64: x19-x30, d8-d15) that one instruction stores to the stack. x86-64: the register of
+/// a `push` of rbx, rbp or r12-r15 (on Win64 too: rdi, rsi and xmm6-xmm15 are not callee-saved
+/// under sysv64). aarch64: the x19-x30 and d8-d15 registers of an `stp` or `str` to `[sp ...]`
+/// (`fp` and `lr` read as x29 and x30).
+fn stack_saved_regs(arch: Arch, text: &str) -> Vec<String> {
     let t = text.replace(char::is_whitespace, " ");
     let (m, ops) = t.split_once(' ').unwrap_or((t.as_str(), ""));
     let ops = ops.trim();
@@ -1623,20 +1604,9 @@ fn stack_saved_regs(arch: Arch, win64: bool, text: &str) -> Vec<String> {
         Arch::X64 => {
             if m.starts_with("push") {
                 let r = ops.trim_start_matches('%');
-                let sysv = matches!(r, "rbx" | "rbp" | "r12" | "r13" | "r14" | "r15");
-                let w64 = win64 && matches!(r, "rdi" | "rsi");
-                return if sysv || w64 {
-                    vec![r.to_string()]
-                } else {
-                    Vec::new()
-                };
-            }
-            // The Win64 xmm saves: `prologue_saves` accepts exactly these stores.
-            if win64
-                && prologue_saves(arch, win64, text) == Some(1)
-                && let Some((src, _)) = ops.split_once(", ")
-            {
-                return vec![src.trim_start_matches('%').to_string()];
+                if matches!(r, "rbx" | "rbp" | "r12" | "r13" | "r14" | "r15") {
+                    return vec![r.to_string()];
+                }
             }
             Vec::new()
         }
@@ -1670,24 +1640,25 @@ fn stack_saved_regs(arch: Arch, win64: bool, text: &str) -> Vec<String> {
 ///    [`prologue_saves`] accepts adds its count, up to the first instruction that it does not
 ///    accept (an argument spill, a load, a move). A `push` counts 1 here whatever it pushes.
 /// 2. The rest of the entry block, up to the first jump, branch, call, return or trap
-///    ([`classify`]): a stack store of a callee-saved register of the target ABI
-///    ([`stack_saved_regs`]) adds 1 for each register that no earlier instruction of the block
-///    stored. So a save after an argument spill counts (`sub sp; stp x0, x1, [sp]; stp x20,
-///    x19, [sp, #0x10]` saves 2), and a later spill of a register that the prologue saved
-///    already does not count again. LLVM saves a callee-saved register before its first write,
-///    so a store of a register that is not saved yet is a save.
+///    ([`classify`]): a stack store of a callee-saved register of the handler ABI (x86-64:
+///    sysv64 on every OS, `dsl::handler!`; [`stack_saved_regs`]) adds 1 for each register
+///    that no earlier instruction of the block stored. So a save after an argument spill
+///    counts (`sub sp; stp x0, x1, [sp]; stp x20, x19, [sp, #0x10]` saves 2), and a later
+///    spill of a register that the prologue saved already does not count again. LLVM saves a
+///    callee-saved register before its first write, so a store of a register that is not
+///    saved yet is a save.
 ///
 /// The scan ends at the first control transfer, so a save in a later block (shrink-wrapping)
 /// is not an entry save: that path does not run on every dispatch.
-fn entry_saves(arch: Arch, win64: bool, b: &Block) -> usize {
+fn entry_saves(arch: Arch, b: &Block) -> usize {
     let mut seen = BTreeSet::new();
     let mut saves = 0;
     let mut leading = true;
     for i in &b.insns {
         if leading {
-            if let Some(n) = prologue_saves(arch, win64, &i.text) {
+            if let Some(n) = prologue_saves(arch, &i.text) {
                 saves += n;
-                seen.extend(stack_saved_regs(arch, win64, &i.text));
+                seen.extend(stack_saved_regs(arch, &i.text));
                 continue;
             }
             leading = false;
@@ -1695,7 +1666,7 @@ fn entry_saves(arch: Arch, win64: bool, b: &Block) -> usize {
         if !matches!(classify(arch, i, b), Kind::Other) {
             break;
         }
-        for r in stack_saved_regs(arch, win64, &i.text) {
+        for r in stack_saved_regs(arch, &i.text) {
             if seen.insert(r) {
                 saves += 1;
             }
@@ -1706,12 +1677,7 @@ fn entry_saves(arch: Arch, win64: bool, b: &Block) -> usize {
 
 /// The hot handlers (name not ending in `_cold`) that build a frame on entry (the frame list
 /// of the default check, cold handlers left out), with their entry saves, sorted.
-fn frame_rows(
-    arch: Arch,
-    win64: bool,
-    handlers: &[Handler],
-    blocks: &[Block],
-) -> Result<Vec<FrameRow>, String> {
+fn frame_rows(arch: Arch, handlers: &[Handler], blocks: &[Block]) -> Result<Vec<FrameRow>, String> {
     let mut rows = BTreeMap::new();
     for h in handlers {
         let op = h.name.rsplit("__").next().unwrap_or(&h.name);
@@ -1724,7 +1690,7 @@ fn frame_rows(
             .first()
             .is_some_and(|i| is_frame_setup(arch, &i.text))
         {
-            rows.insert((h.exp.clone(), op.to_string()), entry_saves(arch, win64, b));
+            rows.insert((h.exp.clone(), op.to_string()), entry_saves(arch, b));
         }
     }
     Ok(rows
@@ -1833,7 +1799,7 @@ fn check_frames(
         );
         return Ok(false);
     };
-    let rows = frame_rows(l.arch, l.abi == "x64-win64", &l.handlers, &l.blocks)?;
+    let rows = frame_rows(l.arch, &l.handlers, &l.blocks)?;
     println!("== {target} ({}, {}): {}", l.abi, l.format, file.display());
     println!(
         "   frames: {} hot handler rows build a frame on entry (<expansion> <handler> <saves>):",
@@ -2420,7 +2386,7 @@ Section
                 })
             })
             .collect();
-        let rows = frame_rows(arch, abi == "x64-win64", &handlers, &blocks).unwrap();
+        let rows = frame_rows(arch, &handlers, &blocks).unwrap();
         (abi, handlers.len(), rows)
     }
 
@@ -2579,7 +2545,7 @@ Section
     // Prologues from the m8-p5 builds of ep9_vm (llvm-objdump 1.99.1 text).
     #[test]
     fn prologue_saves_per_target() {
-        let a64 = |lines: &[&str]| entry_saves(Arch::A64, false, &block("h", lines));
+        let a64 = |lines: &[&str]| entry_saves(Arch::A64, &block("h", lines));
         // aarch64-apple-darwin CreateObjectLiteral: 12 callee-saved registers.
         assert_eq!(
             a64(&[
@@ -2623,7 +2589,9 @@ Section
             ]),
             1
         );
-        let x64 = |win64, lines: &[&str]| entry_saves(Arch::X64, win64, &block("h", lines));
+        // x86-64 handlers are sysv64 on every OS (`dsl::handler!`), so a Win64 dump uses the
+        // SysV callee-saved set too: rbx, rbp, r12-r15.
+        let x64 = |lines: &[&str]| entry_saves(Arch::X64, &block("h", lines));
         // x86_64-pc-windows-msvc StaContextSlot: 2 pushes, then the shadow space.
         let sta = [
             "pushq\t%r14",
@@ -2632,16 +2600,15 @@ Section
             "movsbq\t0x1(%rsi), %rax",
             "pushq\t%rax",
         ];
-        assert_eq!(x64(true, &sta), 2);
-        // Win64 saves xmm6-xmm15; on SysV every xmm is caller-saved, so the store is a spill.
+        assert_eq!(x64(&sta), 2);
+        // Every xmm register is caller-saved under sysv64 (also on Win64), so the xmm6 store
+        // is a spill: it ends the leading prologue, and the push of rbx after it counts.
         let xmm = [
             "subq\t$0x48, %rsp",
             "movaps\t%xmm6, 0x30(%rsp)",
             "pushq\t%rbx",
         ];
-        assert_eq!(x64(true, &xmm), 2);
-        // On SysV the xmm6 store ends the leading prologue; the push of rbx after it counts.
-        assert_eq!(x64(false, &xmm), 1);
+        assert_eq!(x64(&xmm), 1);
         // A push after an argument spill counts; a push of a caller-saved register does not,
         // and the scan ends at a call.
         let spill = [
@@ -2652,17 +2619,19 @@ Section
             "callq\t0x0",
             "pushq\t%r12",
         ];
-        assert_eq!(x64(false, &spill), 1);
-        // Win64: rsi is callee-saved, and so is an xmm6 store after the spill.
+        assert_eq!(x64(&spill), 1);
+        // rsi and xmm6 are caller-saved under sysv64 (also on Win64): a push of rsi and an xmm6
+        // store after the spill are spills, not saves.
         let w64 = [
             "subq\t$0x48, %rsp",
             "movq\t%rcx, 0x40(%rsp)",
             "pushq\t%rsi",
             "movaps\t%xmm6, 0x20(%rsp)",
         ];
-        assert_eq!(x64(true, &w64), 2);
-        assert_eq!(x64(false, &w64), 0);
-        assert_eq!(x64(true, &["movaps\t%xmm5, 0x30(%rsp)"]), 0);
-        assert_eq!(x64(false, &["movq\t%rsp, %rbp", "pushq\t%rbx"]), 1);
+        assert_eq!(x64(&w64), 0);
+        // A leading xmm store is not a prologue instruction: it counts 0.
+        assert_eq!(x64(&["movaps\t%xmm6, 0x30(%rsp)"]), 0);
+        assert_eq!(x64(&["movaps\t%xmm5, 0x30(%rsp)"]), 0);
+        assert_eq!(x64(&["movq\t%rsp, %rbp", "pushq\t%rbx"]), 1);
     }
 }
