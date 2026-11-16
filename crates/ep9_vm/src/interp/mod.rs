@@ -518,8 +518,8 @@ impl<'a> St<'a> {
     }
 
     /// Runs the cold body of one `Wide`/`ExtraWide` instruction out of line, after its fast
-    /// body ran at scale `S` in the prefix handler and returned `Flow::Cold` (`ops.rs`
-    /// `prefix_runs_fast`; M7-P4 TSPASS2).
+    /// body ran at scale `S` and returned `Flow::Cold`: in the prefix handler on aarch64
+    /// (`ops.rs` `prefix_runs_fast`; M7-P4 TSPASS2), in its cold block on x86-64 (`tails::wide`).
     #[inline(always)]
     pub fn scaled_cold<S: dsl::Scale>(&mut self) -> Done {
         // SAFETY: as in `scaled`; the opcode after the prefix has a cold body (its fast body
