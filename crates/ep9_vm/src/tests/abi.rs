@@ -911,7 +911,8 @@ fn flat_str_downcast_refuses_a_rope() {
     });
 }
 
-/// `abi::trunc_exact` (the libm-free form of `Cx::to_integer_or_infinity`) has the bits of
+/// `abi::trunc_exact` (the trunc of `Cx::to_integer_or_infinity`, in the form this target
+/// builds: the i64 round trip on x86-64 without SSE4.1, else `d.trunc()`) has the bits of
 /// `f64::trunc` for every input: the edges around 0, 0.5, 2^52, 2^53 and 2^63, the
 /// extremes, subnormals, NaN, the infinities and 1,000,000 random bit patterns (H36: trunc is
 /// exact).

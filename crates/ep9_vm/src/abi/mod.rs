@@ -1746,18 +1746,32 @@ impl<'s> Cx<'s> {
 }
 
 /// `d.trunc()` (IEEE roundToIntegralTowardZero) with the same bits for every `d`, also -0,
-/// NaN and the infinities, but with no libm call on a baseline x86-64 build (no SSE4.1
-/// `roundsd`): a `d` with `|d| < 2^52` may have a fraction, and it fits in an i64, so the
-/// i64 round trip (cvttsd2si / fcvtzs) truncates it exactly; `copysign` keeps the sign of a
-/// result of 0 (-0.5 -> -0). Every other `d` is already integral, or NaN, or infinite, and
-/// is its own result. Scalar code on every target (no SIMD, no feature test).
+/// NaN and the infinities, and with no libm call on any target.
+///
+/// - On x86-64 without SSE4.1 (the baseline build), `f64::trunc` is a libm call, because
+///   there is no `roundsd`. There, a `d` with `|d| < 2^52` may have a fraction, and it fits
+///   in an i64, so the i64 round trip (cvttsd2si / cvtsi2sd) truncates it exactly;
+///   `copysign` keeps the sign of a result of 0 (-0.5 -> -0). Every other `d` is already
+///   integral, or NaN, or infinite, and is its own result.
+/// - On every other target, `f64::trunc` is 1 instruction (aarch64 `frintz`, wasm32
+///   `f64.trunc`, x86-64 with SSE4.1 `roundsd`), so this is `d.trunc()`.
+///
+/// The form is chosen at compile time from the target. Scalar code (no SIMD, no runtime
+/// feature test).
 #[inline]
 pub(crate) fn trunc_exact(d: f64) -> f64 {
-    const TWO_POW_52: f64 = 4_503_599_627_370_496.0;
-    if d.abs() < TWO_POW_52 {
-        ((d as i64) as f64).copysign(d)
-    } else {
-        d
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "sse4.1")))]
+    {
+        const TWO_POW_52: f64 = 4_503_599_627_370_496.0;
+        if d.abs() < TWO_POW_52 {
+            ((d as i64) as f64).copysign(d)
+        } else {
+            d
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", not(target_feature = "sse4.1"))))]
+    {
+        d.trunc()
     }
 }
 
