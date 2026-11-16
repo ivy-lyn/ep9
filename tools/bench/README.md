@@ -132,8 +132,65 @@ the step summary; artifact bench-set-<leg>-<head sha>: both JSONs and the cacheg
 - **Target dirs and the head rebuild guard** (route BENCH-STALE-HEAD; decisions log M6-ORCH-560). Base and head never share a target dir: `bench/target-base`, `bench/target-head`, `bench/target-jitless-base`, `bench/target-jitless-head`. Until M8-P2 both sides built in one dir; the checkouts came before the base build, so a head crate whose files were older than the base artifacts was fresh to cargo and the head binary kept base code (only the crates that depend on the re-synced regress and icu4x checkouts compiled again). The readings of a change in `ep9_vm` alone stay valid; a change below it (for example `ep9_frontend`, `ep9_heap`, `ep9_unit`) was not measured. Each head build writes its cargo JSON messages (`--message-format=json-render-diagnostics`) to `bench/build-head.jsonl` and `bench/build-jitless-head.jsonl`, and `bench-set.mjs --rebuild-guard --base-tree bench/base --head-tree bench/head --cargo-json <file>` fails the leg (exit 1, with the package names) when a package of the build whose directory differs from base (any file, `target` and `.git` not read) has a compiler artifact that cargo did not compile (`"fresh": true`; a build script's artifact is not read). Tests: `node --test .github/scripts/bench-set.test.mjs` (the guard and its CLI on fake trees and fake cargo messages).
 - **Commits.** `bench_base` and `bench_head` must be full commit ids. Each binary's `ep9 --version` build line (P0-BUILDID) must name its commit, built clean; else the leg stops with exit 2.
 - **JSON.** `target`, `build` (`jit`, `jitless`, or null with no `--build`), `counter` (`cachegrind-i-refs`), `branch_sim`, `hash_seed`, `gc_helpers`, `limit_pct`, `functions_named`, `valgrind`, `host`, `base` and `head` (`commit`; `ep9`: `version`, `engine_build`, `build`), `notes`, `verdict`, `worst` (per group t0, v8v7, octane: the row with the largest delta), and per row: `name`, `group`, the file's `sha256`, `expect` and source, `base` and `head` (`status`, `error`, `ir`, `bc`, `bcm`, `bi`, `bim`), `delta_pct`, `verdict`, `bim_delta_pct`, `out_rows_match` (the rows of each .out file sum to its summary line) and `functions`.
-- **Push and pull_request.** The `bench-set` job has no `needs` and no job-level `if`, so it is never skipped (the tag gate refuses a skipped job): without `bench_base` its matrix is one leg, `off`, that prints "bench mode off" and runs `node --test .github/scripts/bench-set.test.mjs`.
+- **Push and pull_request.** The `bench-set` job has no `needs`, and its job-level `if` skips it only in the exit-inputs mode (below), so push and pull_request never skip it (the tag gate refuses a skipped job): without `bench_base` its matrix is one leg, `off`, that prints "bench mode off" and runs `node --test .github/scripts/bench-set.test.mjs`.
 - **Local.** On a Linux host with valgrind: build both binaries, then `node .github/scripts/bench-set.mjs --base-ep9 A --head-ep9 B --base <sha> --head <sha> --out bench-set.json` (`--branch-sim`, `--keep DIR`, `--jobs N`, `--limit-pct`).
+
+## Exit-inputs mode
+
+The M2 exit inputs that need a platform, on GitHub-hosted runners (plan v14 section 4.1; route
+EXIT-INPUTS; decisions V14-D11, V14-D12). A dispatch of `ci.yml` with the input `exit_inputs`
+runs only the `scope` job and the legs of the `exit-inputs` job; every other job, `lint` and
+`bench-set` too, is skipped. A dispatch cannot set both `exit_inputs` and `bench_base`. The
+orchestrator runs it:
+
+```bash
+gh workflow run ci.yml --ref <ref with this ci.yml> -f exit_inputs=all     # all 7 legs
+gh workflow run ci.yml --ref <ref with this ci.yml> -f exit_inputs=memjs   # the 3 memjs legs
+gh workflow run ci.yml --ref <ref with this ci.yml> -f exit_inputs=pathb   # the 4 pathb legs (the retry)
+```
+
+```text
+per leg: checkout, cargo build --release -p ep9_cli (jit preset) and the jitless build
+  (--no-default-features, target/jitless), sync-bench.sh, sync-shells.sh (node; d8 for memjs)
+          |
+          v
+exit-inputs.mjs host: idle.mjs for 10 min (Windows: typeperf, a sample every 120 s)
+  -> out/host.toml (gate_host = false, idle_baseline_load1, load_source)
+          |
+          +-- memjs-linux-x64, memjs-linux-arm64, memjs-windows-x64:
+          |     mem.mjs (both builds, node --jitless, d8 --jitless; no d8 on linux-arm64) -> out/mem.json
+          |     jetstream/run.mjs --list expectations/jetstream-m2.txt (ep9, ep9-jitless,
+          |       node --jitless) -> out/jetstream.json
+          |
+          +-- pathb-w1 .. pathb-w4 (windows-2025):
+                run.mjs --workloads m2 --harness base --rounds 31 --engines ep9,node-jitless
+                  --ep9-jitless <jitless> -> out/run-jit.json, out/run-jitless.json, out/run.md
+          |
+          v
+artifact m2-exit-inputs-<leg> (out/)
+```
+
+- **The pair (the reader's step).** Download the 4 `m2-exit-inputs-pathb-w*` artifacts, then
+  `node .github/scripts/exit-inputs.mjs pathb --leg <w1 dir> --leg <w2 dir> --leg <w3 dir> --leg <w4 dir>
+  --out pathb.json --md pathb.md`. The script groups the runners by CPU model, in the order given;
+  the first 2 runners of the first model with 2 runners are box 1 and box 2. It writes the
+  ep9-pathb-compare/v1 file that `cargo xtask m2-exit --pathb` reads (checks per box and build,
+  the cells of items 1, 2, 3 and 6 per build; the Markdown gives the TS ratio to node `--jitless`
+  per box and build, V14-D59). No 2 runners of one model: `pair` is null and the exit status 3.
+  Then dispatch `pathb` once more; a second miss makes the reading NOT-RUN (a decisions-log line).
+- **Windows.** The load guard reads `typeperf` (`lib/host.mjs`, "Load source"): each load reading
+  takes 60 s, so a pathb leg spends about 32 minutes on load readings. mem.mjs reads the
+  PeakWorkingSetSize of the engine process through a PowerShell wrapper. `sync-shells.sh` writes
+  Git Bash paths (`/d/a/...`) that node cannot start, so the leg turns them into `D:/a/...` with
+  `cygpath -m`. There is no QuickJS on Windows, so item 1 has no Windows interval.
+- **Not a gate host.** A GitHub runner is never a gate host: every run is provisional for the
+  class M gates. `cargo xtask m2-exit` reads the windows x64 speed cells from the Path B compare
+  (the host-cell forms of V13-D37).
+- **Push and pull_request.** Without `exit_inputs` the job has one leg, `off`, that prints
+  "exit-inputs mode off", so the job is never skipped. The lint job runs the tests:
+  `node --test .github/scripts/exit-inputs.test.mjs` and `node --test tools/bench/lib/host.test.mjs`.
+- **Time.** `timeout-minutes: 300` by rule 25 (no measured time); the orchestrator reads the leg
+  times of the first dry dispatch and sets 1.5x the longest.
 
 ## JetStream
 
@@ -329,5 +386,8 @@ cargo xtask m2-exit --host aarch64-apple-darwin --gate m2gate.json --mem mem.jso
 `platform`, `os`, `gate_host`, and `idle_baseline_load1`: the median 1-minute load over 10 idle
 minutes, from `node tools/bench/cross/idle.mjs` (it refuses a window in which builds or benchmarks
 run). Without `idle_baseline_load1` the load guard cannot pass, so every run there is provisional.
+`load_source` (optional) names the source of the baseline: `loadavg` (Linux, macOS) or `typeperf`
+(Windows; `lib/host.mjs`); `idle.mjs` prints it. A host file of a GitHub runner comes from
+`.github/scripts/exit-inputs.mjs host` (`gate_host = false`).
 `hosts/m5max-macos.toml` has `idle_baseline_load1 = 2.505`, measured on 2026-10-21 (10 idle minutes).
 
