@@ -1,0 +1,39 @@
+frames.o:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000000000 <ep9h__sib__exit__BadOpcode>:
+       0:      	pushq	%rax
+       1:      	movzbl	(%rsi), %edx
+       4:      	callq	0x9 <ep9h__sib__exit__BadOpcode+0x9>
+       9:      	xorl	%eax, %eax
+       b:      	popq	%rcx
+       c:      	retq
+
+0000000000000000 <ep9h__sib__tail__CallProperty0>:
+       0:      	pushq	%rbp
+       1:      	pushq	%rbx
+       2:      	subq	$0x8, %rsp
+       6:      	movsbq	0x1(%rsi), %rax
+       b:      	movq	(%rdx,%rax,8), %rbx
+       f:      	movzbl	0x4(%rsi), %eax
+      13:      	addq	$0x8, %rsp
+      17:      	popq	%rbx
+      18:      	popq	%rbp
+      19:      	jmpq	*(%rdi,%rax,8)
+
+0000000000000000 <ep9h__sib__tail__GetNamedProperty>:
+       0:      	movsbq	0x1(%rsi), %rax
+       5:      	movq	(%rdx,%rax,8), %rax
+       9:      	movzbl	0x3(%rsi), %eax
+       d:      	jmpq	*(%rdi,%rax,8)
+
+0000000000000000 <ep9h__sib__tail__GetNamedProperty_cold>:
+       0:      	pushq	%r15
+       2:      	pushq	%r14
+       4:      	pushq	%rbx
+       5:      	movzbl	0x3(%rsi), %eax
+       9:      	popq	%rbx
+       a:      	popq	%r14
+       c:      	popq	%r15
+       e:      	jmpq	*(%rdi,%rax,8)
