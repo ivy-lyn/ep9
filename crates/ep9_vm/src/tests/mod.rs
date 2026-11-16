@@ -91,6 +91,9 @@ mod array_buffer;
 mod typed_array;
 // Form D keep-calls (M9-P1 X86-KEEPCALL): after the list, so no cited line above moves.
 mod keepcall;
+// FORIN-DEDUPE (oxc-perf b): the for-in key list and its seen test; after the list, so no
+// cited line above moves.
+mod for_in;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;
