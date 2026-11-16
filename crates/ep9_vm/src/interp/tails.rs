@@ -12,17 +12,9 @@
 //! These functions are not handlers: `cargo xtask disasm-check` counts the same 284. On
 //! other targets (and on x86-64 with `ic-stats`, where the fast body keeps its full hit path)
 //! each name here is the function that the cold body called before.
-//!
-//! The Star lookahead (M9-P0 STAR-FUSE; V8 `Bytecodes::IsStarLookahead`,
-//! `InterpreterAssembler::StarDispatchLookahead`): `star_lookahead`, with `star_next` and
-//! `star_done` for the `Flow::Next` and `Done::Next` exits of a producer's fast body. It is a
-//! body form on every target: no new opcode, handler, `Flow` arm or cold block, and no change
-//! to `interp/dsl.rs` (H15 dispatch core; DL M9-PLAN-D6, M9-PRE-STARFUSE-KIND).
 
-use crate::interp::{Done, Flow, St, dsl};
 #[cfg(all(target_arch = "x86_64", not(feature = "ic-stats")))]
 use crate::{error::FrameRef, ic, interp::Cx, interp::slow};
-use ep9_bytecode::Opcode;
 
 /// The cold body of `LdaGlobal` and (since M8-P3 LEVER-6) `LdaGlobalInsideTypeof`
 /// (`in_typeof`): the global IC hit (a polymorphic entry, which the x86-64 fast body leaves
@@ -49,125 +41,6 @@ pub(crate) fn load_global(
 /// load ([`super::slow::load_global`]).
 #[cfg(not(all(target_arch = "x86_64", not(feature = "ic-stats"))))]
 pub(crate) use super::slow::load_global;
-
-/// The Star lookahead (M9-P0 STAR-FUSE): if the next instruction is a one-byte-scale `Star r`,
-/// the producer runs it here: it stores the accumulator to `r` and sets `st.next` past the
-/// Star, so the dispatch goes to the instruction after the Star and the Star handler does not
-/// run. A producer calls it only on its success exit ([`star_next`], [`star_done`]), after it
-/// wrote the accumulator; an exception, a cold exit or a record exit runs no lookahead, so the
-/// Star runs in its own handler there, as before.
-///
-/// The producers (M9-P0, from the TS bytecode count: the producer kinds with the most Stars
-/// after them and a share of at least 81%): `GetNamedProperty` (its IC hit), the four
-/// context-slot loads and `LdaCurrentContext`. A producer that a Star follows less often pays
-/// the test on each run and gains little: with `LdaConstant`, `LdaZero`, `LdaSmi`, `LdaNull`
-/// and `LdaFalse` too (36% to 60% of them before a Star) the Mac a64 count of
-/// octane-typescript was 0.16% higher.
-///
-/// - **Same result.** The Star handler does the same: the same operand decode
-///   (`kind::RegOut`), the same store, the next instruction 2 bytes after the Star. A Star
-///   whose register is the producer's input (`GetNamedProperty r1; Star r1`) stores after the
-///   producer read it, as the two handlers do. A Star that is also a jump target runs in the
-///   Star handler when a jump reaches it; only the fall-through from the producer fuses.
-/// - **The debugger off-switch.** The test reads the opcode byte at `st.next`, not a table of
-///   static pairs. A breakpoint patches the byte at its pc in the function's Interp debug copy
-///   (H24-Q3), so a producer before a breakpoint at a Star sees no Star byte and does not
-///   fuse; the break then runs at the Star pc. A throw never has the Star pc as its position:
-///   a Star does not throw, and a producer that throws takes no lookahead.
-/// - **No GC point.** It allocates nothing and calls nothing; the stored value is the
-///   accumulator, which the producer already holds.
-/// - A `Wide` or `ExtraWide` Star (a prefix byte at `st.next`) does not fuse.
-///
-/// The pc forms (asm read, M9-P0; [`lookahead_pc`]). aarch64: `st.next` goes through an empty
-/// `asm!` block before the test, so LLVM keeps it in `x1` (else it copied it to another
-/// register and back: 1 or 2 more instructions on each path; Mac a64 octane-typescript count
-/// +0.93% with the copies, +0.46% without them). x86-64 with `ONE_PC`: through
-/// [`dsl::dispatch_pc`] before the test and after it, so LLVM keeps the next pc in one
-/// register and reads the opcode again at the dispatch. The producers whose success exit is a
-/// join of several paths take it (`GetNamedProperty`: the IC hit paths; the context-slot
-/// loads: the context walk); without it LLVM kept the old pc, the new pc and the loaded opcode
-/// byte live into the join (`GetNamedProperty` 2 more instructions on each path, the
-/// context-slot loads 1). x86-64 without `ONE_PC` (`LdaCurrentContext`): LLVM gives the fused
-/// and the other path a dispatch jump each, as V8 does.
-#[inline(always)]
-pub(crate) fn star_lookahead<const ONE_PC: bool>(st: &mut St<'_>) {
-    #[cfg(test)]
-    if star_count::OFF.with(|c| c.get()) {
-        return;
-    }
-    st.next = lookahead_pc::<ONE_PC>(st.next);
-    // SAFETY: `st.next` is the start of the next instruction of verified code (`St` contract):
-    // its opcode byte is readable.
-    if unsafe { *st.next } == Opcode::Star as u8 {
-        // SAFETY: verified code: a one-byte-scale `Star` is followed by its `RegOut` operand,
-        // a register of the live frame `fp`, and the instruction after it (a verified function
-        // never runs off its end).
-        let (len, (dst,)) = unsafe { dsl::decode!(dsl::S1, st.next; dst: RegOut) };
-        let v = st.acc;
-        st.set_reg(dst, v);
-        // SAFETY: as above: the next instruction starts `len` bytes after the Star.
-        st.next = unsafe { st.next.add(len) };
-        #[cfg(test)]
-        star_count::FUSED.with(|c| c.set(c.get() + 1));
-    }
-    if ONE_PC {
-        st.next = dsl::dispatch_pc(st.next);
-    }
-}
-
-/// The pc that [`star_lookahead`] tests, as the target wants it (see there). aarch64: through
-/// an empty `asm!` block. x86-64: [`dsl::dispatch_pc`] with `ONE_PC`, else the same value.
-/// Other targets: the same value.
-#[inline(always)]
-fn lookahead_pc<const ONE_PC: bool>(next: *const u8) -> *const u8 {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let mut a = next.expose_provenance();
-        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
-        // change. `a` comes back as it went in.
-        unsafe {
-            core::arch::asm!(
-                "/* {a} */",
-                a = inout(reg) a,
-                options(pure, nomem, nostack, preserves_flags)
-            );
-        }
-        core::ptr::with_exposed_provenance(a)
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        if ONE_PC { dsl::dispatch_pc(next) } else { next }
-    }
-}
-
-/// `Flow::Next` after the Star lookahead ([`star_lookahead`], `ONE_PC`): the success exit of
-/// `GetNamedProperty` and the context-slot loads.
-#[inline(always)]
-pub(crate) fn star_next(st: &mut St<'_>) -> Flow {
-    star_lookahead::<true>(st);
-    Flow::Next
-}
-
-/// `Done::Next` after the Star lookahead ([`star_lookahead`], plain form): the exit of
-/// `LdaCurrentContext`.
-#[inline(always)]
-pub(crate) fn star_done(st: &mut St<'_>) -> Done {
-    star_lookahead::<false>(st);
-    Done::Next
-}
-
-/// Test builds only: the fused Stars on this thread ([`star_lookahead`]) and a switch that
-/// turns the lookahead off on this thread, so a test runs the same code with and without it.
-#[cfg(test)]
-pub(crate) mod star_count {
-    use core::cell::Cell;
-    thread_local! {
-        /// The Stars that a producer ran ([`super::star_lookahead`]).
-        pub(crate) static FUSED: Cell<u64> = const { Cell::new(0) };
-        /// True: no lookahead (every Star runs in its own handler).
-        pub(crate) static OFF: Cell<bool> = const { Cell::new(false) };
-    }
-}
 
 #[cfg(test)]
 mod tests {
