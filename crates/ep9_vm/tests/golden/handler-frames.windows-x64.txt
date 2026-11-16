@@ -27,7 +27,7 @@ ics GetSuperConstructor 0
 ics SetKeyedProperty 6
 ics SetNamedProperty 6
 ics StaContextSlot 1
-ics StaCurrentContextSlot 1
+ics StaCurrentContextSlot 0
 ics StaGlobal 4
 ics TestInstanceOf 4
 sib BadOpcode 0
@@ -51,6 +51,6 @@ sib GetSuperConstructor 0
 sib SetKeyedProperty 6
 sib SetNamedProperty 6
 sib StaContextSlot 1
-sib StaCurrentContextSlot 1
+sib StaCurrentContextSlot 0
 sib StaGlobal 4
 sib TestInstanceOf 4

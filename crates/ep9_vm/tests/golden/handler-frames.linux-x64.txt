@@ -23,8 +23,8 @@ ics CreateObjectLiteral 6
 ics DefineNamedOwnProperty 6
 ics SetKeyedProperty 6
 ics SetNamedProperty 6
-ics StaContextSlot 4
-ics StaCurrentContextSlot 4
+ics StaContextSlot 1
+ics StaCurrentContextSlot 0
 ics StaGlobal 5
 ics TestInstanceOf 4
 sib BadOpcode 0
@@ -44,7 +44,7 @@ sib CreateObjectLiteral 6
 sib DefineNamedOwnProperty 6
 sib SetKeyedProperty 6
 sib SetNamedProperty 6
-sib StaContextSlot 4
-sib StaCurrentContextSlot 4
+sib StaContextSlot 1
+sib StaCurrentContextSlot 0
 sib StaGlobal 5
 sib TestInstanceOf 4
