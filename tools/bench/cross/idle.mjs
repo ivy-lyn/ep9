@@ -4,24 +4,42 @@
 //
 //   node tools/bench/cross/idle.mjs [--minutes 10] [--every-s 10]
 //
-// It samples the 1-minute load, and lists build or benchmark processes (cargo, rustc, cc, ld,
-// ep9, qjs, d8, bs, valgrind) at each sample. A sample with such a process is busy: the tool then
+// It samples the load of the host's load source (lib/host.mjs: the 1-minute load; on Windows a
+// 60-s typeperf reading), and lists build or benchmark processes (cargo, rustc, cc, ld, ep9, qjs,
+// d8, bs, valgrind; `ps` on Linux and macOS, `tasklist` on Windows) at each sample. A sample with such a process is busy: the tool then
 // prints no baseline and exits 1. Run it with nothing else running; it cannot see other load.
-// On success it prints the line to put into the host file.
+// On success it prints the lines to put into the host file (the baseline and its load source).
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleepMs } from "node:timers/promises";
 
-import { load1 } from "../lib/host.mjs";
+import { load1, loadSource } from "../lib/host.mjs";
 import { median } from "../lib/stats.mjs";
 
 const BUSY = /^(cargo|rustc|cc|clang|ld|ld64|lld|ep9|ep9-bench|qjs|d8|bs|valgrind|v8-[\d.]+)$/;
 
-export function busyProcesses() {
-  if (process.platform === "win32") return [];
-  const r = spawnSync("ps", ["-Ao", "comm"], { encoding: "utf8" });
+/**
+ * The image names of a `tasklist /fo csv /nh` listing (one `"<image>","<pid>",...` line per
+ * process), without the `.exe` suffix.
+ */
+export function tasklistNames(text) {
+  return (text ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.match(/^"([^"]*)"/)?.[1])
+    .filter(Boolean)
+    .map((n) => n.replace(/\.exe$/i, ""));
+}
+
+/** The running build or benchmark processes (`run` is injectable for tests). */
+export function busyProcesses(platform = process.platform, run = spawnSync) {
+  if (platform === "win32") {
+    const r = run("tasklist", ["/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    // Windows image names are not case-sensitive.
+    return tasklistNames(r.stdout).map((n) => n.toLowerCase()).filter((n) => BUSY.test(n));
+  }
+  const r = run("ps", ["-Ao", "comm"], { encoding: "utf8" });
   return (r.stdout || "")
     .split("\n")
     .slice(1)
@@ -59,6 +77,7 @@ async function main() {
     process.exit(1);
   }
   console.log(`idle_baseline_load1 = ${med}`);
+  console.log(`load_source = "${loadSource()}"`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

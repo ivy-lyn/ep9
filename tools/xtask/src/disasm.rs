@@ -10,7 +10,7 @@
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
 //! | match loop (`--match-loop`) | For SP-Dispatch, whose 20-opcode x86-64 match loop LLVM threads (`ep9loop__<expansion>__<fn>`). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only. T0 (`ep9_vm`) releases sibling calls on every target (H15 ADR, 2026-10-21), so for T0 the loop line is a report, not a gate. |
-//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. The hot handlers (every handler whose name does not end in `_cold`) that build a frame on entry (the first instruction saves a register or grows the stack), with the registers each one saves on entry (the leading prologue, then each callee-saved register that the entry code saves before its first conditional branch, call, return or tail jump, with an unconditional jump inside the handler followed; a store of a callee-saved register in a form that the check does not know fails it; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). |
+//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. Every hot handler (every handler whose name does not end in `_cold`) is scanned. The ones that build a frame on entry (the first instruction saves a register or grows the stack) or save a callee-saved register on entry (a red-zone `mov` save too; M9-P1-WPRE-3), with the callee-saved registers each one saves on entry (the leading prologue, where a push of another register, a stack alignment push, counts 0, then each callee-saved register that the entry code saves before its first conditional branch, call, return or tail jump, with an unconditional jump inside the handler followed; a store of a callee-saved register in a form that the check does not know fails it; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). Report only: an `any-path` line per hot handler that stores a callee-saved register on any path of its block (a shrink-wrapped save too; `any_path_saves`). |
 //! | Mach-O data in code | x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE). The check drops what `llvm-objdump -d` decodes from those bytes, so table data never counts as jumps, calls, returns or stack accesses, and decodes the code after each table again from the table end, so a decode that ran across the table end cannot hide an instruction there. |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
@@ -1526,8 +1526,9 @@ fn check_loops(
 
 /// The comment head of a frame golden file (`--frames GOLDEN --bless` writes it).
 const FRAMES_HEAD: &str = "\
-# The hot ep9_vm handlers (name not ending in `_cold`) that build a frame on entry, and the
-# registers each one saves on entry: one `<expansion> <handler> <saves>` row per handler.
+# The hot ep9_vm handlers (name not ending in `_cold`) that build a frame or save a callee-saved
+# register on entry, and the callee-saved registers each one saves on entry: one
+# `<expansion> <handler> <saves>` row per handler.
 # Checked by `cargo xtask disasm-check --frames <this file>` in the CI disasm job (plan rule 81:
 # no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). A new row,
 # a lost row or a changed count fails. A change that is meant updates this file in the same PR:
@@ -1544,9 +1545,11 @@ struct FrameRow {
 }
 
 /// Registers that one prologue instruction saves, or `None` if the instruction is not part of
-/// a prologue. x86-64: a `push` saves 1; `sub ..., %rsp` and setting `%rbp` from `%rsp` save 0
-/// (the handler ABI is sysv64 on every OS, `dsl::handler!`, so no xmm register is callee-saved,
-/// also on Win64). aarch64: an `stp` or `str` of callee-saved registers (x19-x30, d8-d15) to
+/// a prologue. x86-64: a `push` of a callee-saved register ([`callee_saved`]: rbx, rbp, r12-r15)
+/// saves 1, a `push` of any other register (a stack alignment push, `push %rax`) saves 0
+/// (M9-P1-WPRE-3, route MC-w42-4); `sub ..., %rsp` and setting `%rbp` from `%rsp` save 0 (the
+/// handler ABI is sysv64 on every OS, `dsl::handler!`, so no xmm register is callee-saved, also
+/// on Win64). aarch64: an `stp` or `str` of callee-saved registers (x19-x30, d8-d15) to
 /// `[sp ...]` saves 1 per register; `sub sp, sp`, `pacibsp`/`paciasp` and setting x29 from sp
 /// save 0.
 fn prologue_saves(arch: Arch, text: &str) -> Option<usize> {
@@ -1556,7 +1559,9 @@ fn prologue_saves(arch: Arch, text: &str) -> Option<usize> {
     match arch {
         Arch::X64 => {
             if m.starts_with("push") {
-                Some(1)
+                Some(usize::from(
+                    callee_saved(arch, ops).is_some_and(|(_, full)| full),
+                ))
             } else if m.starts_with("sub") && ops.ends_with("%rsp")
                 || m.starts_with("mov") && ops == "%rsp, %rbp"
                 || m.starts_with("lea") && ops.ends_with("(%rsp), %rbp")
@@ -1788,7 +1793,8 @@ fn branch_addr(insn: &Insn) -> Option<u64> {
 ///
 /// 1. The leading prologue: from the first instruction, each instruction that
 ///    [`prologue_saves`] accepts adds its count, up to the first instruction that it does not
-///    accept (an argument spill, a load, a move). A `push` counts 1 here whatever it pushes.
+///    accept (an argument spill, a load, a move). A `push` counts 1 only for a callee-saved
+///    register; a stack alignment push (`push %rax`) counts 0 (M9-P1-WPRE-3).
 /// 2. The rest of the entry code, up to the first conditional branch, call, return, trap,
 ///    indirect jump or jump out of the handler (a tail jump; [`classify`]). An unconditional
 ///    jump to an address in `b` is followed, once for each target, and the scan goes on there
@@ -1896,8 +1902,12 @@ fn entry_saves(arch: Arch, b: &Block) -> Result<usize, String> {
     Ok(saves)
 }
 
-/// The hot handlers (name not ending in `_cold`) that build a frame on entry (the frame list
-/// of the default check, cold handlers left out), with their entry saves, sorted.
+/// The hot handlers (name not ending in `_cold`) that build a frame on entry or save a
+/// callee-saved register on entry, with their entry saves, sorted. Every hot handler is scanned
+/// ([`entry_saves`]; an unknown save form in any of them is an error). A row is made when the
+/// first instruction builds a frame (the frame list of the default check, cold handlers left
+/// out), or when the entry code saves a callee-saved register: a red-zone `mov` save as the
+/// first instruction makes a row too (M9-P1-WPRE-3, route FRAME-GOLDEN-MOVFIRST).
 fn frame_rows(arch: Arch, handlers: &[Handler], blocks: &[Block]) -> Result<Vec<FrameRow>, String> {
     let mut rows = BTreeMap::new();
     for h in handlers {
@@ -1907,12 +1917,13 @@ fn frame_rows(arch: Arch, handlers: &[Handler], blocks: &[Block]) -> Result<Vec<
         }
         let b = block_of(handlers, blocks, h)
             .ok_or_else(|| format!("{}: not found in the disassembly", h.name))?;
-        if b.insns
-            .first()
-            .is_some_and(|i| is_frame_setup(arch, &i.text))
+        let saves =
+            entry_saves(arch, b).map_err(|i| format!("unknown save form: {} {i}", h.name))?;
+        if saves > 0
+            || b.insns
+                .first()
+                .is_some_and(|i| is_frame_setup(arch, &i.text))
         {
-            let saves =
-                entry_saves(arch, b).map_err(|i| format!("unknown save form: {} {i}", h.name))?;
             rows.insert((h.exp.clone(), op.to_string()), saves);
         }
     }
@@ -2031,6 +2042,7 @@ fn check_frames(
     for r in &rows {
         println!("   frame {} {} {}", r.exp, r.op, r.saves);
     }
+    print_any_path(l.arch, &l.handlers, &l.blocks, &rows)?;
     if bless {
         fs::write(golden, frames_text(target, &rows))
             .map_err(|e| format!("{}: {e}", golden.display()))?;
@@ -2057,6 +2069,88 @@ fn check_frames(
         if p.is_empty() { "PASS" } else { "FAIL" }
     );
     Ok(p.is_empty())
+}
+
+/// The callee-saved registers of the handler ABI ([`callee_saved`]) that handler block `b` stores
+/// to the stack on any path, each once: x86-64 a `push`, or a `mov`/`movq` of the full register
+/// to memory based on `%rsp` or `%rbp`; aarch64 an `stp`, `str` or `stur` of x19-x30 or d8-d15
+/// to memory based on `sp` or x29. Report only (M9-P1-WPRE-3 (4), route MC-w42-4): a save that
+/// LLVM shrink-wraps past the first branch is not an entry save, but a path that runs it still
+/// pays for it. An upper bound: a later spill of a register that is saved already adds nothing,
+/// and the code of a helper that a tail handler jumps to is not read.
+fn any_path_saves(arch: Arch, b: &Block) -> usize {
+    let mut seen = BTreeSet::new();
+    for i in &b.insns {
+        let (m, ops) = mnemonic_ops(&i.text);
+        let srcs: Vec<&str> = match arch {
+            Arch::X64 if m.starts_with("push") => vec![ops.as_str()],
+            Arch::X64 => match store_of(arch, &m, &ops) {
+                Some(s)
+                    if matches!(m.as_str(), "mov" | "movq") && matches!(s.base, "rsp" | "rbp") =>
+                {
+                    s.srcs
+                }
+                _ => Vec::new(),
+            },
+            Arch::A64 => match store_of(arch, &m, &ops) {
+                Some(s)
+                    if matches!(m.as_str(), "stp" | "str" | "stur")
+                        && matches!(s.base, "sp" | "x29" | "fp") =>
+                {
+                    s.srcs
+                }
+                _ => Vec::new(),
+            },
+        };
+        for r in srcs {
+            if let Some((reg, true)) = callee_saved(arch, r) {
+                seen.insert(reg);
+            }
+        }
+    }
+    seen.len()
+}
+
+/// The report-only `any-path` lines of the frame check: each hot handler whose block stores a
+/// callee-saved register on any path ([`any_path_saves`]), sorted; a handler with no frame row
+/// is marked, so a save that LLVM moved past the entry is visible in the CI log. Not part of the
+/// golden and of the verdict.
+fn print_any_path(
+    arch: Arch,
+    handlers: &[Handler],
+    blocks: &[Block],
+    rows: &[FrameRow],
+) -> Result<(), String> {
+    let mut lines = BTreeMap::new();
+    for h in handlers {
+        let op = h.name.rsplit("__").next().unwrap_or(&h.name);
+        if op.ends_with("_cold") {
+            continue;
+        }
+        let b = block_of(handlers, blocks, h)
+            .ok_or_else(|| format!("{}: not found in the disassembly", h.name))?;
+        let n = any_path_saves(arch, b);
+        if n > 0 {
+            let row = rows.iter().any(|r| r.exp == h.exp && r.op == op);
+            lines.insert((h.exp.clone(), op.to_string()), (n, row));
+        }
+    }
+    println!(
+        "   any-path (report only): {} hot handlers store a callee-saved register on some path \
+         (<expansion> <handler> <registers>):",
+        lines.len()
+    );
+    for ((exp, op), (n, row)) in &lines {
+        println!(
+            "   any-path {exp} {op} {n}{}",
+            if *row {
+                ""
+            } else {
+                " (no frame row: no save on entry)"
+            }
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2624,7 +2718,9 @@ Section
         let rows = fixture_rows("base.txt");
         // The cold handler builds a frame too, but only hot handlers are rows.
         let names: Vec<(&str, usize)> = rows.iter().map(|r| (r.op.as_str(), r.saves)).collect();
-        assert_eq!(names, [("BadOpcode", 1), ("CallProperty0", 2)]);
+        // BadOpcode's only push is `pushq %rax`, a stack alignment push: a row with 0 saves
+        // (M9-P1-WPRE-3).
+        assert_eq!(names, [("BadOpcode", 0), ("CallProperty0", 2)]);
         let golden = frames_fixture("golden.txt");
         assert_eq!(
             frames_verdict(FRAMES_TARGET, &golden, &rows).unwrap(),
@@ -2954,5 +3050,88 @@ Section
             ),
             Err("movq %r12, -0x8(%rbp)".to_string())
         );
+    }
+
+    fn row(op: &str, saves: usize) -> FrameRow {
+        FrameRow {
+            exp: "sib".to_string(),
+            op: op.to_string(),
+            saves,
+        }
+    }
+
+    /// M9-P1-WPRE-3 (route FRAME-GOLDEN-MOVFIRST, Codex M9-P0 r3): every hot handler is
+    /// scanned, so a red-zone `mov` save as the first instruction makes a row, and the golden
+    /// of the build before it fails the build after it (before, the row needed a first push or
+    /// sub, and the new save passed the golden).
+    #[test]
+    fn frames_mov_first_save_makes_a_row() {
+        let (_, _, before) = dump_rows("movfirst-x64-base.txt");
+        assert!(before.is_empty());
+        let golden = frames_text(FRAMES_TARGET, &before);
+        let (_, _, after) = dump_rows("movfirst-x64-head.txt");
+        assert_eq!(after, [row("RedZone", 1)]);
+        assert_eq!(
+            frames_verdict(FRAMES_TARGET, &golden, &after).unwrap(),
+            ["new frame: sib RedZone (1 saves on entry)"]
+        );
+    }
+
+    /// M9-P1-WPRE-3 (route MC-w42-4): a save counts only a callee-saved register, also in the
+    /// leading prologue. A stack alignment push (`pushq %rax`, the X86-KEEPCALL form) adds 0,
+    /// so a build that trades `subq $0x10, %rsp` for it keeps the golden (before, it read as
+    /// "more saves").
+    #[test]
+    fn frames_alignment_push_is_not_a_save() {
+        let (_, _, before) = dump_rows("alignpush-x64-base.txt");
+        let (_, _, after) = dump_rows("alignpush-x64-head.txt");
+        assert_eq!(before, [row("StaAlign", 1)]);
+        assert_eq!(after, [row("StaAlign", 1)]);
+        let golden = frames_text(FRAMES_TARGET, &before);
+        assert!(
+            frames_verdict(FRAMES_TARGET, &golden, &after)
+                .unwrap()
+                .is_empty()
+        );
+        let x64 = |lines: &[&str]| entry_saves(Arch::X64, &block("h", lines));
+        // The linux-x64 StaContextSlot prologue at m9-p0: 4 saves, then the alignment push.
+        assert_eq!(
+            x64(&[
+                "pushq\t%r15",
+                "pushq\t%r14",
+                "pushq\t%r12",
+                "pushq\t%rbx",
+                "pushq\t%rax",
+                "movq\t%rdi, %r9",
+            ]),
+            Ok(4)
+        );
+        assert_eq!(x64(&["pushq\t%rax", "callq\t0x0"]), Ok(0));
+        assert_eq!(x64(&["pushq\t%rcx", "pushq\t%rbx"]), Ok(1));
+    }
+
+    /// M9-P1-WPRE-3 (4): the report-only any-path count sees a save that LLVM shrink-wraps past
+    /// the first branch (no entry save, so no row), and counts each callee-saved register once.
+    #[test]
+    fn any_path_counts_shrink_wrapped_saves() {
+        let (format, blocks) = parse_disasm(&frames_fixture("shrinkwrap-a64.txt"));
+        let (arch, _) = arch_of(&format).unwrap();
+        assert_eq!(entry_saves(arch, &blocks[0]), Ok(0));
+        assert_eq!(any_path_saves(arch, &blocks[0]), 4);
+        let (_, _, rows) = dump_rows("shrinkwrap-a64.txt");
+        assert!(rows.is_empty());
+        let x = block(
+            "h",
+            &[
+                "pushq\t%rax",
+                "testq\t%rdi, %rdi",
+                "je\t0x10",
+                "pushq\t%rbx",
+                "movq\t%r12, 0x8(%rsp)",
+                "movq\t%rbx, 0x10(%rsp)",
+                "movq\t%r13, 0x8(%rdi)",
+            ],
+        );
+        assert_eq!(any_path_saves(Arch::X64, &x), 2);
     }
 }

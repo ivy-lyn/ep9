@@ -1,0 +1,18 @@
+frames.o:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000000000 <ep9h__sib__tail__StaShrink>:
+       0:      	ldrb	w8, [x1, #0x1]
+       4:      	cbz	w8, 0x14 <ep9h__sib__tail__StaShrink+0x14>
+       8:      	ldrb	w16, [x1, #0x2]
+       c:      	ldr	x16, [x0, x16, lsl #3]
+      10:      	br	x16
+      14:      	stp	x20, x19, [sp, #-0x20]!
+      18:      	stp	x29, x30, [sp, #0x10]
+      1c:      	bl	0x1c <ep9h__sib__tail__StaShrink+0x1c>
+      20:      	ldp	x29, x30, [sp, #0x10]
+      24:      	ldp	x20, x19, [sp], #0x20
+      28:      	ldrb	w16, [x1, #0x2]
+      2c:      	ldr	x16, [x0, x16, lsl #3]
+      30:      	br	x16
