@@ -37,7 +37,8 @@
 // handle after the process exits (WIN_PEAK_SCRIPT; plan v14 section 4.1 (5)). The engine's
 // stdout and stderr pass through. EP9_MEM_TIME names another program of the same form (tests use
 // a fake; on Windows another PowerShell). No other wrapper: valgrind or perf would add their own
-// memory. On Windows a timeout kills the wrapper, not the engine (no process group).
+// memory. On Windows (no process groups) a timeout or an interrupt ends the whole process tree
+// of the wrapper, the engine too, with `taskkill /T /F` (winTreeKill; M9-P1 Codex r1 F2).
 //
 // Order. A round runs every workload on every engine once. The workload order rotates by one per
 // round, and per workload the engine order rotates too (run.mjs `schedule`), so no engine always
@@ -264,16 +265,18 @@ export function parseGnuM(text) {
   return lines.length ? Number(lines[lines.length - 1]) * 1024 : null;
 }
 
-// The process groups of runGroup that are still live. A group is not in the terminal's
-// foreground group, so Ctrl-C (or a SIGTERM or SIGHUP to the runner) does not reach it: while a
-// group is live, a handler kills every live group, then raises the signal again (M7-P0 Codex r2
-// C2-4). The handlers go when no group is live, so importers keep the default behaviour.
-const liveGroups = new Set();
+// The process groups (POSIX) and process trees (Windows) of runGroup that are still live: pid ->
+// the function that kills the group or tree. A group is not in the terminal's foreground group,
+// so Ctrl-C (or a SIGTERM or SIGHUP to the runner) does not reach it, and on Windows the engine
+// is a child of the PowerShell wrapper: while one is live, a handler kills every live one, then
+// raises the signal again (M7-P0 Codex r2 C2-4; M9-P1 Codex r1 F2). The handlers go when none
+// is live, so importers keep the default behaviour.
+const liveGroups = new Map();
 const GROUP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 function killLiveGroups() {
-  for (const pid of liveGroups) {
+  for (const kill of liveGroups.values()) {
     try {
-      process.kill(-pid, "SIGKILL");
+      kill();
     } catch {}
   }
   liveGroups.clear();
@@ -297,29 +300,47 @@ function unhookGroups() {
   process.off("exit", killLiveGroups);
 }
 
+/** The Windows command that ends `pid` and every process it started (the engine under the wrapper). */
+export function winTreeKill(pid) {
+  return ["taskkill", ["/PID", String(pid), "/T", "/F"]];
+}
+
 /**
- * Runs `program args` with its own process group (POSIX): after `timeoutS` the whole group gets
- * SIGKILL, so the engine under the RSS tool stops too, not only the tool (M7-P0 Codex r1
- * BENCH10-2); a SIGINT, SIGTERM or SIGHUP of the runner kills the group too (M7-P0 Codex r2
- * C2-4). Resolves to { status, signal, error, stdout, stderr } when the process closes.
+ * Runs `program args` and kills it with everything it started when `timeoutS` ends or the
+ * runner gets a SIGINT, SIGTERM or SIGHUP. POSIX: the process has its own process group, and
+ * the whole group gets SIGKILL, so the engine under the RSS tool stops too, not only the tool
+ * (M7-P0 Codex r1 BENCH10-2, r2 C2-4). Windows: `taskkill /T /F` on the wrapper's pid ends its
+ * tree, the engine too (winTreeKill; if taskkill fails, the wrapper alone is killed; M9-P1
+ * Codex r1 F2). Resolves to { status, signal, error, stdout, stderr } when the process closes.
+ * `deps` (platform, spawn, spawnSync) is for tests.
  */
-export function runGroup(program, args, timeoutS) {
+export function runGroup(program, args, timeoutS, deps = {}) {
+  const platform = deps.platform ?? process.platform;
+  const spawnFn = deps.spawn ?? spawn;
+  const spawnSyncFn = deps.spawnSync ?? spawnSync;
   return new Promise((resolve) => {
-    const group = process.platform !== "win32";
+    const group = platform !== "win32";
     // Hook before spawn: the child exists before spawn returns, and a signal handler (a JS
     // callback) runs only after this synchronous part, so it sees the pid (M7-P0 Codex r3 C3-2).
-    if (group && !liveGroups.size) hookGroups();
+    if (!liveGroups.size) hookGroups();
     let child;
     try {
-      child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
+      child = spawnFn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
     } catch (e) {
-      if (group && !liveGroups.size) unhookGroups();
+      if (!liveGroups.size) unhookGroups();
       throw e;
     }
-    if (group) {
-      if (child.pid !== undefined) liveGroups.add(child.pid);
-      else if (!liveGroups.size) unhookGroups();
-    }
+    const kill = () => {
+      if (group) {
+        process.kill(-child.pid, "SIGKILL");
+        return;
+      }
+      const [cmd, cmdArgs] = winTreeKill(child.pid);
+      const r = spawnSyncFn(cmd, cmdArgs, { stdio: "ignore", windowsHide: true });
+      if (r.error || r.status !== 0) child.kill("SIGKILL");
+    };
+    if (child.pid !== undefined) liveGroups.set(child.pid, kill);
+    else if (!liveGroups.size) unhookGroups();
     let stdout = "";
     let stderr = "";
     let error = null;
@@ -330,13 +351,12 @@ export function runGroup(program, args, timeoutS) {
       done = true;
       clearTimeout(timer);
       if (liveGroups.delete(child.pid) && !liveGroups.size) unhookGroups();
-      resolve({ status, signal, error: timedOut ? `timed out after ${timeoutS} s (the process group was killed)` : error, stdout, stderr });
+      resolve({ status, signal, error: timedOut ? `timed out after ${timeoutS} s (the process ${group ? "group" : "tree"} was killed)` : error, stdout, stderr });
     };
     const timer = setTimeout(() => {
       timedOut = true;
       try {
-        if (group) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
+        kill();
       } catch {}
     }, timeoutS * 1000);
     child.stdout.setEncoding("utf8").on("data", (d) => (stdout += d));
