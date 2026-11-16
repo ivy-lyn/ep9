@@ -19,8 +19,9 @@
 //!        check_early_errors("/<text>/<flags>") as a sloppy script
 //!        Ok -> valid; Syntax -> invalid; Range (the depth caps) -> no check
 //!        valid != RX1 valid -> panic, except the known front-end difference below (front
-//!        end valid, RX1 InvalidCaptureGroupName, a group name has a listed code point; a
-//!        group-name code point that the two take differently outside the list is a crash)
+//!        end valid, RX1 InvalidCaptureGroupName at a group name that has a listed code
+//!        point; a group-name code point that the two take differently outside the list is a
+//!        crash)
 //!   2. RX0: ep9_regexp::Rx0::compile(text, flags)
 //!        valid != RX1 valid -> panic, except the known RX0 differences below
 //!        both valid: exec on the pattern text as the subject, at most POLLS polls;
@@ -196,20 +197,22 @@
 //!   RX1 (12,823 in 27 ranges also ID_Start; U+3D000..U+3FC3F is 11,328 of them), and 0 the
 //!   other way. These 38 ranges are a reviewed list (`KNOWN_ID_DIFFERENCE`). Check 1 compares
 //!   validity first. It accepts a difference only when the front end takes the text, RX1
-//!   says InvalidCaptureGroupName, and a group name of the text (`(?<..>`, and `\k<..>` with
-//!   `u`, `v` or a named group) has a code point that the two parsers take differently
-//!   (`id_differs`; the names are decoded: raw, `\u{..}` with hex digits only, so
-//!   `\u{+558}` is no code point, `\uHHHH` and a `\uHHHH\uHHHH` surrogate pair). Such a
-//!   code point in a literal or elsewhere outside a group name gives no skip (M9-P1 Codex r2
-//!   F2). A group-name code point that they take differently and that is not in the list is a
-//!   crash ("new front-end/RX1 identifier difference at U+XXXX"): a new find, for example
-//!   after an oxc or RX1 update. Check 2 does not compare an RX0 refusal with `v` (the RX0 row
-//!   above); this skip needs an RX1 refusal, so check 1 still compares every text that RX1
-//!   takes with `v`. At start (`fuzz_target!` init), the target probes a sample of the list (the
-//!   first, middle and last code point of each range must differ, the code point before and
-//!   after each range must not), so a stale list stops the run. The move of RX1 to Unicode 18
-//!   is in the M2-exit G8 batch; that change must make the list again (the start check stops
-//!   the run until it does).
+//!   says InvalidCaptureGroupName, the RX1 error position (a UTF-16 unit index) is in a group
+//!   name of the text (`(?<..>`, and `\k<..>` with `u`, `v` or a named group; from the unit
+//!   after `<` to the `>` or the text end), and that name has a code point that the two
+//!   parsers take differently (`id_differs`; the name is decoded: raw, `\u{..}` with hex
+//!   digits only, so `\u{+558}` is no code point, `\uHHHH` and a `\uHHHH\uHHHH` surrogate
+//!   pair). Such a code point in a literal or elsewhere outside a group name gives no skip
+//!   (M9-P1 Codex r2 F2), and an RX1 InvalidCaptureGroupName at another name gives no skip
+//!   either (M9-P1 fixer r5). A group-name code point that they take differently and that is
+//!   not in the list is a crash ("new front-end/RX1 identifier difference at U+XXXX"): a new
+//!   find, for example after an oxc or RX1 update. Check 2 does not compare an RX0 refusal
+//!   with `v` (the RX0 row above); this skip needs an RX1 refusal, so check 1 still compares
+//!   every text that RX1 takes with `v`. At start (`fuzz_target!` init), the target probes a
+//!   sample of the list (the first, middle and last code point of each range must differ, the
+//!   code point before and after each range must not), so a stale list stops the run. The
+//!   move of RX1 to Unicode 18 is in the M2-exit G8 batch; that change must make the list
+//!   again (the start check stops the run until it does).
 #![no_main]
 
 use std::cell::RefCell;
@@ -429,23 +432,29 @@ fn is_literal_body(text: &str) -> bool {
     true
 }
 
-/// True if a group name of the text has a code point that [`id_differs`]. The names are
-/// those of [`group_names`]: `(?<..>`, and `\k<..>` with `u` or `v` or when the text has a
-/// group name. Each name is decoded with [`name_char`].
-fn group_name_has_id_difference(units: &[u16], flags: Flags) -> bool {
+/// True if the group name of the text that holds the unit `pos` (the RX1 error position, a
+/// UTF-16 unit index; `start <= pos <= end`, so the `>` and the text end count; the names do
+/// not overlap) has a code point that [`id_differs`]. The names are those of
+/// [`group_names`]: `(?<..>`, and `\k<..>` with `u` or `v` or when the text has a group name.
+/// The name is decoded with [`name_char`].
+fn group_name_has_id_difference(units: &[u16], flags: Flags, pos: usize) -> bool {
     let with_k = flags.either_unicode() || !group_names(units, false).is_empty();
-    group_names(units, with_k).iter().any(|&(start, end)| {
-        let name = &units[start..end];
-        let mut i = 0;
-        while i < name.len() {
-            let (c, len) = name_char(name, i);
-            if c.is_some_and(id_differs) {
-                return true;
-            }
-            i += len;
+    let Some((start, end)) = group_names(units, with_k)
+        .into_iter()
+        .find(|&(start, end)| start <= pos && pos <= end)
+    else {
+        return false;
+    };
+    let name = &units[start..end];
+    let mut i = 0;
+    while i < name.len() {
+        let (c, len) = name_char(name, i);
+        if c.is_some_and(id_differs) {
+            return true;
         }
-        false
-    })
+        i += len;
+    }
+    false
 }
 
 /// The code point at `name[i]` of a group name, and its length in units: raw (a surrogate
@@ -487,9 +496,9 @@ fn name_char(name: &[u16], i: usize) -> (Option<u32>, usize) {
 }
 
 /// Check 1: the front end and RX1 agree on "valid or not". The one known difference (the
-/// module doc): the front end takes the text, RX1 says InvalidCaptureGroupName, and a group
-/// name has a code point that [`id_differs`] (a difference outside [`KNOWN_ID_DIFFERENCE`]
-/// panics there).
+/// module doc): the front end takes the text, RX1 says InvalidCaptureGroupName, and the group
+/// name at the RX1 error position has a code point that [`id_differs`] (a difference outside
+/// [`KNOWN_ID_DIFFERENCE`] panics there).
 fn check_front_end(text: &str, units: &[u16], flags: Flags, rx1_error: Option<&ParseError>) {
     if !is_literal_body(text) {
         return;
@@ -505,9 +514,10 @@ fn check_front_end(text: &str, units: &[u16], flags: Flags, rx1_error: Option<&P
     if rx1_valid == oxc_valid {
         return;
     }
-    if rx1_error.is_some_and(|e| e.error == Error::InvalidCaptureGroupName)
-        && group_name_has_id_difference(units, flags)
-    {
+    if rx1_error.is_some_and(|e| {
+        e.error == Error::InvalidCaptureGroupName
+            && group_name_has_id_difference(units, flags, e.pos)
+    }) {
         return;
     }
     panic!("RX1 and the front end disagree: rx1 valid {rx1_valid}, oxc valid {oxc_valid}");
