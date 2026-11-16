@@ -24,7 +24,9 @@
 //! mutation would stop at step 2. Every other header field stays as the input has it, so the
 //! target pair, the versions and the CPU bits are fuzzed: `fuzz/seeds/unit_loader` holds each
 //! seed for aarch64 macOS, x86-64 Linux and aarch64 Linux. A seed whose versions are older than
-//! this build stops at step 3 or 4 (rewrite the seeds when a contract version changes).
+//! this build stops at step 3 or 4: the ep9_unit test `fuzz_seeds` fails then, and
+//! `EP9_BLESS=1 cargo test -p ep9_unit --test fuzz_seeds` writes the seeds again (route
+//! MC-w41-8).
 //!
 //! The safe method maps no input byte as code and installs nothing (`abi/unit_code.rs` module
 //! doc, route MC-w34-2), so the text bytes never run. The fuzzed bytecode does run (it passed
@@ -33,7 +35,16 @@
 //! memory": the heap limit, a feedback vector or a shape, `out_of_memory`), so the target ends
 //! that run and drops its isolate.
 //! The target never enables the `aot` feature of ep9_unit (dep-guards check 10).
+//!
+//! ASan runs with `detect_stack_use_after_return=0` (`common.rs`, `vm_asan_options`): with
+//! the fake stack on, a correct run fails the debug on-stack check of a `Local` (route
+//! FUZZ-UL-M8P5).
 #![no_main]
+
+// The target uses only the ASan options of the shared module.
+#[allow(dead_code)]
+#[path = "common.rs"]
+mod common;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Once;
@@ -68,6 +79,8 @@ fn out_of_memory(p: &(dyn std::any::Any + Send)) -> bool {
         .or_else(|| p.downcast_ref::<String>().map(String::as_str));
     s.is_some_and(|s| s == HEAP_LIMIT || s.ends_with(" allocation failed: OutOfMemory"))
 }
+
+vm_asan_options!();
 
 fuzz_target!(|data: &[u8]| {
     let mut bytes = padded(data);
