@@ -542,8 +542,8 @@ fn far_jumps_unit(far: usize) -> VerifiedUnit {
 /// 40,000 bytes each is a `Wide` instruction whose 2-byte offset has its top bit set, so a
 /// decoder that sign-extends it jumps to the wrong place. Node prints 3 for the same script.
 /// On aarch64 the `Wide` and `ExtraWide` fast bodies run all three (`ops.rs`
-/// `prefix_runs_fast`): no run of `interp::scaled::step`. Elsewhere each runs in `step`: 3 per
-/// loop turn and the exit `JumpIfFalse`. Every expansion, with and without GC stress.
+/// `prefix_runs_fast`), on x86-64 their cold block through `interp::tails::wide` (M9-P1): no
+/// run of `interp::scaled::step` on any target. Every expansion, with and without GC stress.
 #[test]
 fn extra_wide_jumps_over_64_kib() {
     use ep9_bytecode::{Instructions, Opcode as O, OperandScale as S};
@@ -569,22 +569,28 @@ fn extra_wide_jumps_over_64_kib() {
                 assert!(i.operand(0) > 0x8000, "{:?} {}", i.opcode, i.operand(0));
             }
         }
-        let steps = if crate::interp::ops::PREFIXED_FAST {
+        // x86-64: one run of `tails::wide` per prefixed jump: 3 per loop turn and the exit.
+        let wide = if crate::interp::ops::PREFIXED_FAST {
             0
         } else {
             3 * 3 + 1
         };
         for &d in Dispatch::ALL {
             for stress in [false, true] {
-                let (r, n) = on_big_stack(move || {
-                    let before = scaled_runs();
+                let (r, n, w) = on_big_stack(move || {
+                    let before = (
+                        scaled_runs(),
+                        crate::interp::tails::WIDE_RUNS.with(|c| c.get()),
+                    );
                     let r = super::run_in(config(d, stress), far_jumps_unit(far));
-                    (r, scaled_runs()[0] - before[0])
+                    let w = crate::interp::tails::WIDE_RUNS.with(|c| c.get()) - before.1;
+                    (r, scaled_runs()[0] - before.0[0], w)
                 });
                 let label = format!("{far} bytes: {} stress={stress}", d.name());
                 assert_eq!(ok(&r), "3", "{label}");
                 assert_eq!(r.output, ["3"], "{label}");
-                assert_eq!(n, steps, "{label}: the runs of interp::scaled::step");
+                assert_eq!(n, 0, "{label}: the runs of interp::scaled::step");
+                assert_eq!(w, wide, "{label}: the runs of interp::tails::wide");
             }
         }
     }
@@ -667,7 +673,7 @@ records 9
 
 /// MC-w34-6 (1): the feedback of a prefixed instruction must not depend on the path that runs
 /// it. On aarch64 the `Wide` fast body runs the prefixed GetNamedProperty and jumps
-/// (`ops.rs` `prefix_runs_fast`); x86-64 runs them in `interp::scaled::step`. FASTDIFF compares
+/// (`ops.rs` `prefix_runs_fast`); x86-64 runs them in `interp::tails::wide`. FASTDIFF compares
 /// printed output only, so this test compares the FactSnapshot records (the slot kinds and
 /// their facts) with one text, [`PREFIXED_FACTS`], on every target that runs it (CI: 4). Every
 /// expansion, with and without GC stress.
@@ -724,3 +730,4 @@ fn prefixed_feedback_is_the_same_on_every_arch() {
         }
     }
 }
+
