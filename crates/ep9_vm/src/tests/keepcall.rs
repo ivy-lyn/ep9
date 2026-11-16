@@ -210,12 +210,16 @@ mod x64 {
 
     /// A Rust caller of `keep_call!` gets its integers and doubles back unchanged after a
     /// target that changes every caller-saved register. This test does not prove the clobber
-    /// list of the `asm!` block: `cargo test` builds at opt-level 0, where LLVM keeps these
-    /// values in stack slots, not in registers, across the call. The clobber list rests on the
-    /// review of the `asm!` operands against the SysV and Win64 caller-saved sets
-    /// (`interp/keepcall.rs`, "Clobbers") and on the review of the release disasm of the
-    /// keep-call handlers (M9-P1 X86-KEEPCALL and its JIT review). `cargo xtask disasm-check`
-    /// counts only the entry saves; it does not check the clobber list.
+    /// list of the `asm!` block. In the debug test job (opt-level 0), LLVM keeps these values
+    /// in stack slots, not in registers, across the call, so that run does not check the
+    /// clobber list. The release-tests job (`.github/workflows/ci.yml` `release-tests`,
+    /// opt-level 3, on linux-x64 and windows-x64) builds this test optimized, where LLVM may
+    /// keep the values in caller-saved registers across the call: a partial check only, as no
+    /// assert shows which registers held them. The proof of the clobber list is the review of
+    /// the `asm!` operands against the SysV and Win64 caller-saved sets (`interp/keepcall.rs`,
+    /// "Clobbers") and the review of the release disasm of the keep-call handlers (M9-P1
+    /// X86-KEEPCALL and its JIT review). `cargo xtask disasm-check` counts only the entry
+    /// saves; it does not check the clobber list.
     #[test]
     fn a_keep_call_caller_keeps_its_values() {
         let _clobber = clobber_lock();
