@@ -40,6 +40,7 @@
 
 use std::rc::Rc;
 
+use ep9_temporal::intl_view::{self, Kind};
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
     IntrinsicValue, JsObject, JsResult, Local, ObjectClass, ObjectProps, PropAttrs, PropDef,
@@ -597,19 +598,19 @@ fn to_integer_if_integral<'s>(cx: &mut Cx<'s>, v: Local<'s>, name: &str) -> JsRe
 /// months, nanoseconds, seconds, weeks, years (indices in [`UNITS`]).
 const READ_ORDER: [usize; 10] = [3, 4, 8, 7, 5, 1, 9, 6, 2, 0];
 
-/// ToDurationRecord ( input ) (ECMA-402 §13). A String is a RangeError and any other
-/// value that is not an Object a TypeError. Every Object, a Temporal.Duration too, is read
-/// through its properties: the reads of a Temporal.Duration's internal slots and of a
-/// duration String (Temporal's ToTemporalDuration) need an `ep9_temporal` reader with std
-/// types, which this crate does not have yet (the `intl_view` reader of the I1 design §1.3).
+/// ToDurationRecord ( input ) (ECMA-402 §13; with Temporal: ToTemporalDuration). A
+/// Temporal.Duration is read from its internal slots (no getter call), and a String is a
+/// Temporal duration String (ParseTemporalDurationString: a RangeError if it is not one),
+/// both through `ep9_temporal::intl_view` (INTL W5); any other value that is not an Object
+/// is a TypeError, and another Object is read through its properties.
 pub fn to_duration_record<'s>(cx: &mut Cx<'s>, input: Local<'s>) -> JsResult<Record> {
-    // 1. If input is not an Object, then
+    // ToTemporalDuration 1-2: a Temporal.Duration (its slots) or a String (the Temporal
+    // parser); the result is a valid duration.
+    if input.is_string() || intl_view::kind(cx, input) == Some(Kind::Duration) {
+        return Ok(Record(intl_view::to_temporal_duration(cx, input)?));
+    }
+    // 1. If input is not an Object (and not a String), throw a TypeError exception.
     let Some(o) = input.as_object() else {
-        // a. If input is a String, throw a RangeError exception.
-        if input.is_string() {
-            return Err(cx.throw_range_error("Invalid duration string"));
-        }
-        // b. Throw a TypeError exception.
         return Err(cx.throw_type_error("A duration must be an object"));
     };
     // 2-24. Each field: ? Get, then ToIntegerIfIntegral if it is not undefined.
@@ -1057,6 +1058,32 @@ fn format_to_parts<'s>(
         cx.create_data_property_index_or_throw(array, i as u64, o)?;
     }
     Ok(array.into())
+}
+
+/// Temporal.Duration.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 with
+/// Temporal) of the duration `fields` (its 10 slots, `ep9_temporal::intl_view`): the format of
+/// a new Intl.DurationFormat(locales, options), with no object made (the construct is not
+/// observable).
+pub fn to_locale_string<'s>(
+    cx: &mut Cx<'s>,
+    fields: [f64; 10],
+    locales: Local<'s>,
+    options: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 3. Let formatter be ? Construct(%Intl.DurationFormat%, « locales, options »).
+    let r = initialize(cx, locales, options)?;
+    // 4. Let parts be PartitionDurationFormatPattern(formatter, duration).
+    let parts = partition_duration_format_pattern(cx, &r, &Record(fields))?;
+    // 5-7. The concatenation of the part values.
+    let s = polled(cx, |w| {
+        let mut out = String::new();
+        for p in &parts {
+            w.add(p.value.len())?;
+            out.push_str(&p.value);
+        }
+        Ok(out)
+    })?;
+    Ok(cx.new_string(&s)?.into())
 }
 
 /// Intl.DurationFormat.prototype.resolvedOptions ( ).

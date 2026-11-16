@@ -1,9 +1,9 @@
 //! Intl.DurationFormat (ECMA-402 §13): INTL W4 DURATION, with and without GC stress.
 //!
 //! [`CASES`]: the expected lines are node v26.13.1's output for the same script (`print` =
-//! `console.log` of the arguments, each through `String`, joined by a space), except one:
-//! node reads a duration String through Temporal (`format("PT1H")` is "1 hr"); `ep9_intl` has
-//! no Temporal reader yet, so ep9 gives the RangeError of ECMA-402 ToDurationRecord.
+//! `console.log` of the arguments, each through `String`, joined by a space). A duration
+//! String is read through the Temporal parser (`format("PT1H")` is "1 hr", as in node; INTL
+//! W5 DTF-TEMPORAL, `ep9_temporal::intl_view`; before W5 it was a RangeError).
 //!
 //! [`FP4`]: DL INTL-V2-FP4. The sub-second sums are exact (an `i128` sum and one `Decimal`, no
 //! `f64` sum). The expected text is the exact decimal of the sum, as the BigInt helper of the
@@ -131,7 +131,7 @@ fn the_cases_give_the_node_lines() {
             r#"[{"type":"minusSign","value":"-","unit":"year"},{"type":"integer","value":"2","unit":"year"},{"type":"literal","value":" ","unit":"year"},{"type":"unit","value":"yrs","unit":"year"},{"type":"literal","value":", "},{"type":"integer","value":"1","unit":"hour"},{"type":"literal","value":" ","unit":"hour"},{"type":"unit","value":"hr","unit":"hour"}]"#,
             r#"๑๒:๓๔:๕๖"#,
             r#"١٢ hr"#,
-            r#"TypeError TypeError TypeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError TypeError RangeError TypeError RangeError RangeError TypeError TypeError"#,
+            r#"TypeError TypeError TypeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError TypeError ok TypeError RangeError RangeError TypeError TypeError"#,
             r#"days,hours,ns,ns.valueOf,years"#,
             r#"true 2 Std."#,
         ])
