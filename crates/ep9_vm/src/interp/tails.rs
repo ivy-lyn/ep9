@@ -42,6 +42,49 @@ pub(crate) fn load_global(
 #[cfg(not(all(target_arch = "x86_64", not(feature = "ic-stats"))))]
 pub(crate) use super::slow::load_global;
 
+/// The cold body of `Wide` and `ExtraWide` for an opcode of `ops::prefix_set` (a prefixed
+/// `GetNamedProperty`, `JumpLoop` or forward jump) where their fast body does not run it:
+/// `ops::PREFIXED_FAST` is false, on x86-64 (M9-P1 X86-WIDE-FAST, plan v14 §4.4). It runs the
+/// opcode's fast body at scale `S` (`ops::prefixed_fast`), and only if that gives
+/// `Flow::Cold` the cold body (`interp::scaled::step_cold`): the same steps as the aarch64
+/// `Wide` fast body and cold block, so the same IC hits, records and budget units.
+///
+/// The `Wide` fast body reaches it by its tail jump to the cold handler (`Flow::Cold`), so the
+/// fast handler keeps its x86-64 form: 53 instructions, no entry save (plan rule 81), no new
+/// `Flow` arm (rule 72). Before, the cold handler called `interp::scaled::step` for these
+/// opcodes: 6 register saves and restores, a call and a return, and an indirect jump over every
+/// prefixed opcode (2.3% of the x86-64 TS indirect mispredicts, S0 at m7-p5). Here the cold
+/// handler runs the hit path itself (one save, as before: `rbx` on x86-64 SysV), and only the
+/// forward jumps share an indirect jump. Inline in optimized builds; out of line in debug
+/// builds, so a debug cold handler frame (no tail calls there) does not grow by the IC code.
+/// Not called where `PREFIXED_FAST` is true (the cold block runs `step_cold` there).
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+pub(crate) fn wide<S: crate::interp::dsl::Scale>(
+    st: &mut crate::interp::St<'_>,
+    op: u8,
+) -> crate::interp::Done {
+    use crate::interp::{Done, Flow, ops};
+    #[cfg(test)]
+    WIDE_RUNS.with(|n| n.set(n.get() + 1));
+    match ops::prefixed_fast::<S, true>(st, op) {
+        Flow::Next => Done::Next,
+        Flow::Jump(t) => Done::Jump(t),
+        Flow::Cold => st.scaled_cold::<S>(),
+        // No opcode of the set gives a record flow (`ops::prefix_set`); as `step`, if one did.
+        f => match crate::interp::dsl::settle(f, st, crate::profile::records(st.cx)) {
+            Flow::Jump(t) => Done::Jump(t),
+            _ => Done::Next,
+        },
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the runs of [`wide`] on this thread (0 where `ops::PREFIXED_FAST` is true).
+    pub(crate) static WIDE_RUNS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
 #[cfg(test)]
 mod tests {
     //! A polymorphic global site through `LdaGlobal` and `LdaGlobalInsideTypeof` (the x86-64
