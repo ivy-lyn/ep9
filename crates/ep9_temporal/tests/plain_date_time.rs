@@ -12,13 +12,13 @@ fn constructor_getters_and_to_string() {
             r#"var dt = new Temporal.PlainDateTime(2024, 2, 29, 13, 7, 9, 123, 456, 789);
             print(dt.calendarId, dt.era, dt.year, dt.month, dt.monthCode, dt.day, dt.hour, dt.minute, dt.second, dt.millisecond, dt.microsecond, dt.nanosecond);
             print(dt.dayOfWeek, dt.dayOfYear, dt.weekOfYear, dt.yearOfWeek, dt.daysInWeek, dt.daysInMonth, dt.daysInYear, dt.monthsInYear, dt.inLeapYear);
-            print(dt.toString(), dt.toJSON(), dt.toLocaleString(), dt.toString({ smallestUnit: "minute", calendarName: "always" }), dt.toString({ fractionalSecondDigits: 0 }));
+            print(dt.toString(), dt.toJSON(), dt.toLocaleString("en-US"), dt.toString({ smallestUnit: "minute", calendarName: "always" }), dt.toString({ fractionalSecondDigits: 0 }));
             print(Object.prototype.toString.call(dt), Temporal.PlainDateTime.length, dt.toPlainDate(), dt.toPlainTime());"#
         ),
         lines(&[
             "iso8601 undefined 2024 2 M02 29 13 7 9 123 456 789",
             "4 60 9 2024 7 29 366 12 true",
-            "2024-02-29T13:07:09.123456789 2024-02-29T13:07:09.123456789 2024-02-29T13:07:09.123456789 2024-02-29T13:07[u-ca=iso8601] 2024-02-29T13:07:09",
+            "2024-02-29T13:07:09.123456789 2024-02-29T13:07:09.123456789 2/29/2024, 1:07:09 PM 2024-02-29T13:07[u-ca=iso8601] 2024-02-29T13:07:09",
             "[object Temporal.PlainDateTime] 3 2024-02-29 13:07:09.123456789",
         ])
     );

@@ -181,3 +181,47 @@ fn sub_second_sums_are_exact_near_9e24_ns() {
         ])
     );
 }
+
+const TEMPORAL: &str = r#"const like = {years: 1, months: 2, weeks: 3, days: 4, hours: 5, minutes: 6, seconds: 7, milliseconds: 8, microseconds: 9, nanoseconds: 10};
+const d = Temporal.Duration.from(like);
+for (const [l, o] of [["en", undefined], ["de", {style: "long"}], ["th-u-nu-thai", {style: "digital"}]]) {
+  print(d.toLocaleString(l, o), "|", new Intl.DurationFormat(l, o).format(like));
+}
+const df = new Intl.DurationFormat("en");
+print(df.format("P1Y2M3W4DT5H6M7.00800901S"), "|", df.format("PT0S"), "|", df.format(d));
+print(df.formatToParts("-PT1H30M").map(p => p.type + ":" + p.value).join(","));
+for (const k of Object.keys(like)) Object.defineProperty(Temporal.Duration.prototype, k, {get() { throw new Error("getter " + k); }});
+print(df.format(d), "|", d.toLocaleString("en", {style: "narrow"}));
+const r = [];
+function t(fn) { try { fn(); r.push("ok"); } catch (e) { r.push(e.constructor.name); } }
+t(() => df.format("P1Q"));
+t(() => df.format("1"));
+t(() => df.format(1));
+t(() => df.format(undefined));
+t(() => d.toLocaleString("en", {style: "bad"}));
+t(() => Temporal.Duration.prototype.toLocaleString.call({}));
+print(r.join(" "));
+"#;
+
+/// INTL W5 DTF-TEMPORAL (ECMA-402 with Temporal: format calls ToTemporalDuration): a
+/// Temporal.Duration is read from its internal slots (the getters are not called, test262
+/// `taint-temporal-duration-prototype.js`), a String is a Temporal duration String
+/// (`temporal-duration-string-arg.js`; a String that is not one is a RangeError), and
+/// Temporal.Duration.prototype.toLocaleString gives the text of Intl.DurationFormat with the
+/// same locales and options (`Duration/prototype/toLocaleString/returns-same-results-as-
+/// DurationFormat.js`).
+#[test]
+fn temporal_durations_and_duration_strings_format() {
+    assert_eq!(
+        run_both(TEMPORAL),
+        lines(&[
+            "1 yr, 2 mths, 3 wks, 4 days, 5 hr, 6 min, 7 sec, 8 ms, 9 μs, 10 ns | 1 yr, 2 mths, 3 wks, 4 days, 5 hr, 6 min, 7 sec, 8 ms, 9 μs, 10 ns",
+            "1 Jahr, 2 Monate, 3 Wochen, 4 Tage, 5 Stunden, 6 Minuten, 7 Sekunden, 8 Millisekunden, 9 Mikrosekunden und 10 Nanosekunden | 1 Jahr, 2 Monate, 3 Wochen, 4 Tage, 5 Stunden, 6 Minuten, 7 Sekunden, 8 Millisekunden, 9 Mikrosekunden und 10 Nanosekunden",
+            "๑ ปี ๒ เดือน ๓ สัปดาห์ ๔ วัน และ ๕:๐๖:๐๗.๐๐๘๐๐๙๐๑ | ๑ ปี ๒ เดือน ๓ สัปดาห์ ๔ วัน และ ๕:๐๖:๐๗.๐๐๘๐๐๙๐๑",
+            "1 yr, 2 mths, 3 wks, 4 days, 5 hr, 6 min, 7 sec, 8 ms, 9 μs, 10 ns |  | 1 yr, 2 mths, 3 wks, 4 days, 5 hr, 6 min, 7 sec, 8 ms, 9 μs, 10 ns",
+            "minusSign:-,integer:1,literal: ,unit:hr,literal:, ,integer:30,literal: ,unit:min",
+            "1 yr, 2 mths, 3 wks, 4 days, 5 hr, 6 min, 7 sec, 8 ms, 9 μs, 10 ns | 1y 2m 3w 4d 5h 6m 7s 8ms 9μs 10ns",
+            "RangeError RangeError TypeError TypeError RangeError TypeError",
+        ])
+    );
+}

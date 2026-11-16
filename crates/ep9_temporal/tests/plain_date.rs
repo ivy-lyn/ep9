@@ -12,13 +12,13 @@ fn constructor_getters_and_to_string() {
             r#"var d = new Temporal.PlainDate(2024, 2, 29);
             print(d.calendarId, d.era, d.eraYear, d.year, d.month, d.monthCode, d.day);
             print(d.dayOfWeek, d.dayOfYear, d.weekOfYear, d.yearOfWeek, d.daysInWeek, d.daysInMonth, d.daysInYear, d.monthsInYear, d.inLeapYear);
-            print(d.toString(), d.toJSON(), d.toLocaleString(), d.toString({ calendarName: "always" }), new Temporal.PlainDate(-1, 1, 1, "ISO8601").toString());
+            print(d.toString(), d.toJSON(), d.toLocaleString("en-US"), d.toString({ calendarName: "always" }), new Temporal.PlainDate(-1, 1, 1, "ISO8601").toString());
             print(Object.prototype.toString.call(d), Temporal.PlainDate.length, Temporal.PlainDate.prototype.constructor === Temporal.PlainDate);"#
         ),
         lines(&[
             "iso8601 undefined undefined 2024 2 M02 29",
             "4 60 9 2024 7 29 366 12 true",
-            "2024-02-29 2024-02-29 2024-02-29 2024-02-29[u-ca=iso8601] -000001-01-01",
+            "2024-02-29 2024-02-29 2/29/2024 2024-02-29[u-ca=iso8601] -000001-01-01",
             "[object Temporal.PlainDate] 3 true",
         ])
     );

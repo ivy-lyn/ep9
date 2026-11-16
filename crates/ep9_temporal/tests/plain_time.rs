@@ -10,13 +10,13 @@ fn constructor_getters_and_to_string() {
         run_both(
             r#"var t = new Temporal.PlainTime(13, 7, 9, 123, 456, 789);
             print(t.hour, t.minute, t.second, t.millisecond, t.microsecond, t.nanosecond);
-            print(t.toString(), t.toJSON(), t.toLocaleString(), new Temporal.PlainTime().toString(), new Temporal.PlainTime(23, 59, 59, 999, 999, 999).toString());
+            print(t.toString(), t.toJSON(), t.toLocaleString("en-US"), new Temporal.PlainTime().toString(), new Temporal.PlainTime(23, 59, 59, 999, 999, 999).toString());
             print(Object.prototype.toString.call(t), Temporal.PlainTime.length, Temporal.PlainTime.prototype.constructor === Temporal.PlainTime);
             print(t.toString({ smallestUnit: "minute" }), t.toString({ fractionalSecondDigits: 2, roundingMode: "ceil" }), t.toString({ smallestUnit: "second" }));"#
         ),
         lines(&[
             "13 7 9 123 456 789",
-            "13:07:09.123456789 13:07:09.123456789 13:07:09.123456789 00:00:00 23:59:59.999999999",
+            "13:07:09.123456789 13:07:09.123456789 1:07:09 PM 00:00:00 23:59:59.999999999",
             "[object Temporal.PlainTime] 0 true",
             "13:07 13:07:09.13 13:07:09",
         ])

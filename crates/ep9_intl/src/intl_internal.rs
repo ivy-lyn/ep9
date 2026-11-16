@@ -1,7 +1,8 @@
 //! The ep9-internal Intl functions (block 47; INTL W5, design INTL-I1 §1.4 and §4.6):
 //! `%IntlTemporalToLocaleString%`, the function that the 8 Temporal `toLocaleString` methods
-//! call (ECMA-402 with Temporal: CreateDateTimeFormat and FormatDateTime, or DurationFormat
-//! for a Temporal.Duration).
+//! call (ECMA-402 with Temporal: CreateDateTimeFormat and FormatDateTime,
+//! `date_time_format::temporal_to_locale_string`, or DurationFormat for a Temporal.Duration,
+//! `duration_format::to_locale_string`).
 //!
 //! ```text
 //! %IntlTemporalToLocaleString%   ep9-internal: no property names it, so no script reaches it
@@ -18,10 +19,13 @@
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `crates/ep9_builtins/tests/golden/ids-intl_internal.txt`.
 
+use ep9_temporal::intl_view::{self, Kind};
 use ep9_vm::{
     Args, BuiltinDef, BuiltinModule, Cx, IntrinsicDef, IntrinsicId, IntrinsicValue, JsResult,
     Local, ObjectProps,
 };
+
+use crate::{date_time_format, duration_format};
 
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 47;
@@ -50,13 +54,21 @@ pub const MODULE: BuiltinModule = BuiltinModule {
 };
 
 /// `%IntlTemporalToLocaleString%` ( locales, options ) with the Temporal object as the this
-/// value. Skeleton: the toString text of the this value (the Temporal methods do not call it
-/// yet).
+/// value (the caller, the toLocaleString method of its type, checked the internal slot): a
+/// Duration through DurationFormat, the other kinds through DateTimeFormat.
 fn temporal_to_locale_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    Ok(cx.to_string(this)?.into())
+    let (locales, options) = (args.get(0), args.get(1));
+    match intl_view::kind(cx, this) {
+        Some(Kind::Duration) => {
+            let fields = intl_view::to_temporal_duration(cx, this)?;
+            duration_format::to_locale_string(cx, fields, locales, options)
+        }
+        Some(kind) => date_time_format::temporal_to_locale_string(cx, kind, this, locales, options),
+        None => Err(cx.throw_type_error("toLocaleString: the this value is not a Temporal object")),
+    }
 }
