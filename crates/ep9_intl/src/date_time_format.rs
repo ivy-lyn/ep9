@@ -6,6 +6,7 @@
 //! Intl.DateTimeFormat {w, c}     %Intl.DateTimeFormat%  prototype {}, supportedLocalesOf
 //! Intl.DateTimeFormat.prototype  %Intl.DateTimeFormat.prototype%  constructor {w, c},
 //!                    resolvedOptions, formatToParts {w, c}, get format {c},
+//!                    formatRange, formatRangeToParts {w, c} (range.rs; INTL W5),
 //!                    [@@toStringTag] "Intl.DateTimeFormat" {c}
 //! slots (ObjectClass::IntlDateTimeFormat, SLOTS = 7):
 //!   0 [[Locale]]           a String ("ca", "hc", "nu" are its Unicode extension keys)
@@ -58,6 +59,7 @@ use icu_time::zone::{IanaParser, TimeZone, UtcOffset};
 use icu_time::{DateTime, TimeZoneInfo, ZonedDateTime};
 
 mod pattern;
+mod range;
 
 use crate::available;
 use crate::cache::{self, Service};
@@ -101,6 +103,8 @@ mod def {
     pub const GET_FORMAT: u16 = 2;
     pub const FORMAT_TO_PARTS: u16 = 3;
     pub const RESOLVED_OPTIONS: u16 = 4;
+    pub const FORMAT_RANGE: u16 = 5;
+    pub const FORMAT_RANGE_TO_PARTS: u16 = 6;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -110,6 +114,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::getter("format", get_format),                  // 2 (11.3.3)
     BuiltinDef::method("formatToParts", 1, format_to_parts),   // 3 (11.3.4)
     BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (11.3.7)
+    BuiltinDef::method("formatRange", 2, range::format_range), // 5 (11.3.5)
+    BuiltinDef::method("formatRangeToParts", 2, range::format_range_to_parts), // 6 (11.3.6)
 ];
 
 /// The intrinsics this module makes.
@@ -150,10 +156,16 @@ pub const PROPS: &[ObjectProps] = &[
                 IntrinsicId::IntlDateTimeFormat,
                 PropAttrs::METHOD,
             ),
-            // The key order of V8 (node): resolvedOptions, formatToParts, format.
+            // The key order of V8 (node): resolvedOptions, formatToParts, format, formatRange,
+            // formatRangeToParts.
             PropDef::method(PropKey::Str("resolvedOptions"), def::RESOLVED_OPTIONS),
             PropDef::method(PropKey::Str("formatToParts"), def::FORMAT_TO_PARTS),
             PropDef::accessor(PropKey::Str("format"), Some(def::GET_FORMAT), None),
+            PropDef::method(PropKey::Str("formatRange"), def::FORMAT_RANGE),
+            PropDef::method(
+                PropKey::Str("formatRangeToParts"),
+                def::FORMAT_RANGE_TO_PARTS,
+            ),
             // Intl.DateTimeFormat.prototype [ @@toStringTag ] ({c}, 11.3.8).
             PropDef::constant(
                 PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),

@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! ep9_builtins::MODULES = [.., ep9_temporal::MODULES.., iterator, disposable, ep9_intl 30-38,
-//!                          the TypedArray modules 39-44, ep9_intl 45-46]
+//!                          the TypedArray modules 39-44, ep9_intl 45-46, intl_internal 47]
 //! ep9_intl::MODULES (blocks, append-only; the lazy group of the global key "Intl", INTL-I1-D8)
 //!   30 intl      %Intl%                                  intl.rs     (W1 CORE)
 //!   31 locale    %Intl.Locale%, %Intl.Locale.prototype%  locale.rs   (W1 LOCALE)
@@ -21,6 +21,8 @@
 //!   46 duration_format   %Intl.DurationFormat%, its prototype  duration_format.rs  (W4 DURATION)
 //!   (intl.rs also makes %IntlFallbackSymbolHolder%, the ep9-internal holder of
 //!    %Intl%.[[FallbackSymbol]]; W4 DTF-OPT)
+//! not in ep9_intl::MODULES (no props, so in no lazy group; made at realm init):
+//!   47 intl_internal  %IntlTemporalToLocaleString% (ep9-internal)  intl_internal.rs (W5)
 //! support (W1 CORE):
 //!   tag        IsStructurallyValidLanguageTag, CanonicalizeUnicodeLocaleId,
 //!              CanonicalizeLocaleList (ECMA-402 §6.2, §9.2.1)
@@ -53,6 +55,7 @@ pub mod digits;
 pub mod display_names;
 pub mod duration_format;
 pub mod intl;
+pub mod intl_internal;
 pub mod list_format;
 pub mod locale;
 pub mod locale_info;

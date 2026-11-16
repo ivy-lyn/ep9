@@ -22,8 +22,10 @@
 //!                             35           36         37             38
 //!          array_buffer, data_view, typed_array, typed_array_proto, base64, atomics,
 //!          39            40         41           42                 43      44
-//!          ep9_intl::MODULES (W4, after the TA blocks): date_time_format, duration_format]
+//!          ep9_intl::MODULES (W4, after the TA blocks): date_time_format, duration_format,
 //!                                                       45                46
+//!          ep9_intl::intl_internal (W5; no props, in no lazy group)]
+//!          47
 //!          (M4-P0: 15-17 empty until M4-P4 PROXY1, M4-P2 RX0A / M4-P3 REGEXP1, M4-P4 WEAKREF)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
@@ -131,6 +133,10 @@ pub const MODULES: &[BuiltinModule] = &[
     // blocks 45 and 46, after the TypedArray blocks 39-44 (INTL sync m8-p5).
     ep9_intl::date_time_format::MODULE,
     ep9_intl::duration_format::MODULE,
+    // INTL W5 (the DTF-TEMPORAL skeleton): %IntlTemporalToLocaleString%, the ep9-internal
+    // function of the Temporal toLocaleString methods. Block 47; not in ep9_intl::MODULES: it
+    // has no props, so it joins no lazy group and realm init makes it (INTL-I1 §1.4, §4.6).
+    ep9_intl::intl_internal::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

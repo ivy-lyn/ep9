@@ -41,6 +41,12 @@ zerovec = { version = "0.11.9", default-features = false }
 # no `unsafe`, so not the baked form). icu_collections 2.4.0 is in the graph already (through
 # icu_collator), so no new package; dep-guards check 24 lists it (M6-ORCH-673).
 icu_collections = { version = "=2.4.0", default-features = false }
+# formatRangeToParts reads the source of each part ("startRange", "endRange", "shared") from
+# the ICU4X range parts RANGE_START and RANGE_END of a FormattedDateRange, which has only the
+# Writeable trait: its sink is a writeable::PartsWrite (INTL W5, DL INTL-W5-CARGO). writeable
+# 0.6.4 is in the graph already (icu_datetime, with default-features = false, as here) and in
+# the check 24 list of ep9_intl edges, so no new package.
+writeable = { version = "0.6.4", default-features = false }
 
 # The tests run JS on an isolate with ep9_builtins::TABLE (which lists this crate's modules).
 [dev-dependencies]

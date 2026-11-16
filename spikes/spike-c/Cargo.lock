@@ -223,6 +223,7 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "icu_time",
+ "writeable",
  "zerovec",
 ]
 

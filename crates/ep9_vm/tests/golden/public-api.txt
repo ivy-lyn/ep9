@@ -625,7 +625,7 @@ ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
 ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
 ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
 ep9_vm::IntrinsicId :: impl IntrinsicId
-ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 161]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 162]
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
 ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
@@ -721,6 +721,7 @@ ep9_vm::IntrinsicId :: variant IntlSegmentIteratorPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmenter
 ep9_vm::IntrinsicId :: variant IntlSegmenterPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmentsPrototype
+ep9_vm::IntrinsicId :: variant IntlTemporalToLocaleString
 ep9_vm::IntrinsicId :: variant Iterator
 ep9_vm::IntrinsicId :: variant IteratorHelperPrototype
 ep9_vm::IntrinsicId :: variant IteratorPrototype
