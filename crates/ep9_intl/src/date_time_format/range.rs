@@ -327,10 +327,13 @@ fn era_number(code: &str) -> i64 {
 /// Pattern step 11): the local field values of each Table 7 field, in table order, down to
 /// the smallest field of the format (a smaller field has no range pattern: checkMoreFields
 /// is false); a field of the format that is not shown counts (the year of {month, day}: no
-/// two values of different years are equal); the day period is its text (step 11.d.iii: a
-/// string of the locale), the fractional second floor(ms × 10^(digits - 3)). Not the shown
-/// texts: the years 1920 and 2020 are both "20" with year "2-digit". Formats whose field
-/// types do not line up: both.
+/// two values of different years are equal); AmPm is "am" (an hour below 12) or "pm", the day
+/// period is its text (step 11.d.iii: a string of the locale), each its own row: when the
+/// smallest field is a day period or below it, both rows count (the loop stops only at a
+/// row, and AmPm is the row before DayPeriod); the fractional second is floor(ms ×
+/// 10^(digits - 3)). Not the shown texts: the years 1920 and 2020 are both "20" with year
+/// "2-digit"; 11:00 and 13:00 are both "siang" in id. Formats whose field types do not line
+/// up: both.
 fn differences(t: &Resolved, ix: &Input, iy: &Input, px: &[Piece], py: &[Piece]) -> (bool, bool) {
     let compared = |ps: &[Piece]| -> Vec<&'static str> {
         ps.iter()
@@ -359,14 +362,22 @@ fn differences(t: &Resolved, ix: &Input, iy: &Input, px: &[Piece], py: &[Piece])
             }
         }
     }
-    // The day period (AmPm and DayPeriod): the text of the field.
-    let period = |ps: &[Piece]| {
-        ps.iter()
-            .find(|p| p.field.is_some_and(|(ch, _)| rank(ch) == Some(4)))
-            .map(|p| p.text.clone())
-    };
-    if smallest >= 4 && period(px) != period(py) {
-        out.1 = true;
+    if smallest >= 4 {
+        // [[AmPm]]: "am" if the hour is below 12, else "pm". Its own Table 7 row,
+        // before [[DayPeriod]]: the flexible day period can be the same text on both sides
+        // of noon (id "siang" from 10:00 to 15:00), so the text alone is not enough.
+        if (vx[4] < 12) != (vy[4] < 12) {
+            out.1 = true;
+        }
+        // [[DayPeriod]] (step 11.d.iii): the day period text of the locale.
+        let period = |ps: &[Piece]| {
+            ps.iter()
+                .find(|p| p.field.is_some_and(|(ch, _)| rank(ch) == Some(4)))
+                .map(|p| p.text.clone())
+        };
+        if period(px) != period(py) {
+            out.1 = true;
+        }
     }
     out
 }

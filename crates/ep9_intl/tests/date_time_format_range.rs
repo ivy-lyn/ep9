@@ -138,3 +138,41 @@ fn format_range_compares_the_field_values() {
         ])
     );
 }
+
+const AM_PM: &str = r#"const U = (y, mo, d, h = 0, mi = 0) => Date.UTC(y, mo - 1, d, h, mi);
+const P = (parts) => parts.map(p => p.type + ":" + p.value + ":" + p.source).join("|");
+const f = (l, o) => new Intl.DateTimeFormat(l, Object.assign({timeZone: "UTC"}, o));
+const id = f("id", {dayPeriod: "long"});
+print(id.format(U(2019, 1, 3, 11)), id.format(U(2019, 1, 3, 13)));
+print(id.formatRange(U(2019, 1, 3, 11), U(2019, 1, 3, 13)), "|", P(id.formatRangeToParts(U(2019, 1, 3, 11), U(2019, 1, 3, 13))));
+print(id.formatRange(U(2019, 1, 3, 10), U(2019, 1, 3, 11, 30)), "|", P(id.formatRangeToParts(U(2019, 1, 3, 10), U(2019, 1, 3, 11, 30))));
+const en = f("en", {dayPeriod: "long"});
+print(en.formatRange(U(2019, 1, 3, 13), U(2019, 1, 3, 14)), "|", en.formatRange(U(2019, 1, 3, 11), U(2019, 1, 3, 13)));
+const h12 = f("id", {hour: "numeric", minute: "numeric", dayPeriod: "long", hour12: true});
+print(h12.formatRange(U(2019, 1, 3, 11), U(2019, 1, 3, 13)), "|", h12.formatRange(U(2019, 1, 3, 13), U(2019, 1, 3, 14, 30)));
+"#;
+
+/// relevantFieldsEqual compares [[AmPm]] (the hour below 12 or not) as its own Table 7 row
+/// before [[DayPeriod]] (Codex W5 r2 finding): in id the flexible day period "siang" covers
+/// 10:00 to 15:00, so 11:00 and 13:00 have the same day period text but not the same AmPm:
+/// a range, in both methods. Both rows count when the smallest field of the format is a day
+/// period or below it (the loop of step 11 stops only at a row, and AmPm is the row before
+/// DayPeriod). The same AmPm and the same text (10:00 and 11:30, en 13:00 and 14:00): one
+/// value, every part "shared". The collapse needs no change: with an hour, ICU4X picks the
+/// template by AM/PM, and its AM/PM template writes the day period at both ends ("11.00
+/// siang – 1.00 siang"). Not V8's output: V8 (ICU4C) gives "siang" for 11:00 to 13:00 and "in
+/// the morning" for en 11:00 to 13:00 (it does not compare the day period of a format
+/// without an hour).
+#[test]
+fn format_range_compares_am_pm_before_the_day_period() {
+    assert_eq!(
+        run_both(AM_PM),
+        lines(&[
+            "siang siang",
+            "siang–siang | dayPeriod:siang:startRange|literal:–:shared|dayPeriod:siang:endRange",
+            "siang | dayPeriod:siang:shared",
+            "in the afternoon | in the morning\u{2009}–\u{2009}in the afternoon",
+            "11.00 siang\u{2009}–\u{2009}1.00 siang | 1.00–2.30 siang",
+        ])
+    );
+}
