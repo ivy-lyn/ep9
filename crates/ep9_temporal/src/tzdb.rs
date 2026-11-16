@@ -78,12 +78,17 @@ fn primary_of(id: NormalizedId) -> Option<&'static str> {
 
 /// The primary IANA time zone identifiers of the tz data, sorted (Intl.supportedValuesOf
 /// "timeZone": AvailablePrimaryTimeZoneIdentifiers). Made once per process.
+///
+/// Only the ids that [`provider`] resolves: the id list of the normalizer can be newer than
+/// `zoneinfo64.res` (the normalizer has "Asia/Hanoi"; the ICU 2026f file does not), and
+/// every listed id must make a Temporal time zone (ECMA-402 AvailableNamedTimeZoneIdentifiers).
 pub fn zone_ids() -> &'static [&'static str] {
     ZONE_IDS.get_or_init(|| {
         let mut out: Vec<&'static str> = Vec::new();
         let mut i = 0;
         while let Ok(name) = NORMALIZER.identifier(NormalizedId(i)) {
-            if primary_of(NormalizedId(i)) == Some(name) {
+            if primary_of(NormalizedId(i)) == Some(name) && provider().get(name.as_bytes()).is_ok()
+            {
                 out.push(name);
             }
             i += 1;

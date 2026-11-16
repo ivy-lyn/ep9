@@ -280,9 +280,10 @@ pub struct Reloc {
     /// refuses a record with `insn > at`). The unit check decodes an x86-64 operand forward
     /// from it. [`Assembler::x64`] sets its chunk start only when that start is a known
     /// instruction boundary, else `insn = at` (and the unit check refuses an `X64Disp32` field
-    /// recorded so). The check trusts this value: a record made by hand with a false `insn` is
-    /// not found (a decode of the whole text is route UNIT-X64-DECODE). On AArch64 the field is
-    /// the instruction word: `insn = at` at a 4-byte aligned offset (the unit check refuses any
+    /// recorded so). Since M8-P2 the unit check also decodes the whole final text (route
+    /// UNIT-X64-DECODE) and refuses an `insn` that is not an instruction start of that decode,
+    /// so a record made by hand with a false `insn` is found. On AArch64 the field is the
+    /// instruction word: `insn = at` at a 4-byte aligned offset (the unit check refuses any
     /// other field).
     pub insn: u32,
     /// The field form.
@@ -395,13 +396,15 @@ impl Assembler {
     /// Writes bytes.
     ///
     /// x86-64: the end of the chunk stays a known instruction boundary for the next
-    /// [`Assembler::x64`] only if the chunk starts at a known boundary and is exactly one of
-    /// `nop` (90), `ret` (c3), `call reg` (ff d0-d7, 41 ff d0-d7) or `jmp reg` (ff e0-e7,
-    /// 41 ff e0-e7). The stream has no decoder for other bytes, so after any other chunk the
-    /// boundary is not known. The boundary is set from the bytes as written here: a later
-    /// field write into them ([`Assembler::reloc`]) is not found (route UNIT-X64-DECODE).
+    /// [`Assembler::x64`] only if the chunk starts at a known boundary and the length decoder
+    /// (route UNIT-X64-DECODE) reads it as whole instructions that end exactly at its end
+    /// (MC-w32-2: before M8-P2 only `nop`, `ret`, `call reg` and `jmp reg` chunks were known).
+    /// The boundary is set from the bytes as written here; a later field write into them
+    /// ([`Assembler::reloc`]) can change the instructions, and the unit check finds that
+    /// because it decodes the final text ([`crate::check_text`]).
     pub fn put(&mut self, bytes: &[u8]) {
-        let whole = self.offset() == self.x64_end && x64_plain(bytes);
+        let whole =
+            self.arch == Arch::X64 && self.offset() == self.x64_end && x64_instructions(bytes);
         self.text.extend_from_slice(bytes);
         if whole {
             self.x64_end = self.offset();
@@ -411,6 +414,15 @@ impl Assembler {
     /// Writes one 4-byte little-endian word (an AArch64 instruction).
     pub fn put32(&mut self, w: u32) {
         self.put(&w.to_le_bytes());
+    }
+
+    /// Writes the landing pad of an indirect entry (MC-w23-15): `bti c` on AArch64, which a
+    /// `blr` or a `br x16`/`br x17` may reach in text mapped with BTI. On x86-64 it writes
+    /// nothing (no CET IBT form yet).
+    pub fn pad(&mut self) {
+        if self.arch == Arch::A64 {
+            self.put32(0xd503_245f);
+        }
     }
 
     /// A new label, not bound yet.
@@ -477,13 +489,14 @@ impl Assembler {
     /// offset is a known instruction boundary: the text start, or the end of a chunk that is
     /// one whole known instruction (an `x64` chunk that is a rel32 `call`, `jmp` or `jcc`, or a
     /// load that the unit check decodes, with the field at its end; or a [`Assembler::put`]
-    /// chunk of the list there). Otherwise the record has `insn = at`, and the unit check
+    /// chunk of whole instructions). Otherwise the record has `insn = at`, and the unit check
     /// refuses an `X64Disp32` field recorded so: a prefix or a partial instruction from `put`
     /// cannot become part of a unit load. The boundary is set from the bytes as emitted: a
-    /// later field write into the bytes of a chunk that set it is not found (for example an
-    /// `X64Rel32` field from [`Assembler::reloc`] over 4 `put` `nop` bytes gives `b8 imm32`,
-    /// and that instruction takes the REX byte of the next load). A decode of the final text
-    /// after all field writes is route UNIT-X64-DECODE.
+    /// later field write into the bytes of a chunk that set it can change the instructions
+    /// (for example an `X64Rel32` field from [`Assembler::reloc`] over 4 `put` `nop` bytes
+    /// can give `b8 imm32`, and that instruction takes the REX byte of the next load). The
+    /// unit check decodes the final text after all field writes (route UNIT-X64-DECODE), so
+    /// it finds that.
     pub fn x64(
         &mut self,
         bytes: &[u8],
@@ -523,14 +536,17 @@ impl Assembler {
     }
 }
 
-/// A [`Assembler::put`] chunk that is exactly one whole x86-64 instruction with no field:
-/// `nop`, `ret`, `call reg` or `jmp reg` (REX.B for r8-r15).
-fn x64_plain(b: &[u8]) -> bool {
-    match b {
-        [0x90] | [0xc3] => true,
-        [0xff, m] | [0x41, 0xff, m] => matches!(m, 0xd0..=0xd7 | 0xe0..=0xe7),
-        _ => false,
+/// A [`Assembler::put`] chunk that the length decoder reads as one or more whole x86-64
+/// instructions, the last one ending at the end of the chunk.
+fn x64_instructions(b: &[u8]) -> bool {
+    let mut at = 0;
+    while at < b.len() {
+        match crate::x64::decode(b, at) {
+            Some(i) => at += usize::from(i.len),
+            None => return false,
+        }
     }
+    !b.is_empty()
 }
 
 /// An [`Assembler::x64`] chunk that is one whole x86-64 instruction with the field at its

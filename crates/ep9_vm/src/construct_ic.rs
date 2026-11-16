@@ -320,10 +320,10 @@ fn next_count(value: u64) -> u64 {
     int32_bits(n.saturating_add(1).max(1))
 }
 
-/// The cold construct path of `site` in frame `fp` (`slow::call`, construct branch) made the
-/// receiver `this` (the hole for a derived constructor) for the bytecode constructor `callee`
-/// of the current realm with `new_target`. Records the site's state (table above). GC point
-/// (a new handler cell): every Value here is in a caller register or a Rust local.
+/// The cold construct path of `site` in frame `fp` (`slow::call` construct branch, or for native
+/// code `construct_native_cold`, M8-PLAN-D25) made the receiver `this` (the hole for a derived
+/// constructor) for `callee` of the current realm with `new_target`. Records the site's state
+/// (table above). GC point (a new handler cell): each Value is in a caller register or Rust local.
 #[inline]
 pub(crate) fn miss(
     cx: &mut Cx,

@@ -11,7 +11,7 @@
 //!
 //! Each reader does one `[[Get]]` of the property, in the spec order of its caller.
 
-use ep9_vm::{Cx, JsObject, JsResult, Local};
+use ep9_vm::{Cx, JsObject, JsResult, JsString, Local};
 
 /// GetOptionsObject ( options ) (9.2.10): undefined gives a new empty object with a null
 /// prototype, an object gives itself, any other value is a TypeError.
@@ -178,4 +178,28 @@ pub fn get_locale_matcher<'s>(cx: &mut Cx<'s>, options: Local<'s, JsObject>) -> 
         Some("best fit"),
     )?;
     Ok(())
+}
+
+/// Code units of work per interrupt budget unit: the string search rate (H23, the
+/// `SearchWork` of `ep9_builtins`).
+pub const POLL_UNITS: usize = 256;
+
+/// The code units of the string `s`, copied out (a view cannot live across a GC point). The
+/// copy takes one interrupt budget unit per [`POLL_UNITS`] code units.
+pub fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, JsString>) -> JsResult<Vec<u16>> {
+    let len = cx.string_len(s);
+    let flat = cx.flatten(s)?;
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        if i % POLL_UNITS == POLL_UNITS - 1 {
+            cx.poll_interrupt()?;
+        }
+        out.push(cx.code_unit_at(flat, i).unwrap_or(0));
+    }
+    Ok(out)
+}
+
+/// The index of `v` in `list` (0 if absent): the packed form of an option value.
+pub fn index_of<T: PartialEq>(list: &[T], v: &T) -> u32 {
+    list.iter().position(|x| x == v).unwrap_or(0) as u32
 }

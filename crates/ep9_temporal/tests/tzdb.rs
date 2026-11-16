@@ -93,3 +93,34 @@ fn intl_wrappers_read_the_tz_data() {
     assert_eq!(offset_at("Asia/Kolkata", jan), Some((19_800, false)));
     assert_eq!(offset_at("Nowhere/City", jan), None);
 }
+
+/// Every id of `zone_ids` (Intl.supportedValuesOf "timeZone") makes a Temporal time zone in
+/// any case, keeps its name, and is its own primary id (test262 intl402/Temporal/ZonedDateTime
+/// `supported-values-of.js`, `timezone-case-insensitive.js`, `equals/canonical-not-equal.js`).
+/// The id list of the `timezone_provider` normalizer can be newer than `zoneinfo64.res`: the
+/// normalizer has "Asia/Hanoi", the ICU 2026f `zoneinfo64.res` does not.
+#[test]
+fn every_listed_zone_resolves_in_the_provider() {
+    use ep9_temporal::tzdb::{canonical_zone, zone_ids};
+    let p = ep9_temporal::tzdb::provider();
+    let mut bad = Vec::new();
+    for &id in zone_ids() {
+        for text in [
+            id.to_string(),
+            id.to_ascii_lowercase(),
+            id.to_ascii_uppercase(),
+        ] {
+            match TimeZone::try_from_identifier_str_with_provider(&text, p) {
+                Ok(tz) if tz.identifier_with_provider(p).ok().as_deref() == Some(id) => {}
+                Ok(tz) => bad.push(format!("{text} -> {:?}", tz.identifier_with_provider(p))),
+                Err(e) => bad.push(format!("{text}: {e}")),
+            }
+        }
+        if canonical_zone(id) != Some(id) {
+            bad.push(format!("{id}: primary {:?}", canonical_zone(id)));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:?}");
+    assert!(zone_ids().len() > 400, "{}", zone_ids().len());
+    assert!(!zone_ids().contains(&"Asia/Hanoi"), "not in zoneinfo64.res");
+}

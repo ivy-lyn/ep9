@@ -613,7 +613,7 @@ fn shim_function_constructor() {
 }
 
 /// FE-RX-BUFBOUND, FE-RX-BIGQUANT: the regex literal verdicts of node v26.13.0
-/// (`x = <literal>;`), with one row where ECMA-262 and node differ. oxc_regular_expression 0.157 takes `\A`, `\z`, `\Z` and `[\c]` in
+/// (`x = <literal>;`), with one row where ECMA-262 and node differ. oxc_regular_expression 0.158 takes `\A`, `\z`, `\Z` and `[\c]` in
 /// Unicode mode, and refuses a braced quantifier number above 2^53 - 1.
 #[test]
 fn regex_literals_follow_node_on_escapes_and_big_quantifiers() {

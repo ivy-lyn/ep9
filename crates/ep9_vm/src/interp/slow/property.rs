@@ -403,11 +403,40 @@ pub(crate) fn get_super(
 /// `SetNamedProperty` (0x24, `define` false: `o[key] = v`, a TypeError on failure in strict
 /// code) or `DefineNamedOwnProperty` (0x25, `define` true: CreateDataPropertyOrThrow) after
 /// an IC miss, then the IC update. An add-property case is checked against the shape the
-/// store produced (`ic::store_case_after`). Returns `v`. GC point.
+/// store produced (`ic::store_case_after`). Returns `v`, or 0 if an exception is pending. GC
+/// point (the runtime call); the probe is not one.
+///
+/// M8-P0 TS-STORE: this front is inlined into the cold bodies of the 0x24 and 0x25 handlers
+/// (`ops.rs`). It runs the stub cache probe of a megamorphic site first
+/// (`ic::handler_mega_store`, the store form of `ic::get_named_cold`); a hit skips the frame
+/// record and the runtime call ([`set_named_miss`]).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_named(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    o: u64,
+    key: u64,
+    v: u64,
+    slot: u32,
+    define: bool,
+) -> u64 {
+    if ic::handler_mega_store(cx.rt(), info(fp), o, slot, key, v, define) {
+        return v;
+    }
+    set_named_miss(cx, fp, pc, o, key, v, slot, define)
+}
+
+/// The runtime call of [`set_named`]: the stub cache entry of a megamorphic site again
+/// (`ic::mega_store`), or the add with growth of a monomorphic or polymorphic `ADD` case
+/// (`ic::grow_store`; M8-P0 TS-STORE: an add that needs a larger SLOTS cell grows it here,
+/// after the frame record, instead of the generic store); then a SETTER case, else the
+/// generic store and the IC update. GC point.
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn set_named(
+fn set_named_miss(
     cx: &mut Cx,
     fp: *mut u64,
     pc: *const u8,
@@ -420,7 +449,10 @@ pub(crate) fn set_named(
     enter(cx, fp, pc);
     let rt = cx.rt();
     let vector = feedback::vector(info(fp));
-    if vector.is_some_and(|vec| ic::mega_store(rt, vec, slot, o, key, v, define)) {
+    if vector.is_some_and(|vec| {
+        ic::mega_store(rt, vec, slot, o, key, v, define)
+            || ic::grow_store(rt, vec, slot, o, key, v, define)
+    }) {
         return ret(Ok(v));
     }
     // A SETTER case of a 0x24 store (M6-P1 ACCIC): the setter runs with no lookup and no

@@ -101,7 +101,7 @@ const TABLE: &[(&str, Class, &[u32])] = &[
     ("/(?<a>x)|(?<a>y)/", Class::Ok, &[]),
     ("/((?<a>x))|((?<a>y))/", Class::Ok, &[]),
     ("/(?<a>x)(?<a>y)/", Class::Syntax, &[4]),
-    ("/(?:(?<a>x)|(?<a>y))(?<a>z)/", Class::Syntax, &[7]),
+    ("/(?:(?<a>x)|(?<a>y))(?<a>z)/", Class::Syntax, &[15]), // oxc 0.158 names the latest earlier group
     ("/(?:(?<a>x)|y)(?:(?<a>w)|z)/", Class::Syntax, &[7]),
     // Pattern errors, flags and the u / v modes.
     ("/(/", Class::Syntax, &[1]),
@@ -147,7 +147,7 @@ fn early_errors_match_the_base_commit() {
 
 /// rx-dupnames (source, class, sorted error span starts): two groups of one name that can
 /// both take part are an early error (MightBothParticipate, ECMA-262 22.2.1.1). oxc 0.155.0
-/// accepted the first 5 rows; oxc 0.157.0 and node v26.13.0 reject them. The span is the
+/// accepted the first 5 rows; oxc 0.157.0, 0.158.0 and node v26.13.0 reject them. The span is the
 /// name of the earlier group. The other rows agree with node on both oxc versions.
 const DUPNAMES: &[(&str, Class, &[u32])] = &[
     ("/(?:(?<a>x)|y)(?:z|(?<a>w))/", Class::Syntax, &[7]),

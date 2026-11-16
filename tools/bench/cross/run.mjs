@@ -66,6 +66,19 @@
 // A kernel of more than one file (the TS workload) runs as one script; a refused run names the
 // file and line of the first error line (workloads.mjs `parts`).
 //
+// CPU time and steal (Path B columns; plan v13 section 3.2 task 2, RSP13 section 6 item 3). On
+// Linux every timed run also records the engine's CPU time and the host's steal time; the JSON
+// samples get user_ms, sys_ms, cpu_ms (user + sys) and steal_ms, and the report gets a table
+// beside the wall time with the IQR of each, so a reader sees whether CPU time is quieter than
+// wall time on a box with steal. Elsewhere (no /proc) the fields are null.
+//   - CPU time: the cutime and cstime fields of /proc/self/stat before and after the run. The
+//     kernel adds a child's user and system time (its wait4 rusage) to them when the runner
+//     reaps it, and spawnSync reaps the engine before it returns. Unit: clock ticks
+//     (getconf CLK_TCK, 100 on Linux), so a 10 ms step. It sums every thread of the engine (GC
+//     helpers, node's helper threads) and does not count steal.
+//   - steal: the steal field of the "cpu" line of /proc/stat (all CPUs) before and after the
+//     run, in the same ticks.
+//
 // Exit status: 0 done; 1 refused or another error; 2 usage error; 3 host busy.
 // Tests (fake engines, no shells needed): node --test tools/bench/cross/run.test.mjs
 
@@ -77,7 +90,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleepMs } from "node:timers/promises";
 
 import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile, thpMode } from "../lib/host.mjs";
-import { geomean, median, verdict } from "../lib/stats.mjs";
+import { geomean, median, quantile, verdict } from "../lib/stats.mjs";
 import { DEFAULT_WORKLOADS, EMPTY, expandWorkloads, materialize, WORKLOADS } from "./workloads.mjs";
 import { splitVersion, treeState } from "./kernels.mjs";
 import { DEFAULT_HARNESS, HARNESSES, ROOT } from "./v8v7.mjs";
@@ -297,8 +310,66 @@ export function schedule(engines, workloads, rounds) {
   return out;
 }
 
-/** Runs one engine on one file; wall time in ms. */
-export function spawnRun(engine, file, timeoutS) {
+/**
+ * The waited-for children's CPU ticks of /proc/self/stat: fields 16 (cutime) and 17 (cstime).
+ * The second field (the command name) may hold spaces and ")", so the count starts after the
+ * last ")".
+ */
+export function parseSelfStat(text) {
+  const f = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
+  // f[0] is field 3 (state), so field n is f[n - 3].
+  const cutime = Number(f[13]);
+  const cstime = Number(f[14]);
+  return Number.isInteger(cutime) && Number.isInteger(cstime) ? { cutime, cstime } : null;
+}
+
+/** The steal ticks of the "cpu" line (all CPUs) of /proc/stat: its 8th number. */
+export function parseProcStat(text) {
+  const line = text.split("\n").find((l) => /^cpu\s/.test(l));
+  const steal = line ? Number(line.trim().split(/\s+/)[8]) : NaN;
+  return Number.isInteger(steal) ? steal : null;
+}
+
+let ticksPerS = null;
+/**
+ * The /proc reader of spawnRun on Linux: { cutime, cstime, steal, hz } or null (another OS, or
+ * a file it cannot read). See "CPU time and steal" at the top.
+ */
+export function procProbe() {
+  if (process.platform !== "linux") return null;
+  try {
+    // getconf is a child too: it runs (and is reaped) before the reading, never inside a run.
+    if (ticksPerS === null) {
+      const g = spawnSync("getconf", ["CLK_TCK"], { encoding: "utf8" });
+      const n = Number(g.stdout?.trim());
+      ticksPerS = Number.isInteger(n) && n > 0 ? n : 100;
+    }
+    const c = parseSelfStat(readFileSync("/proc/self/stat", "utf8"));
+    const steal = parseProcStat(readFileSync("/proc/stat", "utf8"));
+    return c && steal !== null ? { ...c, steal, hz: ticksPerS } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The CPU and steal fields of one run from the probe readings before and after it (all null
+ * when either reading is null). Milliseconds, rounded to 0.001.
+ */
+export function cpuFields(before, after) {
+  if (!before || !after) return { user_ms: null, sys_ms: null, cpu_ms: null, steal_ms: null };
+  const ms = (ticks) => Number(((ticks * 1000) / after.hz).toFixed(3));
+  const user = after.cutime - before.cutime;
+  const sys = after.cstime - before.cstime;
+  return { user_ms: ms(user), sys_ms: ms(sys), cpu_ms: ms(user + sys), steal_ms: ms(after.steal - before.steal) };
+}
+
+/**
+ * Runs one engine on one file: wall time in ms, and the CPU and steal fields (cpuFields; `probe`
+ * is procProbe by default, a fake in tests).
+ */
+export function spawnRun(engine, file, timeoutS, probe = procProbe) {
+  const before = probe();
   const t0 = process.hrtime.bigint();
   const r = spawnSync(engine.bin, [...engine.args, file], {
     encoding: "utf8",
@@ -307,7 +378,8 @@ export function spawnRun(engine, file, timeoutS) {
     timeout: timeoutS * 1000,
   });
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  return { ms, status: r.status, signal: r.signal, error: r.error?.message ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  const cpu = cpuFields(before, before && probe());
+  return { ms, ...cpu, status: r.status, signal: r.signal, error: r.error?.message ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
 /**
@@ -411,6 +483,49 @@ export function analyze(samples, { subject, comparators, workloads, warmup }) {
     };
   }
   return { rounds, times, ratios, geomean: gm };
+}
+
+/** IQR as a percent of the median (null for a median of 0). */
+function iqrPct(xs) {
+  const m = median(xs);
+  return m ? Number((((quantile(xs, 0.75) - quantile(xs, 0.25)) / m) * 100).toFixed(2)) : null;
+}
+
+/**
+ * The Path B columns per workload and engine, over the measured rounds (warm-up dropped): the
+ * median and IQR % of the wall time and of the CPU time (user + sys), and the steal sum and max.
+ * Null when no sample has a CPU time (not Linux); a row whose samples lack one has null CPU cells.
+ */
+export function cpuTable(samples, { engines, workloads }) {
+  const measured = samples.filter((s) => !s.warmup);
+  if (!measured.some((s) => typeof s.cpu_ms === "number")) return null;
+  const rows = [];
+  for (const w of workloads) {
+    for (const e of engines) {
+      const xs = measured.filter((s) => s.workload === w && s.engine === e);
+      if (!xs.length) continue;
+      const wall = xs.map((s) => s.ms);
+      const full = xs.every((s) => typeof s.cpu_ms === "number" && typeof s.steal_ms === "number");
+      const cpu = full ? xs.map((s) => s.cpu_ms) : null;
+      const steal = full ? xs.map((s) => s.steal_ms) : null;
+      rows.push({
+        workload: w,
+        engine: e,
+        n: xs.length,
+        wall_ms: Number(median(wall).toFixed(3)),
+        wall_iqr_pct: iqrPct(wall),
+        cpu_ms: cpu && Number(median(cpu).toFixed(3)),
+        cpu_iqr_pct: cpu && iqrPct(cpu),
+        steal_ms_sum: steal && Number(steal.reduce((a, b) => a + b, 0).toFixed(3)),
+        steal_ms_max: steal && Math.max(...steal),
+      });
+    }
+  }
+  return {
+    cpu: "user + sys of the engine process, all threads (wait4 rusage: /proc/self/stat cutime + cstime; clock ticks)",
+    steal: "the steal ticks of the /proc/stat cpu line (all CPUs) during the run",
+    rows,
+  };
 }
 
 /** Adds `status` labels to every ratio row, and the canary's gate reading. */
@@ -574,7 +689,7 @@ export async function run(o, deps = {}) {
         if (at) err.message += `\n    (the first error line is at ${at})`;
         throw err;
       }
-      return r.ms;
+      return r;
     };
 
     // Output check: every workload once on every engine, before any timing.
@@ -608,8 +723,19 @@ export async function run(o, deps = {}) {
     const samples = [];
     const roundLoad = [];
     plan.forEach((p, seq) => {
-      const ms = once(p.engine, p.workload);
-      samples.push({ seq, round: p.round, warmup: p.round < o.warmup, workload: p.workload, engine: p.engine, ms: Number(ms.toFixed(3)) });
+      const r = once(p.engine, p.workload);
+      samples.push({
+        seq,
+        round: p.round,
+        warmup: p.round < o.warmup,
+        workload: p.workload,
+        engine: p.engine,
+        ms: Number(r.ms.toFixed(3)),
+        user_ms: r.user_ms ?? null,
+        sys_ms: r.sys_ms ?? null,
+        cpu_ms: r.cpu_ms ?? null,
+        steal_ms: r.steal_ms ?? null,
+      });
       if (seq + 1 === plan.length || plan[seq + 1].round !== p.round) {
         roundLoad.push(load());
         log(`round ${p.round + 1}/${total}${p.round < o.warmup ? " (warm-up)" : ""}: load ${roundLoad.at(-1)}`);
@@ -654,7 +780,12 @@ export async function run(o, deps = {}) {
       // engine_build its features and preset (MC-w17-5; null for the other engines).
       engines: engines.map((e) => ({ id: e.id, label: e.label, role: e.role, version: e.version, engine_build: e.engine_build ?? null, build: e.build ?? null, bin: path.basename(e.bin), args: e.args })),
       workloads: Object.values(files).map(({ file, ...w }) => ({ ...w, file: path.basename(file) })),
-      M: { ratio: "t(engine) / t(ep9) per round; > 1: ep9 is faster", samples, ...m },
+      M: {
+        ratio: "t(engine) / t(ep9) per round; > 1: ep9 is faster",
+        samples,
+        ...m,
+        cpu: cpuTable(samples, { engines: o.engines, workloads: [...mWorkloads, EMPTY] }),
+      },
       R: r,
     };
   } finally {
@@ -718,6 +849,18 @@ export function renderMarkdown(res) {
       return `${f1(t.gross_ms)} | ${w === EMPTY ? "-" : f1(t.net_ms)}`;
     });
     L.push(`| ${w} | ${cells.join(" | ")} |`);
+  }
+  L.push("");
+  if (res.M.cpu) {
+    L.push(`Wall time beside CPU time (${res.M.cpu.cpu}) and steal (${res.M.cpu.steal}), per process, measured rounds; IQR as % of the median:`);
+    L.push("");
+    L.push("| workload | engine | n | wall ms | wall IQR % | CPU ms | CPU IQR % | steal ms, sum | steal ms, max |");
+    L.push("|---|---|---|---|---|---|---|---|---|");
+    for (const r of res.M.cpu.rows) {
+      L.push(`| ${r.workload} | ${eng[r.engine].label} | ${r.n} | ${f1(r.wall_ms)} | ${f1(r.wall_iqr_pct)} | ${f1(r.cpu_ms)} | ${f1(r.cpu_iqr_pct)} | ${f1(r.steal_ms_sum)} | ${f1(r.steal_ms_max)} |`);
+    }
+  } else {
+    L.push("CPU time and steal: not measured (Linux /proc only).");
   }
   if (res.R) {
     L.push("");

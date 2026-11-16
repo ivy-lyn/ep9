@@ -112,6 +112,12 @@ impl TestUnit {
     /// The canonical bytes: header, table, sections in kind order (the named kinds, then the
     /// extensions) at their aligned offsets with zero padding, then the content hash.
     pub fn encode(&self) -> Vec<u8> {
+        self.encode_with_align(&|e| e.align_log2())
+    }
+
+    /// As [`TestUnit::encode`], with each section aligned to `2^align_log2(entry)` instead of
+    /// the entry's own alignment (a unit laid out by another container version's rule).
+    pub fn encode_with_align(&self, align_log2: &dyn Fn(&TableEntry) -> u8) -> Vec<u8> {
         let mut named = self.sections.clone();
         named.sort_by_key(|(k, _)| *k);
         let mut ext = self.extensions.clone();
@@ -133,7 +139,7 @@ impl TestUnit {
         let mut body = Vec::new();
         let mut end = table_end;
         for (entry, data) in &all {
-            let align = 1usize << entry.align_log2();
+            let align = 1usize << align_log2(entry);
             let start = end.div_ceil(align) * align;
             body.resize(body.len() + (start - end), 0);
             let (offset, size) = (start as u64, data.len() as u64);
@@ -328,4 +334,23 @@ pub fn hexdump(bytes: &[u8]) -> String {
         s.push_str(&format!("{:06x}  {}\n", i * 16, hex.join(" ")));
     }
     s
+}
+
+/// `f` on each item, on every CPU (scoped threads, one chunk each), the results in item order;
+/// a panic in `f` panics the caller with the same payload. For the tests whose cases each
+/// hash a 64 KiB native unit (route UNIT-TEST-TIME).
+pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let chunk = items.len().div_ceil(cpus).max(1);
+    std::thread::scope(|s| {
+        let f = &f;
+        let workers: Vec<_> = items
+            .chunks(chunk)
+            .map(|c| s.spawn(move || c.iter().map(f).collect::<Vec<R>>()))
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
 }

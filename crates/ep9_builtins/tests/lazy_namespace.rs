@@ -46,7 +46,28 @@ fn print<'s>(
 }
 
 /// The host functions of every realm.
-const HOST: [(&str, u32, HostFn); 2] = [("print", 1, print), ("createRealm", 0, create_realm)];
+const HOST: [(&str, u32, HostFn); 3] = [
+    ("print", 1, print),
+    ("createRealm", 0, create_realm),
+    ("intrinsic", 1, intrinsic),
+];
+
+/// `intrinsic(name)`: the intrinsic of the current realm whose spec name is `name` (INTL W2:
+/// for a group intrinsic with no path from `globalThis`, such as `%IntlSegmentsPrototype%`).
+/// The use of a group intrinsic installs its group first (C3).
+fn intrinsic<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let name = cx.to_rust_string(args.get(0))?;
+    let id = IntrinsicId::ALL
+        .into_iter()
+        .find(|id| id.name() == name)
+        .unwrap_or_else(|| panic!("{name} is an intrinsic name"));
+    Ok(cx.intrinsic(id).into())
+}
 
 /// `createRealm()`: a new realm with the host functions, made in it; returns its global.
 fn create_realm<'s>(
@@ -153,6 +174,21 @@ fn size_of(modules: &[BuiltinModule]) -> usize {
 /// The number of definitions and intrinsics of the Temporal modules.
 fn group_size() -> usize {
     size_of(ep9_temporal::MODULES)
+}
+
+/// The cases whose script also installs every other lazy group ("Intl" and the TypedArray
+/// group): `Object.keys` and `Object.freeze` of globalThis ask `[[GetOwnProperty]]` of every
+/// key. Their count starts from the base plus [`other_group_cells`]: since the TA sync of
+/// m8-p2 (INTL W2 and TA-4) those cells (218 + 318) are more than half of the Temporal group
+/// (718), so the rounding of [`installs`] alone counts one install too many.
+const EVERY_GROUP_CASES: [&str; 2] = [
+    "a define with a value first",
+    "Object.freeze(globalThis) first",
+];
+
+/// The cells that the lazy groups other than Temporal add (one read of a key of each).
+fn other_group_cells(base: usize) -> usize {
+    min_cells("Intl; ArrayBuffer;").saturating_sub(base)
 }
 
 /// Whether the script that left `live` cells installed the Temporal group in `realms` realms
@@ -466,12 +502,15 @@ fn every_read_gives_the_eager_result() {
     let (base, group) = group_cells();
     // `createRealm()` alone installs no group: it is the base of the realm cases.
     let realm_base = common::on_big_stack(|| run("const B = createRealm();", false).1);
+    let others = other_group_cells(base);
     for ((name, src, realms), want) in CASES.iter().zip(NODE) {
         let (r, live) = run_both(src);
         let want: Vec<String> = want.iter().map(|s| s.to_string()).collect();
         assert_eq!(r, Ok(want), "{name}");
         let from = if src.contains("createRealm") {
             realm_base
+        } else if EVERY_GROUP_CASES.contains(name) {
+            base + others
         } else {
             base
         };
@@ -574,11 +613,12 @@ fn group_is_complete(modules: &[BuiltinModule]) {
     let mut want = Vec::new();
     for m in modules {
         for d in m.intrinsics {
+            // An intrinsic with no path from `globalThis` (INTL W2: %IntlSegmentsPrototype%,
+            // %IntlSegmentIteratorPrototype%) is read with the host function `intrinsic`.
             let path = &paths
                 .iter()
                 .find(|(id, _)| *id == d.id)
-                .unwrap_or_else(|| panic!("{} has a path", d.id.name()))
-                .1;
+                .map_or_else(|| format!("intrinsic({:?})", d.id.name()), |p| p.1.clone());
             let mut keys = Vec::new();
             if let IntrinsicValue::Builtin(_) = d.value {
                 keys.push("length:d--c".to_string());
@@ -609,13 +649,27 @@ fn group_is_complete(modules: &[BuiltinModule]) {
     assert_eq!(r, Ok(want));
 }
 
-/// The Intl ids of INTL W1 (the group of the key `Intl`).
-const INTL_IDS: [IntrinsicId; 5] = [
+/// The Intl ids of INTL W1, W2 and W3 (the group of the key `Intl`).
+const INTL_IDS: [IntrinsicId; 19] = [
     IntrinsicId::Intl,
     IntrinsicId::IntlLocale,
     IntrinsicId::IntlLocalePrototype,
     IntrinsicId::IntlCollator,
     IntrinsicId::IntlCollatorPrototype,
+    IntrinsicId::IntlPluralRules,
+    IntrinsicId::IntlPluralRulesPrototype,
+    IntrinsicId::IntlNumberFormat,
+    IntrinsicId::IntlNumberFormatPrototype,
+    IntrinsicId::IntlListFormat,
+    IntrinsicId::IntlListFormatPrototype,
+    IntrinsicId::IntlSegmenter,
+    IntrinsicId::IntlSegmenterPrototype,
+    IntrinsicId::IntlSegmentsPrototype,
+    IntrinsicId::IntlSegmentIteratorPrototype,
+    IntrinsicId::IntlDisplayNames,
+    IntrinsicId::IntlDisplayNamesPrototype,
+    IntrinsicId::IntlRelativeTimeFormat,
+    IntrinsicId::IntlRelativeTimeFormatPrototype,
 ];
 
 /// Design §4.6 case 1 for the Intl ids (INTL W1, C1): realm init makes no object of the Intl
@@ -636,7 +690,10 @@ fn realm_init_makes_no_intl_object() {
         .iter()
         .flat_map(|m| m.intrinsics.iter().map(|d| d.id))
         .collect();
-    assert_eq!(made, INTL_IDS, "the Intl group makes the W1 Intl ids");
+    assert_eq!(
+        made, INTL_IDS,
+        "the Intl group makes the W1, W2 and W3 Intl ids"
+    );
     let after = common::on_big_stack(|| {
         let mut iso = isolate(false);
         let r = iso.with_cx(|cx| {

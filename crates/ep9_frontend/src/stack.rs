@@ -13,7 +13,7 @@
 //!
 //! | Bytes per unit | debug | release | worst form |
 //! |---|---|---|---|
-//! | oxc_parser, per pre-scan unit | 4,240 | 2,288 | debug: nested functions; release: nested objects |
+//! | oxc_parser, per pre-scan unit | 5,824 | 2,288 | debug: async arrows (oxc 0.158, 2026-11-11); release: nested objects |
 //! | oxc regex parser, per group | 16,864 | 720 | regex groups (weighted 4 units, `prescan::REGEX_WEIGHT`) |
 //! | layer-2 depth pass, per AST level | 800 | 80 | debug: arrays; release: class heritage, assignment |
 //! | oxc_semantic, per AST level | 1,440 | 256 | arrays / class heritage |
@@ -33,7 +33,7 @@ const SAFETY_NUM: usize = 3;
 const SAFETY_DEN: usize = 2;
 
 #[cfg(debug_assertions)]
-const PARSE_PER_UNIT: usize = 4_608;
+const PARSE_PER_UNIT: usize = 6_144;
 #[cfg(not(debug_assertions))]
 const PARSE_PER_UNIT: usize = 2_560;
 

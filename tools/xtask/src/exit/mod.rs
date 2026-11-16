@@ -17,12 +17,14 @@
 //! | `drift` | adr-lint: the `path:line` references of the ADRs and the plan (M4-P3) |
 //! | `cites` | adr-lint: the short cites (`H31:66`, `AR:37`, ...) of plan doc 13 (M4-P5, MC-w16-8) |
 //! | `freeze` | the Frozen state of an ADR, part by part (its Freeze table; M4-P3) |
+//! | `forks` | the fork checkout line of an input (FORK-CHECKOUT-ATTEST; M8-P1) |
 
 pub(crate) mod adr;
 pub(crate) mod ci;
 pub(crate) mod cites;
 pub(crate) mod cross;
 pub(crate) mod drift;
+pub(crate) mod forks;
 pub(crate) mod freeze;
 pub(crate) mod gc_shards;
 pub(crate) mod json;

@@ -1,15 +1,15 @@
 //! Cell kind ids (word0 byte 5), table v1 (v2 of the object layout adds GENERATOR and
 //! SLOT_OBJECT, M2-P0; v3 adds ARGUMENTS, MODULE_NAMESPACE, MODULE, ORDERED_TABLE and REALM,
 //! M3-P0; v4 adds PROXY, PROXY_CALLABLE, VALIDITY_CELL and WEAK_CELL and the CONS, SLICED and
-//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0; v6 adds PROPS_INDEXED and the FUSE layout, M6-P0; v7 adds BIGINT, [`BIGINT`]),
+//! THIN layouts, M4-P0; v5 adds ELEMENTS_DOUBLE and ELEMENTS_DICT and reserves FUSE, M5-P0; v6 adds PROPS_INDEXED and the FUSE layout, M6-P0; v7 adds BIGINT, [`BIGINT`]; v9 adds the 12 TypedArray view kinds and BYTES, [`INT8_VIEW`], [`BYTES`]),
 //! and the kind tests on Value bits.
 //!
 //! | Ids | Kinds | Range test |
 //! |---|---|---|
 //! | 1-7 | strings: SEQ_LATIN1, SEQ_UTF16; CONS, SLICED, THIN (layouts below, OBJECT_LAYOUT 4; built by M4-P1 STR1 and M4-P2 STR2); EXT_LATIN1, EXT_UTF16 reserved | [`is_string`] |
 //! | 8; 9 | SYMBOL; BIGINT (OBJECT_LAYOUT 7, a single-id row: 10-15 stay free and in no range) | [`is_symbol`]; [`is_bigint`] |
-//! | 16-63 | JS objects: OBJECT, FUNCTION, ARRAY, ERROR, ITERATOR, PRIMITIVE_WRAPPER, BOUND_FUNCTION, GENERATOR, SLOT_OBJECT, ARGUMENTS, MODULE_NAMESPACE, PROXY, PROXY_CALLABLE; 29-63 reserved | [`is_object`] |
-//! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO, MODULE, ORDERED_TABLE, REALM, VALIDITY_CELL, WEAK_CELL, ELEMENTS_DOUBLE, ELEMENTS_DICT, PROPS_INDEXED (84, OBJECT_LAYOUT 6); FUSE (83) reserved, its layout declared (OBJECT_LAYOUT 6) | - |
+//! | 16-63 | JS objects: OBJECT, FUNCTION, ARRAY, ERROR, ITERATOR, PRIMITIVE_WRAPPER, BOUND_FUNCTION, GENERATOR, SLOT_OBJECT, ARGUMENTS, MODULE_NAMESPACE, PROXY, PROXY_CALLABLE; 29-40 the 12 TypedArray view kinds in spec Table 71 order, INT8_VIEW .. FLOAT64_VIEW (OBJECT_LAYOUT 9, [`INT8_VIEW`]); 41-63 reserved | [`is_object`]; the views [`is_view_kind`], of them [`is_bigint_view_kind`] (36-37) and [`is_float_view_kind`] (38-40) |
+//! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO, MODULE, ORDERED_TABLE, REALM, VALIDITY_CELL, WEAK_CELL, ELEMENTS_DOUBLE, ELEMENTS_DICT, PROPS_INDEXED (84, OBJECT_LAYOUT 6), BYTES (85, OBJECT_LAYOUT 9, [`BYTES`]); FUSE (83) reserved, its layout declared (OBJECT_LAYOUT 6) | - |
 //! | 128 | SHAPE | - |
 //!
 //! OBJECT_LAYOUT 4 (M4-P0; plan v9 V9-D19, V9-D23, V9-A8). The ids below are the whole
@@ -268,6 +268,80 @@ pub(crate) fn is_bigint(b: u64) -> bool {
     cell_kind(b) == BIGINT.get()
 }
 
+// ---- the TypedArray view kinds and BYTES of OBJECT_LAYOUT 9 (TypedArray TA-0, TA-DECL) ----
+// At the end of the const block, after the BIGINT test above, so no line of the table and of
+// the older ids moves (H17 cites them). Design `docs/plan/notes/typedarray-design.md` §2.1
+// (TA-D1, TA-D4). Declared only: TA-1 TA-VM registers them (`object::register_kinds`) and
+// builds their cells.
+
+/// A view of an Int8Array (spec Table 71 row 1): the first of the 12 view kinds, 29-40, one
+/// per element type, adjacent and in Table 71 order, so the element type of a view is its kind
+/// minus [`INT8_VIEW`] (TA-D1). Each view kind is a JS object with 4 fixed fields: +24 buffer,
+/// +32 data (an `ExternalRef<u8>` native word), +40 length, +48 byteOffset; the in-object slots
+/// follow at +56 (`layout::VIEW_*`). Its elements store (+16) is always undefined.
+/// OBJECT_LAYOUT 9.
+pub(crate) const INT8_VIEW: KindId = k(29);
+/// Uint8Array (Table 71 row 2). OBJECT_LAYOUT 9.
+pub(crate) const UINT8_VIEW: KindId = k(30);
+/// Uint8ClampedArray (Table 71 row 3). OBJECT_LAYOUT 9.
+pub(crate) const UINT8_CLAMPED_VIEW: KindId = k(31);
+/// Int16Array (Table 71 row 4). OBJECT_LAYOUT 9.
+pub(crate) const INT16_VIEW: KindId = k(32);
+/// Uint16Array (Table 71 row 5). OBJECT_LAYOUT 9.
+pub(crate) const UINT16_VIEW: KindId = k(33);
+/// Int32Array (Table 71 row 6). OBJECT_LAYOUT 9.
+pub(crate) const INT32_VIEW: KindId = k(34);
+/// Uint32Array (Table 71 row 7). OBJECT_LAYOUT 9.
+pub(crate) const UINT32_VIEW: KindId = k(35);
+/// BigInt64Array (Table 71 row 8): the first of the 2 BigInt views ([`is_bigint_view_kind`]).
+/// OBJECT_LAYOUT 9.
+pub(crate) const BIGINT64_VIEW: KindId = k(36);
+/// BigUint64Array (Table 71 row 9). OBJECT_LAYOUT 9.
+pub(crate) const BIGUINT64_VIEW: KindId = k(37);
+/// Float16Array (Table 71 row 10): the first of the 3 float views ([`is_float_view_kind`]).
+/// OBJECT_LAYOUT 9.
+pub(crate) const FLOAT16_VIEW: KindId = k(38);
+/// Float32Array (Table 71 row 11). OBJECT_LAYOUT 9.
+pub(crate) const FLOAT32_VIEW: KindId = k(39);
+/// Float64Array (Table 71 row 12): the last view kind. OBJECT_LAYOUT 9.
+pub(crate) const FLOAT64_VIEW: KindId = k(40);
+
+/// Raw bytes (internal, TA-D4): the store of a fixed-length, non-shared ArrayBuffer. +8 the
+/// byte length (a number Value), +16 the bytes, zeroed at birth (8-aligned; no Value, so the
+/// trace function visits no word, as ELEMENTS_DOUBLE). Above 8 KiB the cell is a large object.
+/// OBJECT_LAYOUT 9.
+pub(crate) const BYTES: KindId = k(85);
+
+/// The number of view kinds: one per row of spec Table 71.
+pub(crate) const VIEW_KINDS: u8 = FLOAT64_VIEW.get() - INT8_VIEW.get() + 1;
+const _: () = assert!(VIEW_KINDS == 12);
+
+/// True for the 12 view kinds 29-40 (one range compare, TA-D6). Not routed: the range 25..=28
+/// of `exotic::is_routed` stays closed, so a view kind gets this compare of its own.
+#[inline(always)]
+pub(crate) const fn is_view_kind(k: u8) -> bool {
+    k >= INT8_VIEW.get() && k <= FLOAT64_VIEW.get()
+}
+
+/// True for the 2 BigInt views, BigInt64Array and BigUint64Array (36-37): their elements are
+/// BigInts (`[[ContentType]]` bigint).
+#[inline(always)]
+pub(crate) const fn is_bigint_view_kind(k: u8) -> bool {
+    k >= BIGINT64_VIEW.get() && k <= BIGUINT64_VIEW.get()
+}
+
+/// True for the 3 float views, Float16Array, Float32Array and Float64Array (38-40).
+#[inline(always)]
+pub(crate) const fn is_float_view_kind(k: u8) -> bool {
+    k >= FLOAT16_VIEW.get() && k <= FLOAT64_VIEW.get()
+}
+
+/// A TypedArray (a cell of one of the 12 view kinds, [`is_view_kind`]).
+#[inline(always)]
+pub(crate) fn is_view(b: u64) -> bool {
+    is_view_kind(cell_kind(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +426,51 @@ mod tests {
         assert_eq!(all.len(), n, "kind ids are distinct");
         assert_eq!(FLAG_INOBJECT_MASK & FLAG_IS_PROTOTYPE, 0);
         assert_eq!(FLAG_IS_PROTOTYPE & FLAG_HASH_PRESENT, 0);
+    }
+
+    /// OBJECT_LAYOUT 9 (TypedArray TA-0): the 12 view kinds at 29-40 in spec Table 71 order and
+    /// BYTES 85, with their range tests; together with the ids of `table_v1_ranges` (44), 57
+    /// distinct ids. A view is a JS object (16-63) and no routed kind (25..=28 stays closed).
+    #[test]
+    fn table_v9_view_kinds() {
+        let views = [
+            INT8_VIEW,
+            UINT8_VIEW,
+            UINT8_CLAMPED_VIEW,
+            INT16_VIEW,
+            UINT16_VIEW,
+            INT32_VIEW,
+            UINT32_VIEW,
+            BIGINT64_VIEW,
+            BIGUINT64_VIEW,
+            FLOAT16_VIEW,
+            FLOAT32_VIEW,
+            FLOAT64_VIEW,
+        ];
+        assert_eq!(
+            views.map(|k| k.get()),
+            core::array::from_fn(|i| 29 + i as u8)
+        );
+        assert!(views.iter().all(|k| (16..=63).contains(&k.get())));
+        assert_eq!(BYTES.get(), 85);
+        assert!((64..=127).contains(&BYTES.get()));
+        let in_range = |t: fn(u8) -> bool| (0..=u8::MAX).filter(|&k| t(k)).collect::<Vec<_>>();
+        assert_eq!(in_range(is_view_kind), (29..=40).collect::<Vec<u8>>());
+        assert_eq!(in_range(is_bigint_view_kind), [36, 37]);
+        assert_eq!(in_range(is_float_view_kind), [38, 39, 40]);
+        assert!(!(25..=28).any(is_view_kind), "no routed kind is a view");
+        // The ids of table v1 (strings, symbol, BigInt, JS objects 16-28, internal 64-84, shape).
+        let mut all: Vec<u8> = (1..=9)
+            .chain(16..=28)
+            .chain(64..=84)
+            .chain([128])
+            .chain(views.map(|k| k.get()))
+            .chain([BYTES.get()])
+            .collect();
+        let n = all.len();
+        assert_eq!(n, 44 + 13);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "kind ids are distinct");
     }
 }

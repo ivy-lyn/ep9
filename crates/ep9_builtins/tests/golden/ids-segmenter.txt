@@ -1,0 +1,10 @@
+# ep9 builtin ids: module segmenter, block 36. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x4800   36.0         constructor  0       "Segmenter"  (%Intl.Segmenter%)
+0x4801   36.1         method       1       "supportedLocalesOf"  (%Intl.Segmenter%.supportedLocalesOf w-c)
+0x4802   36.2         method       0       "resolvedOptions"  (%Intl.Segmenter.prototype%.resolvedOptions w-c)
+0x4803   36.3         method       1       "segment"  (%Intl.Segmenter.prototype%.segment w-c)
+0x4804   36.4         method       1       "containing"  (%IntlSegmentsPrototype%.containing w-c)
+0x4805   36.5         method       0       "[Symbol.iterator]"  (%IntlSegmentsPrototype%.[Symbol.iterator] w-c)
+0x4806   36.6         method       0       "next"  (%IntlSegmentIteratorPrototype%.next w-c)

@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | Project, ref | oxc, new issue |
-| Status | draft |
-| ep9 need | PRE-1 (M3-P5-OPEN carry item); M1 front-end correctness, no gate. Due: none (the workaround is in place) |
-| Workaround | `crates/ep9_frontend/src/strict_filter.rs` (M4-P2): after oxc_semantic, drop a "Cannot assign to 'eval'/'arguments' in strict mode" diagnostic whose label is an IdentifierReference that is not itself an assignment target, except an `arguments` read in a class field initializer or static block (then the class error is reported, see Cause). Used by `semantic` (lib.rs) and `compile_eval` (eval.rs). No oxc patch: local patch count stays 0/3 |
+| Status | dropped (fixed upstream in oxc 0.157.0; README row) |
+| ep9 need | PRE-1 (M3-P5-OPEN carry item); M1 front-end correctness, no gate. Due: none (fixed upstream in oxc 0.157.0; no workaround since M8-P0) |
+| Workaround | None since M8-P0 (route STRICT-FILTER-REMOVE). oxc_semantic 0.157.0 reports the error only for writes. On oxc 0.158.0 the post-filter `crates/ep9_frontend/src/strict_filter.rs` (M4-P2) dropped and replaced nothing on its 67 cases, so it was removed. `crates/ep9_frontend/tests/strict_eval_arguments.rs` keeps the cases as regression tests. oxc_semantic 0.158.0 also refuses `for (eval of [])` and `for (arguments in {})` in strict code (the related gap below). No oxc patch: local patch count stays 0/3 |
 | Verified by | not yet (a draft is "ready" only after an agent that did not write it runs the repro again, README) |
 
 ## Cause
@@ -14,7 +14,7 @@
 
 The walk also `return`s right after it reports, so the class check below it in the same function (§15.7.1: `arguments` in a field initializer or a static block, 0.155.0 lines 331-361) never runs for that reference. In `class C{x=([v=arguments]=[])}` the only error is the assign one, which the ep9 filter drops as a read; so the filter runs that class check itself and reports oxc's "'arguments' is not allowed in class field initializer" (or "static initialization block") instead (node v24.22.1: SyntaxError).
 
-A second, related gap: the walk never meets a `ForInStatement` / `ForOfStatement`, so `for (eval of [])` and `for (arguments in {})` in strict code get no error. ep9 does not work around this one (no test262 test has it; noted as a known difference).
+A second, related gap: the walk never meets a `ForInStatement` / `ForOfStatement`, so `for (eval of [])` and `for (arguments in {})` in strict code get no error. ep9 does not work around this one (no test262 test has it; noted as a known difference). [2026-11-11, M8-P0: oxc 0.158.0 refuses both in strict code; `crates/ep9_frontend/tests/strict_eval_arguments.rs` TARGETS has them.]
 
 ## Repro (pinned version)
 

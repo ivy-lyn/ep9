@@ -15,3 +15,5 @@
       9      72  set_keyed  RtFn3
      10      80  deopt  RtFn2
      11      88  load_global  RtFn0
+     12      96  alloc_site  RtFn2
+     13     104  clone_widen  RtFn3

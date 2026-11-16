@@ -26,6 +26,9 @@
 //! `cargo test --locked -p ep9_rx1 --test parse_equality -- --ignored --nocapture`.
 //! Set `EP9_RX1_PAIRS=<file>` to write every compared pair (JSON lines) for a check against
 //! node.
+//!
+//! The same pairs also check port step 3: each pattern RX1 parses compiles in both forms and
+//! its graph is valid ([`rx1_compiles_the_test262_regexp_sources`]).
 
 mod corpus;
 
@@ -184,6 +187,54 @@ fn rx1_parses_the_test262_regexp_sources_as_rx0() {
         "the differences are not the known list (tests/parse_equality_known.txt):\n{}",
         report.join("\n")
     );
+}
+
+/// Port step 3 on the same pairs: every pattern RX1 parses compiles to a node graph in both
+/// forms (one-byte and two-byte) and passes [`ep9_rx1::Program::validate`]. The graph is
+/// built and analysed on a thread with a large stack, as the engine will run it.
+#[test]
+#[ignore = "needs third_party/test262 (scripts/sync-test262.sh); run with --ignored"]
+fn rx1_compiles_the_test262_regexp_sources() {
+    let (unique, _) = test262_pairs();
+    let report = std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let mut compiled = 0;
+            let mut report = Vec::new();
+            for p in &unique {
+                let Some(flags) = Flags::parse(&p.flags) else {
+                    continue;
+                };
+                let Ok(pattern) = ep9_rx1::parse(&p.pattern, flags) else {
+                    continue;
+                };
+                for one_byte in [false, true] {
+                    let options = ep9_rx1::CompileOptions::for_source(one_byte, p.pattern.len());
+                    match ep9_rx1::compile(&pattern, flags, options) {
+                        Ok(program) => match program.validate() {
+                            Ok(()) => compiled += 1,
+                            Err(e) => report.push(format!(
+                                "{}\t{}\t{one_byte}\t{e}",
+                                flags.to_letters(),
+                                escape(&p.pattern)
+                            )),
+                        },
+                        Err(e) => report.push(format!(
+                            "{}\t{}\t{one_byte}\t{e:?}",
+                            flags.to_letters(),
+                            escape(&p.pattern)
+                        )),
+                    }
+                }
+            }
+            println!("compile: {compiled} programs, {} errors", report.len());
+            assert!(compiled >= 8500, "only {compiled} programs");
+            report
+        })
+        .expect("spawn")
+        .join()
+        .expect("the compile thread");
+    assert!(report.is_empty(), "compile errors:\n{}", report.join("\n"));
 }
 
 #[test]

@@ -2011,14 +2011,15 @@ fn move_or_delete<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, from: u64, to: u6
     Ok(())
 }
 
-/// Array.prototype.toLocaleString ( [ reserved1 [ , reserved2 ] ] ) (§23.1.3.32, the
-/// ECMA-262 form without ECMA-402).
+/// Array.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.5.1; it
+/// replaces ECMA-262 §23.1.3.32): each element's toLocaleString gets `locales` and `options`.
 fn to_locale_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    let (locales, options) = (args.get(0), args.get(1));
     // 1. Let array be ? ToObject(this value).
     let array = cx.to_object(this)?;
     // 2. Let len be ? LengthOfArrayLike(array).
@@ -2040,12 +2041,13 @@ fn to_locale_string<'s>(
         let element = cx.get_index(array, k)?;
         // c. If element is neither undefined nor null, then
         if !element.is_undefined_or_null() {
-            // i. Let S be ? ToString(? Invoke(element, "toLocaleString")).
+            // i. Let S be ? ToString(? Invoke(element, "toLocaleString", « locales, options
+            //    »)).
             let f = cx.get_v(element, "toLocaleString")?;
             if !cx.is_callable(f) {
                 return Err(cx.throw_type_error("toLocaleString is not a function"));
             }
-            let s = cx.call(f, element, &[])?;
+            let s = cx.call(f, element, &[locales, options])?;
             let s = cx.to_string(s)?;
             let s = cx.flatten(s)?;
             // ii. Set R to the string-concatenation of R and S.

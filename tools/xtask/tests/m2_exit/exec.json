@@ -10,6 +10,7 @@
  "commit": "0123456789abcdef0123456789abcdef01234567",
  "dirty": false,
  "made_by": "host:test",
+ "runner_forks": "regress=pinned icu4x=pinned",
  "tree": {},
  "gc_stress": 0,
  "skipped": 1,

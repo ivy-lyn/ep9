@@ -103,7 +103,7 @@ Full answer, ladders, trust levels, unit format and stages: [plan/05-aot.md](pla
 **Q8. Dependencies in `third_party/`?** ([plan/08-repo.md](plan/08-repo.md))
 - Each dependency has `third_party/<name>.commit`, `scripts/sync-<name>.sh` and optional patches. The root workspace excludes `third_party`.
 - tsrs never enters the engine graph. Its CLI builds in tsrs's workspace; `ep9-typecheck` builds in `tools/ep9-typecheck`.
-- oxc comes from crates.io with an exact `=0.155.0` pin and ≤ 3 local patches. CI guards check `cargo tree`.
+- oxc comes from crates.io with an exact `=0.158.0` pin and ≤ 3 local patches. CI guards check `cargo tree`.
 
 ## 3. Key diagram
 
@@ -111,7 +111,7 @@ Full answer, ladders, trust levels, unit format and stages: [plan/05-aot.md](pla
  .js .mjs .cjs .ts .mts .cts                                   eval / new Function text (every mode, H5)
    |                                                              |
    v                                                              v
- ep9_frontend: oxc =0.155.0 parse + semantic | 3-layer depth guard | scope pass
+ ep9_frontend: oxc =0.158.0 parse + semantic | 3-layer depth guard | scope pass
                TS lowering in BytecodeGen (H3) | hint join on the pre-lowering AST <-- .ep9h (optional)
    |
    v

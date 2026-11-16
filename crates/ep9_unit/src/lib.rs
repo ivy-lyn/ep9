@@ -3,7 +3,8 @@
 //! `aot` feature (H27), from A2.
 //!
 //! ```text
-//!  unit bytes: header (256 B) | section table (32 B per section) | sections, 8-aligned
+//!  unit bytes: header (256 B) | section table (32 B per section) | sections
+//!              (text 64 KiB-aligned, the others 8-aligned)
 //!                  |
 //!  check(bytes, &HostInfo::current()) -> Load | Bytecode | Source | LoadError   (S4 steps 1-4)
 //!                                         ^
@@ -26,8 +27,8 @@ mod host;
 mod layout;
 pub mod size;
 
-pub use check::{Outcome, Verdict, check, verdict};
-pub use codes::{Contract, SectionKind, Versions, cpu, target_abi, target_arch};
+pub use check::{Outcome, Verdict, check, check_linked, unit_section, verdict};
+pub use codes::{Contract, SectionKind, TEXT_ALIGN_LOG2, Versions, cpu, target_abi, target_arch};
 pub use header::{
     BadUnit, CONTAINER_VERSION, EXTENSION_ALIGN_LOG2, EXTENSION_KIND_MIN, ExtensionEntry,
     FROZEN_PREFIX_SIZE, HASH_SHA256, HEADER_SIZE, MAGIC, MAX_SECTIONS, MIN_SECTIONS,
@@ -36,9 +37,12 @@ pub use header::{
     incompat_flags, offsets, source_flags_valid,
 };
 pub use host::{ENGINE_BUILD_ID, HostInfo, RUNTIME_TABLE_LEN};
-pub use layout::{ENTRY_FIELDS, Field, HEADER_FIELDS, OnChange, layout_text};
+pub use layout::{
+    CODE_TABLES_V4, ENTRY_FIELDS, Field, HEADER_FIELDS, OnChange, code_table_lines, layout_text,
+};
 
-/// The unit writer (A2). Empty until then: tests build units with their own encoder
+/// The unit writer (A2, feature `aot`): so far the `.o` form of a unit container
+/// ([`obj::write_object`], H35-Q3). Tests build the containers with their own encoder
 /// (`tests/common/mod.rs`).
 #[cfg(feature = "aot")]
-mod aot {}
+pub mod obj;

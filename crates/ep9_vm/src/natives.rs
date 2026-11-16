@@ -1212,11 +1212,22 @@ pub(crate) fn iterator_next<'s>(
 /// The result of step `i` of an array iterator of kind `kind` over the array-like `o`
 /// (§23.1.5.1 steps 2.b.iii-v): the index `i` (key), element `i` (value) or a new Array
 /// `[i, element]` (key+value, CreateArrayFromList); `None` past `LengthOfArrayLike(o)`
-/// (§7.3.18). A key step reads no element. v0: the cell keeps a u32 index, so an array-like
-/// is done at 2^32 - 1 (an Array's length is below that). GC point.
+/// (§7.3.18), or past TypedArrayLength for a TypedArray. A key step reads no element. v0:
+/// the cell keeps a u32 index, so an array-like is done at 2^32 - 1 (an Array's length is
+/// below that). GC point.
 fn array_iterator_step(cx: &mut Cx, o: u64, i: u32, kind: i32) -> JsResult<Option<u64>> {
     let len = if is_array(o) {
         f64::from(object::array_len(o))
+    } else if kinds::is_view(o) {
+        // 2.b. A TypedArray: TypedArrayLength of MakeTypedArrayWithBufferWitnessRecord(o,
+        //      seq-cst); a TypeError if IsTypedArrayOutOfBounds (TypedArray TA-4 R3).
+        match crate::typed_array::length(cx.rt(), o) {
+            Some(n) => n as f64,
+            None => {
+                let msg = "Cannot perform this operation on a detached or out-of-bounds TypedArray";
+                return Err(error::throw_error(cx, ErrorKind::TypeError, msg));
+            }
+        }
     } else {
         let rt = cx.rt();
         let len = property::get(cx, o, rt.atom(Atom::Length))?;

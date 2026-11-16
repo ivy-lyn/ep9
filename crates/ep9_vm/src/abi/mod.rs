@@ -1746,3 +1746,11 @@ mod forward;
 
 // M7-P4 A2-LOADER (H20 part 2): the unit-load API, the first caller of `select()`.
 mod unit_code;
+
+// TypedArray TA-0 TA-DECL (H20 part 2): the ArrayBuffer, SharedArrayBuffer, TypedArray, DataView
+// and Atomics methods, m8-stubs that TA-1 TA-VM fills.
+mod typed;
+// TA-2 fixer (N1): the SharedArrayBuffer block handle for another isolate (H22-Q8).
+pub use self::typed::SharedBlockRef;
+// TypedArray TA-4 R1 (H20 part 2): the kind of `Cx::create_array_iterator`.
+pub use self::iter::ArrayIterKind;

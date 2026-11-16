@@ -1,0 +1,24 @@
+# cldr-tables (INTL-V2-D5): writes the CLDR side tables of ep9_intl (crates/ep9_intl/src/cldr/gen)
+# from the CLDR JSON pinned by cldr-json.commit. Its own workspace, never part of the engine
+# graph: the root Cargo.toml lists "tools/cldr-tables" in `exclude` (the tools/calprobe form).
+# Its tests compare the tables with the ICU4X compiled data of the same CLDR release, so the
+# icu_* dev-dependencies are the ICU4X release whose data has that CLDR version (README.md).
+[package]
+name = "cldr-tables"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde_json = "=1.0.154"
+
+# ICU4X 2.4.0 / icu_experimental 0.7.0: compiled data of CLDR 49.0.0 (icu_decimal_data and
+# icu_experimental_data README.md). Exact pins; they move with each ICU4X BUMP.
+[dev-dependencies]
+icu_decimal = { version = "=2.4.0", default-features = false, features = ["compiled_data"] }
+icu_experimental = { version = "=0.7.0", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "=2.4.0", default-features = false }
+icu_provider = { version = "=2.4.0", default-features = false }
+
+[workspace]

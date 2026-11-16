@@ -27,7 +27,7 @@
 //! | 2 | exit2 JSON measured on the `--host` platform (`host.platform`, node's `<platform>-<arch>`, X12: another is FAIL, none is OPEN): both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the four fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31). On a Linux host the cell records the THP mode, `host.transparent_hugepage` (MC-w18-O4; no status effect; `tools/bench/lib/host.mjs` `thpMode` reads it, run.mjs writes it in `host.measured`, exit2.mjs copies it). On `aarch64-unknown-linux-gnu` the cell is N/A by design: no gate host (V9-D31, V11-D32, X13) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` 1 (a GC before every allocation), `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), minor GCs ran (`gc_stress` 1 and `"stress_major_every"` 2 or more, the smallest of the shards; no field: the pre-GC6 default 64), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), `third_party/icu4x.commit`, `third_party/patches/icu4x` (INTL-FRESH-PATHS), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `crates/ep9_rx1`, `crates/ep9_regexp`, `third_party/regress.commit`, `third_party/patches/regress` (RX1-FUZZ-EXEC), `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), `third_party/icu4x.commit`, `third_party/patches/icu4x` (INTL-FRESH-PATHS), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `crates/ep9_rx1`, `crates/ep9_regexp`, `crates/ep9_unit`, `crates/ep9_vm`, `crates/ep9_bigint`, `crates/ep9_facts`, `crates/ep9_heap`, `crates/ep9_math`, `crates/ep9_platform`, `crates/ep9_value` (UNIT-LOADER-FUZZ: the path dependencies of `unit_loader`), `third_party/regress.commit`, `third_party/patches/regress` (RX1-FUZZ-EXEC), `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition) in each of its Verdict rows, with a row for each of its protocol conditions C1, C2, C3 and, for C4, one row per gate kernel of protocol §2, labelled `C4 crypto` and `C4 navier-stokes` (`SPIKE_C_GATE_KERNELS`; protocol §0 C4 "for each gate kernel"; another C4 label, such as a bare `C4` or `C4 all`, is refused; Codex r2) (protocol §0; a missing one is OPEN, M5-P4-ORCH-3; a later row with the same Condition label, the cell text before its first `:`, replaces an earlier one), each row with a `Commit` that is a full commit id (40 hex digits), HEAD or an ancestor with no change since in the code Spike C builds (`VERDICT_FRESH_PATHS`: the path-dependency closure of `spikes/spike-c`, the root `Cargo.toml` its engine crates inherit from, the root `rust-toolchain.toml` that sets its compiler, the root `.cargo/config.toml` that cargo merges into the build and the regress and icu4x fork pins, M5-P4-ORCH-2, -9, -10 and -14), and the `Lowering` label `jit`; a row without them, or with a Condition that is not one of the four, is refused (at least OPEN; MC-w17-9, V10-D37); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
@@ -57,6 +57,18 @@
 //! when one is missing or not a full commit id, the runner commit is not the input's `commit`,
 //! the runner was built dirty, the checkout HEAD is not the pin `third_party/test262.commit` or
 //! moved during the run, or the checkout had changes (plan v10 X4).
+//!
+//! **The fork checkouts** (FORK-CHECKOUT-ATTEST, `exit::forks`): the pins and patch sets above
+//! are tree paths; cargo builds the git-ignored checkouts. On a tree whose `scripts/sync-lib.sh`
+//! has the shared check (`fork_attest`), an ep9-test262 JSON names the fork line of its runner's
+//! build (`"runner_forks"`), a kernels JSON the fork line at its run (`"forks"`) and the nesting
+//! log of item 8 the fork line of its checkouts (`m1-exit forks: ...`, NESTING_CMD), and the cell
+//! is OPEN unless every fork reads `pinned` (a missing field or line too). The fork line of a
+//! kernels JSON names the checkouts at the run, not the build, so on the same trees item 1 also
+//! reads the checked binary's own freshness line (`ep9.build`, `ep9 --version` stderr): OPEN
+//! unless it is clean and names the JSON's `commit` (a binary built from an edited fork says
+//! dirty after a resync too). An older tree (the `m1-exit` tree) has no producer of these
+//! fields, so its cells do not read them.
 //!
 //! **The gate build** (X3, the O8 refusal; plan v10 V10-D10, V10-A12): items 1-4 read the
 //! build each input ran. An ep9-test262 JSON names `preset`, `mode` (the preset its isolates
@@ -99,6 +111,7 @@ use crate::adr_lint;
 use crate::exit::adr::{counts_line, index_findings};
 use crate::exit::ci::{CI_MATRIX, CI_TRIPLE, Ci, gh_run};
 use crate::exit::cross::fresh_since;
+use crate::exit::forks;
 use crate::exit::freeze::{Due, find_part, frozen_by_m1};
 use crate::exit::gc_shards::{GC_JOB, merge_gc_shards, test262_files};
 use crate::exit::json::{Json, parse_json};
@@ -210,11 +223,19 @@ const T262_FRESH_PATHS: [&str; 11] = [
 /// `fuzz/Cargo.toml` and theirs; a test checks the list against them), the regress fork that
 /// its `[patch.crates-io]` builds ([`REGRESS_PATHS`]), the root `Cargo.toml` (its
 /// `[profile.release]`, the workspace members) and `Cargo.lock`.
-const CARGO_FUZZ_FRESH_PATHS: [&str; 9] = [
+const CARGO_FUZZ_FRESH_PATHS: [&str; 17] = [
     "crates/ep9_frontend",
     "crates/ep9_bytecode",
     "crates/ep9_rx1",
     "crates/ep9_regexp",
+    "crates/ep9_unit",
+    "crates/ep9_vm",
+    "crates/ep9_bigint",
+    "crates/ep9_facts",
+    "crates/ep9_heap",
+    "crates/ep9_math",
+    "crates/ep9_platform",
+    "crates/ep9_value",
     REGRESS_PATHS[0],
     REGRESS_PATHS[1],
     "fuzz",
@@ -249,6 +270,11 @@ const SOURCE_LINE: &str = "m1-exit source: ";
 /// [`T262_FRESH_PATHS`], so a log made on GitHub's pull_request merge commit (which the local
 /// repository does not have) can show that it ran HEAD's code.
 const TREES_LINE: &str = "m1-exit trees:";
+
+/// Item 8: the forks line of a nesting log (NESTING_CMD; FORK-CHECKOUT-ATTEST): `m1-exit forks:
+/// regress=<state> icu4x=<state>`, the `fork_attest` line of the checkouts that the cargo runs
+/// built (`exit::forks`). Empty on a tree without the check; read only on a tree with it.
+const FORKS_LINE: &str = "m1-exit forks: ";
 
 /// Item 1: the kernels (8 v8-v7 + 7 Octane).
 const KERNELS: usize = 15;
@@ -414,6 +440,7 @@ const NESTING_TESTS: [&str; 9] = [
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
      echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
      echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress third_party/icu4x.commit third_party/patches/icu4x; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
+     echo \"m1-exit forks: $(sh -c '. \"$1/scripts/sync-lib.sh\"; root=$1; fork_attest regress icu4x' sh \"$PWD\")\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -730,6 +757,9 @@ struct Source {
     /// The runner read its source facts through its test seam (`"test_seam": true`; F3,
     /// tools/test262/src/exec.rs): another tree's facts, or a file changed on purpose.
     seam: bool,
+    /// The [`FORKS_LINE`] of a nesting log, trimmed (FORK-CHECKOUT-ATTEST); None for a JSON
+    /// (its runner's fork line is [`Runner`] `forks`) and for a log with no such line.
+    forks: Option<String>,
 }
 
 /// The build an input names (X3, [`build_check`]): an ep9-test262 JSON writes `preset` (the
@@ -872,6 +902,8 @@ struct Runner {
     /// again at the end of the run, and whether the checkout had changes before or after it.
     test262_head_end: Option<String>,
     test262_dirty: Option<bool>,
+    /// `"runner_forks"` (FORK-CHECKOUT-ATTEST): the fork line of the runner's build.
+    forks: Option<String>,
 }
 
 impl Source {
@@ -902,9 +934,11 @@ impl Source {
                 test262_head: str_field(j, "test262_head"),
                 test262_head_end: str_field(j, "test262_head_end"),
                 test262_dirty: j.get("test262_dirty").and_then(Json::bool),
+                forks: str_field(j, "runner_forks"),
             }),
             build: Some(Build::of_json(j)),
             seam: j.get("test_seam").and_then(Json::bool) == Some(true),
+            forks: None,
         }
     }
 
@@ -913,7 +947,17 @@ impl Source {
     fn of_log(log: &str) -> Result<Source, String> {
         let mut found: Option<Source> = None;
         let mut trees: Option<BTreeMap<String, String>> = None;
+        let mut forks: Option<String> = None;
         for l in log.lines().map(str::trim) {
+            // `trim` drops the space after the colon of an empty forks line.
+            if let Some(rest) = l.strip_prefix(FORKS_LINE.trim_end()) {
+                let rest = rest.trim().to_string();
+                if forks.as_ref().is_some_and(|old| *old != rest) {
+                    return Err("two forks lines that differ".into());
+                }
+                forks = Some(rest);
+                continue;
+            }
             if let Some(rest) = l.strip_prefix(TREES_LINE) {
                 let mut t = BTreeMap::new();
                 for pair in rest.split_whitespace() {
@@ -949,6 +993,7 @@ impl Source {
                 runner: None,
                 build: None,
                 seam: false,
+                forks: None,
             };
             match &found {
                 Some(f) if *f != s => {
@@ -963,6 +1008,7 @@ impl Source {
         }
         let mut s = found.unwrap_or_default();
         s.trees = trees.unwrap_or_default();
+        s.forks = forks;
         Ok(s)
     }
 
@@ -1066,6 +1112,13 @@ fn runner_check(root: &Path, commit: Option<&str>, r: &Runner) -> Vec<String> {
             "provenance: it names no test262 dirty flag (test262_dirty; make it again with this tree's runner)"
                 .to_string(),
         ),
+    }
+    // FORK-CHECKOUT-ATTEST: the fork checkouts the runner was built from were their pins plus
+    // their patches; asked only on a tree that has the shared check (exit::forks::required).
+    if forks::required(root)
+        && let Err(e) = forks::check(r.forks.as_deref(), "runner_forks")
+    {
+        why.push(format!("provenance: {e}"));
     }
     why
 }
@@ -1461,6 +1514,18 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
             }
         }
     }
+    // FORK-CHECKOUT-ATTEST: the fork checkouts at the run were their pins plus their patches
+    // (kernels.mjs `forks`); asked only on a tree that has the shared check.
+    let attest = forks::required(root);
+    if attest && let Err(e) = forks::check(j.get("forks").and_then(Json::str), "forks") {
+        fresh.push(e);
+    }
+    // `forks` names the checkouts at the run, not the build: a binary built from an edited or
+    // stale fork and run after a resync must not pass. The binary's own freshness line must be
+    // clean and name `commit` ([`binary_build`]); asked on the same trees as `forks`.
+    if attest && let Err(e) = binary_build(j, commit) {
+        fresh.push(e);
+    }
     let tree = if fresh.is_empty() {
         match &foreign {
             Some(f) => format!("fresh: {f}"),
@@ -1488,6 +1553,37 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
             because(&why)
         ),
     )
+}
+
+/// Item 1: the checked binary's freshness line, `ep9.build` of the kernels JSON (kernels.mjs
+/// `ep9Version`: `ep9 --version` stderr, `ep9 build: commit <sha> clean|dirty`, P0-BUILDID;
+/// `crates/ep9_cli/build.rs` says dirty for a change in the engine paths or a fork checkout that
+/// is not its pin plus its patches at build time). Ok when it names `commit` and a clean build;
+/// else the OPEN reason.
+fn binary_build(j: &Json, commit: &str) -> Result<(), String> {
+    let b = j.path(&["ep9", "build"]);
+    let Some(b) = b.filter(|b| b.get("dirty").is_some()) else {
+        return Err(
+            "the ep9 binary names no build line (ep9.build; make it again with this tree's tools)"
+                .into(),
+        );
+    };
+    match (
+        b.get("commit").and_then(Json::str),
+        b.get("dirty").and_then(Json::bool),
+    ) {
+        (Some(c), Some(false)) if c == commit => Ok(()),
+        (Some(c), Some(false)) => Err(format!(
+            "the ep9 binary was built from `{}`, not from its commit `{}` (ep9.build)",
+            short(c),
+            short(commit)
+        )),
+        (Some(c), Some(true)) => Err(format!(
+            "the ep9 binary of `{}` was built with uncommitted engine changes or a fork checkout that was not its pin plus its patches (ep9.build: dirty)",
+            short(c)
+        )),
+        _ => Err("the ep9 binary names no commit or no clean or dirty state (ep9.build)".into()),
+    }
 }
 
 fn item2(c: &Ctx) -> (Cell, Cell) {
@@ -2747,7 +2843,17 @@ fn item8(c: &Ctx) -> (Cell, Cell) {
                 }
             }
             let src = match Source::of_log(log) {
-                Ok(s) => source_check(c, &s, &T262_FRESH_PATHS),
+                Ok(s) => {
+                    let (mut why, text) = source_check(c, &s, &T262_FRESH_PATHS);
+                    // FORK-CHECKOUT-ATTEST: the cargo runs built the fork checkouts as their
+                    // pins plus their patches; asked only on a tree with the shared check.
+                    if forks::required(&c.o.root)
+                        && let Err(e) = forks::check(s.forks.as_deref(), "the m1-exit forks line")
+                    {
+                        why.push(format!("stale input: {e}"));
+                    }
+                    (why, text)
+                }
                 Err(e) => (vec![format!("provenance: {e}")], "not read".into()),
             };
             with_source(
@@ -3575,7 +3681,7 @@ mod tests {
             ),
             (
                 4,
-                "f2.json: not counted: not this tree: crates/ep9_frontend, crates/ep9_bytecode, crates/ep9_rx1, crates/ep9_regexp, third_party/regress.commit, third_party/patches/regress, fuzz, Cargo.toml, Cargo.lock changed",
+                "f2.json: not counted: not this tree: crates/ep9_frontend, crates/ep9_bytecode, crates/ep9_rx1, crates/ep9_regexp, crates/ep9_unit, crates/ep9_vm, crates/ep9_bigint, crates/ep9_facts, crates/ep9_heap, crates/ep9_math, crates/ep9_platform, crates/ep9_value, third_party/regress.commit, third_party/patches/regress, fuzz, Cargo.toml, Cargo.lock changed",
             ),
             (7, "Cargo.toml"),
         ] {
@@ -3778,9 +3884,9 @@ mod tests {
         );
     }
 
-    /// The CI nesting step (.github/workflows/ci.yml) writes the two NESTING_CMD source lines
-    /// right after its first start line, with the same text, so the linux-a64 CI log of item 8
-    /// names its source (gates need 1).
+    /// The CI nesting step (.github/workflows/ci.yml) writes the three NESTING_CMD source lines
+    /// (source, trees, forks) right after its first start line, with the same text, so the
+    /// linux-a64 CI log of item 8 names its source (gates need 1; FORK-CHECKOUT-ATTEST).
     #[test]
     fn ci_yml_writes_the_nesting_cmd_source_lines() {
         let ci =
@@ -3800,9 +3906,9 @@ mod tests {
                 format!("{} | tee -a nesting.log", &c[..end])
             })
             .collect();
-        assert_eq!(want.len(), 2, "{NESTING_CMD}");
+        assert_eq!(want.len(), 3, "{NESTING_CMD}");
         assert_eq!(
-            lines[start + 1..start + 3],
+            lines[start + 1..start + 4],
             want[..],
             "ci.yml after line {}",
             start + 1
@@ -3818,14 +3924,15 @@ mod tests {
         assert_eq!(list.split(' ').collect::<Vec<_>>(), T262_FRESH_PATHS);
     }
 
-    /// The two NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads
+    /// The three NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads
     /// them as this tree, clean, with its path ids; a CI merge commit that the repo does not have
-    /// passes on those ids, and fails when one id differs.
+    /// passes on those ids, and fails when one id differs. The fake repo has no
+    /// `scripts/sync-lib.sh`, so its forks line is empty, and item 8 does not ask for it.
     #[cfg(unix)]
     #[test]
     fn the_nesting_cmd_source_lines_work() {
         let root = fake_repo("nestcmd");
-        // NESTING_CMD up to its first cargo run: the start line and the two source lines.
+        // NESTING_CMD up to its first cargo run: the start line and the three source lines.
         let prefix = &NESTING_CMD[..NESTING_CMD.find("cargo test").unwrap()];
         let out = Command::new("sh")
             .arg("-c")
@@ -3841,13 +3948,15 @@ mod tests {
             .strip_prefix("m0-exit start: depth_tests\n")
             .unwrap_or_else(|| panic!("{made}"))
             .to_string();
-        assert_eq!(text.lines().count(), 2, "{text}");
+        assert_eq!(text.lines().count(), 3, "{text}");
+        assert_eq!(text.lines().nth(2), Some(FORKS_LINE), "{text}");
         let head = git_in(&root, &["rev-parse", "HEAD"]);
         assert!(
             text.starts_with(&format!("{SOURCE_LINE}commit {head} dirty 0 made-by host:")),
             "{text}"
         );
         let src = Source::of_log(&text).unwrap();
+        assert_eq!(src.forks.as_deref(), Some(""), "{src:?}");
         // The fake repo has 6 of the 7 paths, the root Cargo.toml among them (C1).
         assert_eq!(src.trees.len(), 6, "{src:?}");
         assert_eq!(
@@ -5824,10 +5933,10 @@ mod tests {
             })
             .collect();
         format!(
-            r#"{{"schema":"ep9-kernels/v1","commit":"{}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"ep9":{{"bin":"ep9","engine_build":"{GATE_LINE}"}},"kernels":[{}]}}"#,
-            git_in(root, &["rev-parse", "HEAD"]),
+            r#"{{"schema":"ep9-kernels/v1","commit":"{head}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"ep9":{{"bin":"ep9","engine_build":"{GATE_LINE}","build":{{"commit":"{head}","dirty":false}}}},"kernels":[{}]}}"#,
             ids.join(","),
-            rows.join(",")
+            rows.join(","),
+            head = git_in(root, &["rev-parse", "HEAD"]),
         )
     }
 
@@ -6705,9 +6814,10 @@ mod tests {
             "{}",
             c.evidence
         );
-        // A counted Fuzzilli run before a crates change does not count (V9-A30).
-        write(&root, "crates/ep9_vm/src/lib.rs", "// changed\n");
-        commit_all(&root, "vm");
+        // A counted Fuzzilli run before a crates change does not count (V9-A30); cargo-fuzz
+        // does not build ep9_builtins, so its record still counts.
+        write(&root, "crates/ep9_builtins/src/lib.rs", "// changed\n");
+        commit_all(&root, "builtins");
         set(
             &mut o,
             fuzz_json("fuzzilli", &head, 100.0, true, ""),
@@ -7198,6 +7308,219 @@ mod tests {
             let (h, w) = &run(&o).unwrap().cells[8];
             assert_eq!(h.status, want, "{status}: {h:?}");
             assert_eq!(w.status, want);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// FORK-CHECKOUT-ATTEST: on a tree whose scripts/sync-lib.sh has the shared check, the exec
+    /// JSON of items 3 and 4 names its runner's fork line (`runner_forks`) and the kernels JSON
+    /// of item 1 its fork line at the run (`forks`): a stale or absent fork, a missing field or
+    /// a line in another form is OPEN. On a tree without the check (the m1-exit tree) the cells
+    /// read as before (the old reader reads every case as a pass).
+    #[test]
+    fn items_1_and_3_read_the_fork_line_on_a_tree_with_the_check() {
+        let root = fake_repo("forks");
+        let mut o = opts(&root);
+        let pinned = "regress=pinned icu4x=pinned";
+        let exec = |line: Option<&str>| {
+            let mut src = src_at(&root, "HEAD");
+            if let Some(l) = line {
+                src.push_str(&format!(r#""runner_forks":"{l}","#));
+            }
+            exec_json(17, 20, 24, 0.0, &[], &src)
+        };
+        let kernels = |line: Option<&str>| {
+            let j = kernels_json(&root, HOST, 15, 15, None);
+            match line {
+                Some(l) => j.replacen(
+                    r#""dirty":[],"#,
+                    &format!(r#""dirty":[],"forks":"{l}","#),
+                    1,
+                ),
+                None => j,
+            }
+        };
+        // No check in the tree: no field is asked for.
+        o.exec = Some(input(&root, "exec.json", &exec(None)));
+        o.kernels = Some(input(&root, "kernels.json", &kernels(None)));
+        let rep = run(&o).unwrap();
+        assert_eq!(rep.cells[0].0.status, Status::Pass, "{:?}", rep.cells[0]);
+        assert_eq!(rep.cells[2].0.status, Status::Pass, "{:?}", rep.cells[2]);
+        write(&root, "scripts/sync-lib.sh", "fork_attest() {\n  :\n}\n");
+        commit_all(&root, "the fork check");
+        let cases = [
+            (Some(pinned), None),
+            (
+                Some("regress=stale icu4x=pinned"),
+                Some("the regress fork checkout was not its pin plus its patches"),
+            ),
+            (
+                Some("regress=pinned icu4x=absent"),
+                Some("the icu4x fork checkout was not its pin plus its patches"),
+            ),
+            (Some("icu4x=pinned"), Some("is in another form")),
+            (None, Some("it names no fork checkout state")),
+        ];
+        for (line, want) in cases {
+            o.exec = Some(input(&root, "exec.json", &exec(line)));
+            o.kernels = Some(input(&root, "kernels.json", &kernels(line)));
+            let rep = run(&o).unwrap();
+            for (cell, field) in [(0, "forks"), (2, "runner_forks")] {
+                let c = &rep.cells[cell].0;
+                match want {
+                    None => assert_eq!(c.status, Status::Pass, "{line:?}: {c:?}"),
+                    Some(w) => {
+                        assert_eq!(c.status, Status::Open, "{line:?}: {c:?}");
+                        assert!(c.evidence.contains(w), "{w}: {}", c.evidence);
+                        assert!(
+                            c.evidence.contains(&format!("({field}")),
+                            "{field}: {}",
+                            c.evidence
+                        );
+                    }
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Codex M8-P1 r1 F1: on a tree with the fork check, item 1 also reads the checked binary's
+    /// own freshness line (`ep9.build`). A binary built from an edited or stale fork and run
+    /// after a resync has pinned checkouts but a dirty build: OPEN. A clean build of another
+    /// commit, no build line, or "commit unknown" are OPEN too. On a tree without the check (the
+    /// m1-exit tree) the cell reads as before.
+    #[test]
+    fn item1_reads_the_binary_build_line_on_a_tree_with_the_check() {
+        let root = fake_repo("item1build");
+        let mut o = opts(&root);
+        let pinned = r#""dirty":[],"forks":"regress=pinned icu4x=pinned","#;
+        let kernels = |build: Option<&str>| {
+            let head = git_in(&root, &["rev-parse", "HEAD"]);
+            let clean = format!(r#","build":{{"commit":"{head}","dirty":false}}"#);
+            let j = kernels_json(&root, HOST, 15, 15, None).replacen(r#""dirty":[],"#, pinned, 1);
+            assert!(j.contains(&clean), "{j}");
+            j.replacen(
+                &clean,
+                &build.map_or(String::new(), |b| format!(r#","build":{b}"#)),
+                1,
+            )
+        };
+        // No check in the tree: a dirty build keeps the old result.
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let dirty = format!(r#"{{"commit":"{head}","dirty":true}}"#);
+        o.kernels = Some(input(&root, "kernels.json", &kernels(Some(&dirty))));
+        let c = &run(&o).unwrap().cells[0].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        let old = head;
+        write(&root, "scripts/sync-lib.sh", "fork_attest() {\n  :\n}\n");
+        commit_all(&root, "the fork check");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let cases = [
+            (
+                Some(format!(r#"{{"commit":"{head}","dirty":false}}"#)),
+                None,
+            ),
+            (
+                Some(format!(r#"{{"commit":"{head}","dirty":true}}"#)),
+                Some(
+                    "was built with uncommitted engine changes or a fork checkout that was not its pin plus its patches (ep9.build: dirty)",
+                ),
+            ),
+            (
+                Some(format!(r#"{{"commit":"{old}","dirty":false}}"#)),
+                Some("the ep9 binary was built from `"),
+            ),
+            (
+                Some(r#"{"commit":null,"dirty":null}"#.to_string()),
+                Some("the ep9 binary names no commit or no clean or dirty state (ep9.build)"),
+            ),
+            (
+                Some("null".to_string()),
+                Some("the ep9 binary names no build line (ep9.build;"),
+            ),
+            (None, Some("the ep9 binary names no build line (ep9.build;")),
+        ];
+        for (build, want) in cases {
+            o.kernels = Some(input(&root, "kernels.json", &kernels(build.as_deref())));
+            let c = &run(&o).unwrap().cells[0].0;
+            match want {
+                None => assert_eq!(c.status, Status::Pass, "{build:?}: {c:?}"),
+                Some(w) => {
+                    assert_eq!(c.status, Status::Open, "{build:?}: {c:?}");
+                    assert!(c.evidence.contains(w), "{w}: {}", c.evidence);
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// FORK-CHECKOUT-ATTEST: on a tree whose scripts/sync-lib.sh has the shared check, the
+    /// nesting log of item 8 names the fork line of its checkouts (the NESTING_CMD forks line):
+    /// a stale or absent fork, no forks line, an empty one, a line in another form or two lines
+    /// that differ are OPEN. On a tree without the check the log needs no forks line.
+    #[test]
+    fn item8_reads_the_forks_line_on_a_tree_with_the_check() {
+        let root = fake_repo("item8forks");
+        let mut o = opts(&root);
+        let log = read(&fixture("nesting.log")).unwrap();
+        let with_forks = |head: &str, line: Option<&str>| {
+            let mut l = with_source_line(&log, head, 0);
+            if let Some(f) = line {
+                l = l.replacen(
+                    " made-by host:test\n",
+                    &format!(" made-by host:test\n{FORKS_LINE}{f}\n"),
+                    1,
+                );
+            }
+            l
+        };
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        // No check in the tree: no forks line is asked for.
+        o.nesting = Some(input(&root, "nesting.log", &with_forks(&head, None)));
+        let c = &run(&o).unwrap().cells[7].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        write(&root, "scripts/sync-lib.sh", "fork_attest() {\n  :\n}\n");
+        commit_all(&root, "the fork check");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let two = with_forks(&head, Some("regress=pinned icu4x=pinned")).replacen(
+            "m0-exit start: nesting_caps cli\n",
+            &format!("m0-exit start: nesting_caps cli\n{FORKS_LINE}regress=stale icu4x=pinned\n"),
+            1,
+        );
+        let cases = [
+            (with_forks(&head, Some("regress=pinned icu4x=pinned")), None),
+            (
+                with_forks(&head, Some("regress=stale icu4x=pinned")),
+                Some("stale input: the regress fork checkout was not its pin plus its patches"),
+            ),
+            (
+                with_forks(&head, Some("regress=pinned icu4x=absent")),
+                Some("stale input: the icu4x fork checkout was not its pin plus its patches"),
+            ),
+            (
+                with_forks(&head, Some("icu4x=pinned")),
+                Some("is in another form (the m1-exit forks line)"),
+            ),
+            (
+                with_forks(&head, Some("")),
+                Some("stale input: it names no fork checkout state (the m1-exit forks line"),
+            ),
+            (
+                with_forks(&head, None),
+                Some("stale input: it names no fork checkout state (the m1-exit forks line"),
+            ),
+            (two, Some("provenance: two forks lines that differ")),
+        ];
+        for (text, want) in cases {
+            o.nesting = Some(input(&root, "nesting.log", &text));
+            let c = &run(&o).unwrap().cells[7].0;
+            match want {
+                None => assert_eq!(c.status, Status::Pass, "{c:?}"),
+                Some(w) => {
+                    assert_eq!(c.status, Status::Open, "{w}: {c:?}");
+                    assert!(c.evidence.contains(w), "{w}: {}", c.evidence);
+                }
+            }
         }
         std::fs::remove_dir_all(root).unwrap();
     }

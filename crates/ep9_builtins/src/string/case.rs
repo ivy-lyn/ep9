@@ -1,5 +1,8 @@
 //! Case mapping (§22.1.3.26-28, §22.1.3.30): toLowerCase, toUpperCase and their toLocale
-//! forms (v0: no ECMA-402, so the locale forms are the plain ones).
+//! forms. The toLocale forms are the ECMA-402 ones (§20.1.2-3): TransformCase in
+//! `ep9_intl::casemap` picks the locale; for tr, az, lt and el it maps with
+//! icu_casemap, else ("und") with the Default Case Conversion below, as toLowerCase and
+//! toUpperCase do.
 //!
 //! The mapping is the Unicode Default Case Conversion of Rust std: `str::to_lowercase` and
 //! `str::to_uppercase` use the full mappings (UnicodeData plus the unconditional
@@ -7,7 +10,7 @@
 //! language-independent conditional rule, Final_Sigma (Unicode §3.13, Table 3-17), with the
 //! Cased and Case_Ignorable properties. std's tables are at `char::UNICODE_VERSION`, Unicode 17
 //! in rustc 1.99.1: the H26 version (docs/adr/H26-toolchain-and-unicode.md). No new
-//! dependency (ep9_builtins depends on ep9_vm and ep9_math only).
+//! dependency.
 //!
 //! ```text
 //! code units ──> runs of valid code points, split at each lone surrogate
@@ -21,6 +24,7 @@
 //! one, and std sees the end of a run where the context stops. An ASCII string maps with no
 //! copy through `String`.
 
+use ep9_intl::casemap::{self, TargetCase};
 use ep9_vm::{Args, Cx, JsResult, Local};
 
 use super::{new_str, this_string, units};
@@ -86,26 +90,48 @@ fn convert<'s>(cx: &mut Cx<'s>, this: Local<'s>, case: Case, name: &str) -> JsRe
     new_str(cx, &map_case(&s, case))
 }
 
-/// String.prototype.toLocaleLowerCase ( [ reserved1 [ , reserved2 ] ] ) (§22.1.3.26). v0:
-/// the root locale, as toLowerCase.
+/// The ECMA-402 toLocaleLowerCase and toLocaleUpperCase (§20.1.2-3).
+fn convert_locale<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    locales: Local<'s>,
+    case: Case,
+    name: &str,
+) -> JsResult<Local<'s>> {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
+    let s = this_string(cx, this, name)?;
+    let s = units(cx, s)?;
+    // 3. Return ? TransformCase(S, locales, lower / upper).
+    let target = match case {
+        Case::Lower => TargetCase::Lower,
+        Case::Upper => TargetCase::Upper,
+    };
+    match casemap::transform_case(cx, &s, locales, target)? {
+        Some(mapped) => new_str(cx, &mapped),
+        // The locale "und": the Default Case Conversion.
+        None => new_str(cx, &map_case(&s, case)),
+    }
+}
+
+/// String.prototype.toLocaleLowerCase ( \[ locales \] ) (ECMA-402 §20.1.2).
 pub(super) fn to_locale_lower_case<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    convert(cx, this, Case::Lower, "toLocaleLowerCase")
+    convert_locale(cx, this, args.get(0), Case::Lower, "toLocaleLowerCase")
 }
 
-/// String.prototype.toLocaleUpperCase ( [ reserved1 [ , reserved2 ] ] ) (§22.1.3.27). v0:
-/// the root locale, as toUpperCase.
+/// String.prototype.toLocaleUpperCase ( \[ locales \] ) (ECMA-402 §20.1.3).
 pub(super) fn to_locale_upper_case<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    convert(cx, this, Case::Upper, "toLocaleUpperCase")
+    convert_locale(cx, this, args.get(0), Case::Upper, "toLocaleUpperCase")
 }
 
 /// String.prototype.toLowerCase ( ) (§22.1.3.28).

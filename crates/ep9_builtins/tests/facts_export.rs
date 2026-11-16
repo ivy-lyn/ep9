@@ -744,6 +744,7 @@ var sparse = [1, 2];
 sparse[1e6] = 1;
 var vals = [1, 1.5, undefined, null, true, "s", sym, {}, [], g, new Error("e")];
 var big = 0x7fffffff;
+var view = new Int8Array(4);
 function writers(i, s, d, o) {
   if (i < 0) {
     g();                              // Call: uninitialized
@@ -781,6 +782,7 @@ function writers(i, s, d, o) {
   var nw = new Number(1).x;           // ObjectKind primitive-wrapper
   var bn = bound.name;                // ObjectKind bound-function
   var fnm = g.name;                   // ObjectKind function
+  var vl = view.length;               // ObjectKind typed-array (a getter case's receiver)
   var k = 0;
   for (var j = 0; j < 6; j++) k = kinds6[j][1];  // LoadKeyed: each elements kind of kinds6
   kinds6[i & 1][1] = 2;               // StoreKeyed: megamorphic
@@ -886,10 +888,9 @@ fn dead_key_cleared(iso: &mut Isolate, hash: &[u8; 32]) -> bool {
 /// The H16 "Declared, no writer" items, each with the words that the H16 paragraph names it
 /// by. No code writes them, so a corpus record never holds one (`ep9_vm`
 /// `tests::facts_export::the_fields_declared_with_no_writer_have_none` scans the code).
-const NO_WRITER_ITEMS: [(&str, &str); 17] = [
+const NO_WRITER_ITEMS: [(&str, &str); 16] = [
     ("RecordFlags::ran", "`RecordFlags::RAN`"),
     ("RecordFlags::exited", "`RecordFlags::EXITED`"),
-    ("ObjectKind::typed-array", "`ObjectKind::TypedArray`"),
     ("Access::getter", "the Access tags getter and setter"),
     ("Access::setter", "the Access tags getter and setter"),
     ("Access::string-length", "`Access::StringLength`"),
@@ -1755,3 +1756,59 @@ Packet.prototype.toString = function () {
   return "Packet";
 };
 "##;
+
+/// Runs richards (the [`source`] script: 3 runs) on a fresh isolate with `Feedback::FULL`, the
+/// default feedback threshold and the dispatch expansion `d`: the encoded facts of its unit.
+fn facts_under(src: &str, d: ep9_vm::Dispatch) -> Vec<u8> {
+    let unit = compile(src);
+    let mut iso = Isolate::new_with(
+        IsolateConfig {
+            builtins: Some(&ep9_builtins::TABLE),
+            dispatch: d,
+            ..IsolateConfig::default()
+        },
+        ExecOptions::default().feedback(Feedback::FULL),
+    )
+    .expect("an isolate");
+    let u = unit.clone();
+    iso.with_cx(|cx| cx.run_script(u, "facts.js").map(|_| ()))
+        .unwrap_or_else(|e| panic!("the script threw under {d:?}: {}", e.message));
+    export_facts(&iso, &unit.content_hash())
+        .expect("the unit is loaded")
+        .encode()
+}
+
+/// M8-P1 RECCOST2 (plan v13 4.3 task 3): the exported facts of richards are the same bytes
+/// under the match loop, which records every `Flow::Record` inline (`profile::record`), and
+/// under the sibling handlers, which test for a new bit first and call `record_next` only for
+/// one (`interp::dsl::record_exit`). So the no-change test drops no record and adds none
+/// (FACT_SCHEMA 2 stays). Not in debug builds: a debug sibling dispatch has no tail calls, so
+/// it grows the native stack by one frame per instruction, far past any thread stack for
+/// richards (`interp::dsl::debug_native_stack_check`); the CI release test job runs it on
+/// every target.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "a debug sibling dispatch needs one native frame per instruction"
+)]
+fn sibling_records_give_the_facts_of_the_inline_records() {
+    on_big_stack(|| {
+        let src = source();
+        let inline = facts_under(&src, ep9_vm::Dispatch::Match);
+        let sibling = facts_under(&src, ep9_vm::Dispatch::Sibling);
+        assert!(
+            inline == sibling,
+            "the facts differ: {} bytes (match) vs {} bytes (sibling)",
+            inline.len(),
+            sibling.len()
+        );
+        // The check is not empty: some CompareOp slot has a recorded bit, not only the
+        // implicit int32 bit that the exporter adds to each one.
+        let facts = FactSnapshot::decode(&inline).expect("the exporter's bytes decode");
+        assert!(
+            facts.records().any(|(_, r)| matches!(r,
+                SlotFacts::CompareOp(h) if h.bits() & !CompareHint::INT32.bits() != 0)),
+            "no recorded CompareOp bit in richards"
+        );
+    });
+}

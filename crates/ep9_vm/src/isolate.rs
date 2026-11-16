@@ -1150,3 +1150,46 @@ pub(crate) fn checked_argc(rt: &Runtime, f: u64, this: u64, args: &[Local<'_>]) 
     }
     u32::try_from(args.len()).unwrap_or(u32::MAX)
 }
+
+/// The agent of the isolate in the process waiter list of `Atomics.wait`, `waitAsync` and
+/// `notify` (ECMA-262 Agent Records; TypedArray TA-4, design
+/// `docs/plan/notes/typedarray-design.md` §5.6). None of these runs JS or touches the JS heap:
+/// they are not entry points (H20-Q4).
+///
+/// ```text
+/// embedder host loop (a shell, the test262 runner), after the script and its checkpoint:
+///   while iso.async_waiter_count() > 0 and the host still waits for something:
+///     if iso.block_for_async_waiters(tick):   sleeps: an inbox item, the next deadline, tick or a termination
+///       stop (terminated)                     true: a termination is pending; no JS would see it
+///     iso.perform_microtask_checkpoint()      resolves the ended waiters' promises, runs jobs
+/// ```
+impl Isolate {
+    /// Sets `[[CanBlock]]` of the agent (AgentCanSuspend): with false, `Atomics.wait` throws a
+    /// TypeError. The default is true, as a shell main thread (d8, node) can block.
+    pub fn set_can_block(&mut self, can_block: bool) {
+        self.rt.jobs.agent().set_can_block(can_block);
+    }
+
+    /// The number of `Atomics.waitAsync` waiters of this isolate whose promise is not resolved
+    /// yet (a notify may have woken some: the next microtask checkpoint resolves them).
+    pub fn async_waiter_count(&self) -> usize {
+        self.rt.jobs.agent().pending()
+    }
+
+    /// Blocks the thread until a notify wakes an async waiter of this isolate, the timeout of
+    /// one passes, `max` passes, or the isolate is terminated ([`TerminateHandle`], checked at
+    /// least every [`ep9_platform::waiters::SLICE`]); at once if it has none or one has already
+    /// ended. It only sleeps: the next [`Isolate::perform_microtask_checkpoint`] resolves the
+    /// promises. Returns true when a termination is pending: the host stops its loop (an idle
+    /// checkpoint runs no JS, so it does not see the termination; it stays pending for the next
+    /// JS).
+    pub fn block_for_async_waiters(&self, max: std::time::Duration) -> bool {
+        let word = &self.rt.terminate;
+        let stop = || {
+            word.load(core::sync::atomic::Ordering::Relaxed) & crate::interp::interrupt::TERMINATE
+                != 0
+        };
+        self.rt.jobs.agent().block(max, stop);
+        stop()
+    }
+}

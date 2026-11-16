@@ -1,0 +1,26 @@
+#![no_std]
+mod sealed {
+    #[cfg(not(feature = "g64"))]
+    pub trait Sealed<T = u32> {
+        fn get(&self) -> T;
+    }
+    #[cfg(feature = "g64")]
+    pub trait Sealed<T = u64> {
+        fn get(&self) -> T;
+    }
+}
+pub trait Downcast: sealed::Sealed {}
+mod shapes {
+    pub trait Base {
+        fn id(&self) -> u8;
+    }
+    pub trait Shape: Base {
+        #[cfg(not(feature = "area32"))]
+        fn area(&self) -> f64;
+        #[cfg(feature = "area32")]
+        fn area(&self) -> f32;
+    }
+    pub type Inner = dyn Shape;
+}
+pub type Obj = shapes::Inner;
+pub type Direct = dyn shapes::Shape + Send;

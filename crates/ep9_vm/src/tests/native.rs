@@ -806,7 +806,9 @@ fn exceptions_cross_native_frames() {
         // try { g(t, "boom") } catch (e) { print(e.message) }   T0 throw under native g
         // try { nthrow("x") } catch (e) { print(e) }             native throw
         // try { overflow() } catch (e) { print(e.message) }      native stack RangeError
-        // try { new id(1) } catch (e) { print(e.message) }       construct stays in T0
+        // try { new id(1); print("constructed") } catch (e) { print(e.message) }
+        //   construct enters native id (M8-PLAN-D25; this case flips with D25: it threw
+        //   "not implemented" before)
         let mut s = Asm::script(0);
         let ctx = s.b.new_register();
         let e = s.b.new_register();
@@ -868,6 +870,8 @@ fn exceptions_cross_native_frames() {
                 s.b.lda_smi(1).star(args.get(0));
                 let one = RegisterList::new(args.get(0).local_index().unwrap(), 1);
                 s.construct_global("id", one);
+                s.lda_str("constructed");
+                s.print_acc();
             },
             true,
         );
@@ -889,11 +893,13 @@ fn exceptions_cross_native_frames() {
             let label = format!("{} stress={stress}", d.name());
             assert_eq!(
                 out,
+                // D25 (M8-P1 A2-CONSTRUCT): the last line was "not implemented in ep9 v0:
+                // calling code of this dispatch kind" (construct refused native code).
                 [
                     "boom",
                     "x",
                     "Maximum call stack size exceeded",
-                    "not implemented in ep9 v0: calling code of this dispatch kind",
+                    "constructed"
                 ],
                 "{label}"
             );
@@ -1734,7 +1740,8 @@ fn every_other_call_falls_through_to_the_decode_path() {
             let two = RegisterList::new(l.get(0).local_index().unwrap(), 2);
             s.b.call_with_spread(f, two, 2, s.call);
         });
-        // 3. Construct of native id: construct stays in T0.
+        // 3. Construct of native id: since M8-PLAN-D25 the decode path enters it natively
+        //    (`construct_native_cold`; `id` returns 1, so the result is the new receiver).
         guarded(&mut s, true, |s| {
             s.b.lda_smi(1).star(l.get(0));
             let one = RegisterList::new(l.get(0).local_index().unwrap(), 1);
@@ -1796,11 +1803,13 @@ fn every_other_call_falls_through_to_the_decode_path() {
             let label = format!("{} stress={stress}", d.name());
             assert_eq!(r.as_deref(), Ok("done"), "{label}");
             // Since M7-P5 A2-RW (MC-w30-2) `do_call` enters native code late in every build
-            // (`call_native_cold`); construct stays refused (MC-w29-8). No early entry hit.
-            let ni = "not implemented in ep9 v0: calling code of this dispatch kind";
+            // (`call_native_cold`), and since M8-P1 A2-CONSTRUCT a construct too
+            // (`construct_native_cold`; M8-PLAN-D25: row 3 flips with D25, it was "not
+            // implemented in ep9 v0: calling code of this dispatch kind"). No early entry hit.
+            let obj = "[object Object]";
             assert_eq!(
                 out,
-                ["w", "undefined", ni, "x", "t0!", "1 is not a function"],
+                ["w", "undefined", obj, "x", "t0!", "1 is not a function"],
                 "{label}"
             );
             assert_eq!(hits, 0, "{label}");
@@ -3360,7 +3369,9 @@ mod placement_b {
     }
 
     /// The paths that do not enter (b) code: `[[Construct]]` and a call from Rust through
-    /// `call::call_with` (`call_raw`, as `Cx::call`) throw "not implemented", as for placement (a);
+    /// `call::call_with` (`call_raw`, as `Cx::call`) throw "not implemented" (an Opt slot is
+    /// no `native::native_callee`; placement (a) code is entered on both paths since M7-P5
+    /// A2-RW and M8-P1 A2-CONSTRUCT, M8-PLAN-D25: this H04:52 Check keeps its result);
     /// `call_from_rust` enters it (a nested dispatch) and puts the entry state back.
     #[test]
     fn construct_and_isolate_call_refuse_b_code_and_call_from_rust_runs_it() {
@@ -5233,4 +5244,47 @@ fn the_frame_record_walk_runs_on_apple_aarch64_only() {
     } else {
         assert!(returns.is_empty(), "{returns:x?}");
     }
+}
+
+/// M8-P4 A2-GATE (MC-w29-8 step 2; the W-pre check K1): in this build `install_code` keeps
+/// refusing a class constructor for every kind, because this build's T0 `call_fast` enters an
+/// AotBaseline slot through `hot_stub` with no class-constructor check (`interp/ops.rs`: "never
+/// class constructors (the installs refuse them)"), so `K()` would run the body with no
+/// TypeError. The default build installs one as AotBaseline unit code
+/// (`tests::unit_loader::class_ctors`).
+#[test]
+fn spike_native_install_code_still_refuses_a_class_constructor() {
+    use ep9_bytecode::{FunctionFlags, FunctionKind};
+    assert!(!crate::native::installs_class_code(
+        DispatchKind::AotBaseline
+    ));
+    assert!(!crate::native::installs_class_code(DispatchKind::Baseline));
+    let mut m = meta("K", 0, 0, 0, 0);
+    m.kind = FunctionKind::ClassConstructor;
+    m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
+    let mut k = Asm::new(m);
+    k.b.lda_undefined().return_();
+    let mut s = Asm::script(0);
+    let c = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(c, s.closure, 0);
+    s.sta_global("K");
+    s.b.lda_undefined().return_();
+    let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(unit("", vec![s.finish(), k.finish()]), "k.js")
+            .map(|_| ())
+    })
+    .unwrap();
+    let f = iso.global_raw("K").unwrap().to_bits();
+    let fi = crate::object::function_info(f);
+    // A range no entry holds (never run: every install below is refused first).
+    static NEVER: [u8; 16] = [0; 16];
+    let at = NEVER.as_ptr().addr();
+    for kind in [DispatchKind::AotBaseline, DispatchKind::Baseline] {
+        // SAFETY: refused before the slot or the registry changes.
+        let r = unsafe { crate::native::install_code(&iso.rt, fi, kind, at..at + 4) };
+        assert_eq!(r, Err(InstallError::ClassConstructor), "{kind:?}");
+    }
+    assert_eq!(fi.slot.kind(), Some(DispatchKind::Interp));
+    assert!(crate::native::native_construct_callee(f).is_none());
 }

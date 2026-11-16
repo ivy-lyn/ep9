@@ -1,0 +1,8 @@
+# ep9 builtin ids: module relative_time_format, block 38. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x4c00   38.0         constructor  0       "RelativeTimeFormat"  (%Intl.RelativeTimeFormat%)
+0x4c01   38.1         method       1       "supportedLocalesOf"  (%Intl.RelativeTimeFormat%.supportedLocalesOf w-c)
+0x4c02   38.2         method       2       "format"  (%Intl.RelativeTimeFormat.prototype%.format w-c)
+0x4c03   38.3         method       2       "formatToParts"  (%Intl.RelativeTimeFormat.prototype%.formatToParts w-c)
+0x4c04   38.4         method       0       "resolvedOptions"  (%Intl.RelativeTimeFormat.prototype%.resolvedOptions w-c)

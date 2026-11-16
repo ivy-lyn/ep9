@@ -1,14 +1,17 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
-# 55 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0 and 2 M7-P2 tests. 6 of
-# them also fail without GC-stress and are listed in every expectations/test262.<triple>.jit.txt:
-# the 5 month-2 tco-* tests and the M3-P1 test two-digit-years.js. Since M7-P2 (the
+# 67 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2,
+# 1 INTL W3, 1 TA sync 1, 3 TA-3 and 3 TA-4 tests. 8 of them also fail without GC-stress and
+# are listed in every expectations/test262.<triple>.jit.txt: the 5 month-2 tco-* tests, the
+# M3-P1 test two-digit-years.js and the 2 INTL W2 supportedLocalesOf-* tests (they also need
+# Intl.DateTimeFormat). Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
-# 42331111457), and ownkeys-linear.js passes too. The other 49 pass without GC-stress: the
+# 42331111457), and ownkeys-linear.js passes too. The other 59 pass without GC-stress: the
 # other 6 month-2 tests, the other 9 M3-P1 tests, the 22 M3-P2 tests, the M3-P3 test, the 7
-# M4-P3 tests, the 2 B0 tests and the 2 M7-P2 tests.
+# M4-P3 tests, the 2 B0 tests, the 2 M7-P2 tests, the 2 INTL W2 NumberFormat tests, the
+# INTL W3 test, the TA sync 1 test, the 3 TA-3 tests and the 3 TA-4 tests.
 # The 8 month-2 tests that failed without GC-stress when they were listed:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists). They failed at the first lone surrogate, 0xD800, until the M7-P2 shim; now they
@@ -85,6 +88,66 @@
 # at the r2b head, --feedback-threshold 0, host load 16-40 (other jobs):
 # - Iterator/zip/basic-longest.js: 99.3 s; timeout on linux-x64, macos-arm64 and windows-x64
 # - Iterator/zipKeyed/basic-longest.js: 111.8 s (r2a: 107.6 s); timeout on all 4 targets
+# INTL W2 (the side branch m1m7/spec-intl, Intl.NumberFormat and the W2 services; M6-ORCH-466):
+# before W2 these 4 intl402 files failed fast (no Intl.NumberFormat); now they run longer. In
+# CI 42980227329 on 6655b0b7 (GC-stress shard 2/6; exit 2: 4 timeouts on macos-arm64,
+# linux-x64 and windows-x64, 1 on linux-arm64, so the expectations were not compared):
+# - NumberFormat/constructor-unit.js: hard timeout (no result after 125 s) on macos-arm64,
+#   linux-x64 and windows-x64; no timeout on linux-arm64. It passes without GC-stress;
+# - NumberFormat/test-option-roundingPriority-mixed-options.js: both runs past the 60 s
+#   timeout on all 4 targets. It passes without GC-stress;
+# - supportedLocalesOf-consistent-with-resolvedOptions.js and
+#   supportedLocalesOf-unicode-extensions-ignored.js: hard timeout on linux-x64 and
+#   windows-x64; on macos-arm64 the sloppy run ran past 60 s (it returned after the deadline);
+#   no timeout on linux-arm64. Both fail without GC-stress (no Intl.DateTimeFormat yet) and stay
+#   in every jit file.
+# INTL W3 (TZ-FIX; M6-ORCH-530): Temporal/ZonedDateTime/prototype/equals/canonical-not-equal.js
+# failed fast before W3 (it stopped at the first Asia/Hanoi pair). Since TZ-FIX it compares all
+# 445 x 444 / 2 = 98,790 pairs of time zones (2 ZonedDateTime objects per pair). It passes
+# without GC-stress (0.14-0.15 s, mac a64). In CI 43056384143 on 9f81eb58 (GC-stress shard 5/6;
+# exit 2, 0 new failures) it hit the hard timeout (no result after 125 s; the worker was
+# killed) on all 4 targets, so that shard compared no expectations.
+# No local GC-stress run (light rule, M6-ORCH-429); route GCSKIP-BFO re-reads these times.
+# TA sync 1 (the TypedArray side branch at 5f6adde4, M6-ORCH-201: over 30 s alone under
+# GC-stress): staging/sm/expressions/destructuring-array-default-simple.js passes without
+# GC-stress. In CI 42947815582 (macos-arm64 2/6, 3 workers) its sloppy run ran past the 60 s
+# timeout. Alone, 2 runs, mac a64 release, host load 9-14: 38.6 s and 40.2 s at 5f6adde4,
+# 45.9 s and 39.9 s at the fork base 09c937aa (m7-p5, green in CI). So the TA branch did not
+# make it slower; about 20 s per run is at the 3x margin of the 60 s limit (M7-P5-D9).
+# TA-3 (the TypedArray constructors at 3e1a8584, M6-ORCH-535; TA-3 fixer r1): the 3
+# TypedArray/prototype/copyWithin/coerced-values-*-detached.js tests failed fast before TA-3
+# (no TypedArray constructor). They pass without GC-stress (copyWithin comes with TA-4, so the
+# call of undefined throws the TypeError that each test expects). Each run makes a view 80
+# times (10 constructors, 8 argument kinds) from a 10,000-element array: the harness calls
+# Array.from, and the constructor reads the array by the iterator protocol, so each element
+# makes one iterator result object (§7.4.10), and under GC-stress each allocation is a
+# collection. In CI 43080469208 (GC-stress shard 1/6) both runs of each ran past the 60 s
+# timeout on all 4 targets. The TA-3 fixer r1 removed one more allocation per element (a key
+# atom per index when a builtin reads or writes a view element by index). After it, mac a64
+# release: end-detached.js 536 s per run (2 runs at once, host load 4-7); start-detached.js and
+# end-detached-prototype.js more than 585 s per run (4 runs at once, host load 7-18; stopped).
+# One run of 2 of the 10 constructors (all 8 argument kinds) takes 51 s alone.
+# TA-4 (the %TypedArray.prototype% methods, Atomics and base64 at 9f707665; TA-4 fixer r1): 4
+# staging/sm/TypedArray tests failed fast before TA-4 (no sort, set or fill). They pass without
+# GC-stress (0.5-1.1 s wall for both runs). In CI 43248750989 (GC-stress shard 2/6, 60 s) they
+# ran past the timeout: element-setting-converts-using-ToNumber.js and
+# sort_large_countingsort.js on all 4 targets, sort_sorted.js on 3, sort-negative-nan.js on
+# linux-x64. The TA-4 sort and set code makes no allocation per element or per comparison
+# (counted under GC-stress: a default sort of 16,384 elements, 1 collection; a comparator sort
+# of 255 elements, 9). Alone, 2 runs, mac a64 release at 9f707665, --gc-stress 1
+# --feedback-threshold 0 --timeout 120, host load 6-14:
+# - element-setting-converts-using-ToNumber.js: both runs past 120 s (243 s wall). Its own loops
+#   make about 85,000 objects, functions and strings per constructor (counted), for each
+#   constructor of the harness, plain and shared;
+# - sort_large_countingsort.js: both runs past 120 s (244 s wall). The harness's shared
+#   constructors copy each element with `sharedArray[i] = array[i]`, and a keyed store into a
+#   SharedArrayBuffer view made a key string per store (`property::set_keyed` had no view arm,
+#   unlike `set_index`): one collection per element. TA-SETKEYED-VIEW (2026-11-13) added the
+#   arm: 2.1 s wall, 2 of 2 runs pass (the same flags, 1 worker), so it left this list;
+# - sort_sorted.js: 93.9 s wall, about 47 s per run (its template message per assert: 2
+#   allocations each, about 65,000 asserts);
+# - sort-negative-nan.js: 48.8 s wall, about 24 s per run (its template message per assert,
+#   4,096-element arrays, 6 constructors), past the 20 s per run margin (M7-P5-D9).
 # Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
 # head; the M4-P3 tests: on x86_64-unknown-linux-gnu). Paths are relative to the test262 root.
 test/annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js
@@ -93,6 +156,9 @@ test/built-ins/Function/prototype/toString/built-in-function-object.js
 test/built-ins/Iterator/zip/basic-longest.js
 test/built-ins/Iterator/zipKeyed/basic-longest.js
 test/built-ins/RegExp/character-class-escape-non-whitespace.js
+test/built-ins/TypedArray/prototype/copyWithin/coerced-values-end-detached-prototype.js
+test/built-ins/TypedArray/prototype/copyWithin/coerced-values-end-detached.js
+test/built-ins/TypedArray/prototype/copyWithin/coerced-values-start-detached.js
 test/built-ins/decodeURI/S15.1.3.1_A1.10_T1.js
 test/built-ins/decodeURI/S15.1.3.1_A1.11_T1.js
 test/built-ins/decodeURI/S15.1.3.1_A1.11_T2.js
@@ -115,6 +181,11 @@ test/built-ins/decodeURIComponent/S15.1.3.2_A2.4_T1.js
 test/built-ins/decodeURIComponent/S15.1.3.2_A2.5_T1.js
 test/built-ins/encodeURI/S15.1.3.3_A2.3_T1.js
 test/built-ins/encodeURIComponent/S15.1.3.4_A2.3_T1.js
+test/intl402/NumberFormat/constructor-unit.js
+test/intl402/NumberFormat/test-option-roundingPriority-mixed-options.js
+test/intl402/Temporal/ZonedDateTime/prototype/equals/canonical-not-equal.js
+test/intl402/supportedLocalesOf-consistent-with-resolvedOptions.js
+test/intl402/supportedLocalesOf-unicode-extensions-ignored.js
 test/language/comments/S7.4_A5.js
 test/language/comments/S7.4_A6.js
 test/language/expressions/call/tco-call-args.js
@@ -139,6 +210,10 @@ test/staging/sm/Date/two-digit-years.js
 test/staging/sm/Function/has-instance-jitted.js
 test/staging/sm/Proxy/ownkeys-linear.js
 test/staging/sm/String/string-upper-lower-mapping.js
+test/staging/sm/TypedArray/element-setting-converts-using-ToNumber.js
+test/staging/sm/TypedArray/sort-negative-nan.js
+test/staging/sm/TypedArray/sort_sorted.js
+test/staging/sm/expressions/destructuring-array-default-simple.js
 test/staging/sm/expressions/short-circuit-compound-assignment.js
 test/staging/sm/extensions/recursion.js
 test/staging/sm/regress/regress-1507322-deep-weakmap.js

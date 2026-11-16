@@ -40,7 +40,6 @@ mod prescan;
 mod regex_check;
 pub mod scope;
 mod stack;
-mod strict_filter;
 mod surrogate;
 mod worker;
 
@@ -407,25 +406,21 @@ pub(crate) fn parse<'a>(
 }
 
 /// oxc_semantic with syntax checks. Call only on a program that passed [`parse`] (layer 2), so
-/// the recursive visitors stay within the worker stack. oxc's strict `eval`/`arguments` assign
-/// errors on names that are only read go through the PRE-1 post-filter (`strict_filter`).
+/// the recursive visitors stay within the worker stack.
 pub(crate) fn semantic<'a>(
     source: &str,
     program: &'a Program<'a>,
 ) -> Result<Semantic<'a>, CompileError> {
     let built = SemanticBuilder::new_compiler().build(program);
     if built.diagnostics.has_errors() {
-        let kept = strict_filter::kept(program, built.diagnostics.errors());
-        if !kept.is_empty() {
-            return Err(early_errors(source, kept.iter().map(|d| &**d)).into());
-        }
+        return Err(early_errors(source, built.diagnostics.errors()).into());
     }
     Ok(built.semantic)
 }
 
 /// Make a Script strict without changing the source text.
 ///
-/// oxc 0.157 has no strict-script option: only the Module goal is strict. But its parser has no
+/// oxc 0.158 has no strict-script option: only the Module goal is strict. But its parser has no
 /// strict state either. Every strict-only early error is in oxc_semantic, which makes the
 /// top-level scope strict when `Program::has_use_strict_directive()` holds. So a synthetic
 /// directive at index 0 gives the same result as a `"use strict";` source prefix, keeps every

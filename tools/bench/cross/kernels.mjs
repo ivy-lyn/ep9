@@ -38,16 +38,28 @@
 // third_party/icu4x.commit, third_party/patches/icu4x; TREE_PATHS), and the
 // TREE_PATHS entries with uncommitted changes (`dirty`; not fresh when it is not empty). A CI
 // pull_request run names GitHub's merge commit, which a local repository does not have: m1-exit
-// item 1 then reads the 9 tree ids against HEAD's (plan v11 GF-1, X10). `ep9.engine_build` is the
+// item 1 then reads the 9 tree ids against HEAD's (plan v11 GF-1, X10). `forks` is the fork
+// line of the checkouts at the run (FORK-CHECKOUT-ATTEST; forkState): `regress=pinned
+// icu4x=pinned` when each git-ignored fork checkout is its pin plus its patch set, `stale` or
+// `absent` in its place otherwise, null when the check cannot run; m1-exit gives OPEN unless every
+// fork reads pinned. `ep9.engine_build` is the
 // build line of the checked binary's `--version` ("features <list>; preset <name>", M5-P0,
-// MC-w17-5), or null for a binary that prints none.
+// MC-w17-5), or null for a binary that prints none. `ep9.build` is the binary's own freshness
+// line (its `--version` stderr, "ep9 build: commit <sha> clean|dirty", P0-BUILDID; run.mjs
+// parseBuild): { commit, dirty }, or null for a binary that prints none. `forks` is the
+// checkouts at the run; `ep9.build` is the build: a binary built from an edited or stale fork
+// says dirty after a resync too. m1-exit gives OPEN unless it is clean and names `commit`.
+//
+// The executable (KERNELS-BIN-SNAPSHOT): the check copies --check once, before the first probe,
+// beside it (or into its temp dir), and runs only the copy: the Math probe, every kernel,
+// --version and the sha256. A rebuild of --check during the run does not change the result.
 //
 // Exit status: 0 every kernel ran with node's output (kernels on --not-yet may fail); 1 a kernel
 // failed; 2 usage error; 3 the oracle or the generator failed (no verdict).
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants as fsConstants, copyFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +67,9 @@ import { fileURLToPath } from "node:url";
 import { hostInfo } from "../lib/host.mjs";
 import { generate as generateOctane, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { DEFAULT_HARNESS, errorPlace, generate as generateV8v7, HARNESSES, KERNELS as V8V7_KERNELS, ROOT } from "./v8v7.mjs";
+// run.mjs imports this file too; the cycle is safe: each file reads the other's functions only
+// inside its own functions, never at load time.
+import { parseBuild } from "./run.mjs";
 
 export const SCHEMA = "ep9-kernels/v1";
 export const OK = "runs, output equal";
@@ -82,6 +97,25 @@ export const REGRESS_PATHS = ["third_party/regress.commit", "third_party/patches
  * these two make (scripts/sync-icu4x.sh), so m1-exit holds them fresh too (its ICU4X_PATHS).
  */
 export const ICU4X_PATHS = ["third_party/icu4x.commit", "third_party/patches/icu4x"];
+
+/**
+ * The forks ep9 builds from git-ignored checkouts (third_party/<fork>): the `fork_attest` names
+ * (FORK-CHECKOUT-ATTEST; tools/test262/runner_build.rs FORK_BUILT, m1-exit exit::forks::FORKS).
+ */
+export const FORKS = ["regress", "icu4x"];
+
+/**
+ * The fork line of the checkouts under `root` (FORK-CHECKOUT-ATTEST): what `fork_attest` of
+ * scripts/sync-lib.sh prints (the `.ep9-stamp` and `pinned_tree` rule), such as
+ * "regress=pinned icu4x=stale"; null when the check cannot run or prints another form.
+ */
+export function forkState(root = ROOT) {
+  const r = spawnSync("sh", ["-c", '. "$1/scripts/sync-lib.sh"; root=$1; shift; fork_attest "$@"', "sh", root, ...FORKS], { encoding: "utf8" });
+  const line = (r.stdout ?? "").trim();
+  const form = new RegExp(`^${FORKS.map((f) => `${f}=(pinned|stale|absent)`).join(" ")}$`);
+  if (r.error || !form.test(line)) return null;
+  return r.status === (line.split(" ").every((p) => p.endsWith("=pinned")) ? 0 : 1) ? line : null;
+}
 
 /** The paths whose git tree ids the JSON writes (`tree`): FRESH_PATHS, REGRESS_PATHS, ICU4X_PATHS. */
 export const TREE_PATHS = [...FRESH_PATHS, ...REGRESS_PATHS, ...ICU4X_PATHS];
@@ -317,9 +351,13 @@ export function check(o, deps = {}) {
   const log = deps.log ?? ((s) => process.stderr.write(`${s}\n`));
   const started = new Date().toISOString();
   const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-kernels-"));
+  // KERNELS-BIN-SNAPSHOT: one copy of the executable, made before the first probe, runs every
+  // kernel and gives --version and the hash, so a rebuild of o.check during the run cannot give
+  // its build line to the rows of the old binary.
+  const bin = snapshot(o.check, dir);
   try {
     const version = (bin) => clean(runVersion(bin));
-    const mathNames = mathNamesOf(o.check, dir, o.timeoutS);
+    const mathNames = mathNamesOf(bin, dir, o.timeoutS);
     const rows = [];
     for (const id of KERNEL_IDS) {
       let g;
@@ -341,7 +379,7 @@ export function check(o, deps = {}) {
         const why = node.error ? node.error.message : node.status !== 0 ? `exit ${node.status}: ${clean(node.stderr).split("\n")[0]}` : `printed ${JSON.stringify(nodeOut)}`;
         throw new OracleError(`${id} on the oracle ${o.node}: ${why}; want ${JSON.stringify(g.expect)}${g.probe ? ` and the probe lines ${JSON.stringify(wantChecks.join("\n"))}` : ""}`);
       }
-      const r = runOnce(o.check, file, o.timeoutS);
+      const r = runOnce(bin, file, o.timeoutS);
       const out = clean(r.stdout);
       const row = {
         id,
@@ -389,8 +427,9 @@ export function check(o, deps = {}) {
       head: st.head,
       tree: st.tree,
       dirty: st.dirty,
+      forks: forkState(),
       host: { ...host, target: TRIPLES[host.platform] ?? null },
-      ep9: { bin: path.basename(o.check), ...splitVersion(runVersion(o.check)), sha256: sha256File(o.check) },
+      ep9: { bin: path.basename(o.check), ...ep9Version(bin), sha256: sha256File(bin) },
       oracle: { engine: "node", bin: path.basename(o.node), version: version(o.node) },
       n: o.n,
       harness: { v8v7: o.harness, octane: rows.find((r) => r.suite === "octane")?.harness ?? null },
@@ -410,8 +449,31 @@ export function check(o, deps = {}) {
       },
     };
   } finally {
+    if (bin !== o.check) rmSync(bin, { force: true });
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The copy of the executable `exe` that check() runs (KERNELS-BIN-SNAPSHOT): in the same
+ * directory, so a script engine that reads files beside itself still finds them, with the same
+ * extension (a Windows .exe); in `dir` when that directory takes no new file. The copy keeps
+ * the mode bits. If `exe` cannot be read, it is `exe` itself (the probes then fail as before).
+ */
+function snapshot(exe, dir) {
+  const ext = path.extname(exe);
+  const name = `${path.basename(exe, ext)}.kernels-${process.pid}-${randomBytes(4).toString("hex")}${ext}`;
+  for (const d of [path.dirname(exe), dir]) {
+    const copy = path.join(d, name);
+    try {
+      copyFileSync(exe, copy, fsConstants.COPYFILE_EXCL);
+      chmodSync(copy, statSync(exe).mode & 0o777);
+      return copy;
+    } catch {
+      rmSync(copy, { force: true });
+    }
+  }
+  return exe;
 }
 
 /**
@@ -425,8 +487,21 @@ export function splitVersion(text) {
 }
 
 function runVersion(bin) {
+  return versionRun(bin).text;
+}
+
+function versionRun(bin) {
   const r = spawnSync(bin, ["--version"], { encoding: "utf8" });
-  return r.status === 0 ? r.stdout : `unknown (--version: ${r.error?.message ?? `exit ${r.status}`})`;
+  return r.status === 0 ? { text: r.stdout, stderr: r.stderr } : { text: `unknown (--version: ${r.error?.message ?? `exit ${r.status}`})`, stderr: "" };
+}
+
+/**
+ * The checked binary's `--version`: `version` and `engine_build` (splitVersion) from stdout, and
+ * `build` from the freshness line on stderr (parseBuild: { commit, dirty }, or null).
+ */
+export function ep9Version(bin) {
+  const r = versionRun(bin);
+  return { ...splitVersion(r.text), build: parseBuild(r.stderr) };
 }
 
 function sha256File(f) {
@@ -437,11 +512,20 @@ function sha256File(f) {
   }
 }
 
+/** The table's note on the binary's freshness line ("" for a clean build of `commit`). */
+function buildText(build, commit) {
+  if (build === undefined || (build?.dirty === false && build.commit === commit)) return "";
+  if (!build) return "; the ep9 binary prints no build line";
+  if (!build.commit) return "; the ep9 binary names no commit";
+  if (build.dirty) return `; the ep9 binary of ${build.commit.slice(0, 12)} was built with uncommitted engine changes`;
+  return `; the ep9 binary was built from ${build.commit.slice(0, 12)}`;
+}
+
 /** The Markdown table of a check result. */
 export function renderTable(res) {
   const cell = (x) => (x ?? "").replaceAll("|", "\\|").replaceAll("`", "'").replaceAll("\n", " / ");
   const L = [];
-  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}${res.ep9.engine_build ? `; ${res.ep9.engine_build}` : ""}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}.`);
+  L.push(`Kernels on ${res.ep9.bin} (${res.ep9.version}${res.ep9.engine_build ? `; ${res.ep9.engine_build}` : ""}), N = ${res.n}, v8-v7 harness ${res.harness.v8v7}; oracle node ${res.oracle.version}; commit ${(res.commit ?? "unknown").slice(0, 12)}${res.dirty?.length ? ` + uncommitted changes in ${res.dirty.join(", ")}` : ""}${res.forks?.split(" ").every((p) => p.endsWith("=pinned")) ? "" : `; fork checkouts: ${res.forks ?? "not checked"}`}${buildText(res.ep9.build, res.commit)}.`);
   L.push("");
   L.push("| kernel | result | blocker | place | source line |");
   L.push("|---|---|---|---|---|");

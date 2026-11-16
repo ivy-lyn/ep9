@@ -19,3 +19,9 @@ No rustdoc runs, so the tests need no nightly.
 | `where-base.json` | a crate `fx` (source: `where-src/lib.rs.txt`, cargo features off): the where-clause form of a sealed supertrait, `trait Downcast where Self: sealed::Sealed`, and one level down `Sealed where Self: Inner`; made and cut as `forms-base.json` (M7-P5 Codex R3 finding 2) |
 | `where-golden.txt` | the listing of `where-base.json` |
 | `where-w64.json` | feature `w64`: `Sealed::test` returns `u64`, not `u32` |
+| `dyn-base.json` | a crate `fx` (source: `dyn-src/lib.rs.txt`, cargo features off): a private supertrait with a generic default, `trait Downcast: sealed::Sealed` with `Sealed<T = u32>`; `pub type Obj = shapes::Inner` (rustdoc gives `dyn Shape`) and `pub type Direct = dyn shapes::Shape + Send`, where `Shape: Base` has no public path; made and cut as `forms-base.json` (with `--features`; API-LIST-COMPLETE, R:298) |
+| `dyn-golden.txt` | the listing of `dyn-base.json` |
+| `dyn-g64.json` | feature `g64`: `Sealed<T = u64>` (Codex R4 3) |
+| `dyn-area32.json` | feature `area32`: `Shape::area` returns `f32` (Codex R4 4) |
+| `dyn-chain.json` | `dyn-base.json` plus, by hand: `pub type Chain = hops::Hop1` with `Hop1 = Hop2` and `Hop2 = (Hop1, &dyn Shape)`, two aliases with no public path in a cycle (rustc refuses it; the reader must end) |
+| `dyn-chain-golden.txt` | the listing of `dyn-chain.json` |

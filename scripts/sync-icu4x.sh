@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Syncs third_party/icu4x to the commit in third_party/icu4x.commit (the upstream commit of the
-# crates.io icu_calendar 2.3.0 package), plus third_party/patches/icu4x/*.patch (the icu_calendar
+# crates.io icu_calendar 2.4.0 package), plus third_party/patches/icu4x/*.patch (the icu_calendar
 # `until` month search; INTL W1 R2). The root and spikes/spike-c workspaces build icu_calendar
 # from third_party/icu4x/components/calendar through their `[patch.crates-io]` path entry, so
 # every cargo command there needs it first (a missing patch path fails the resolve step), as for

@@ -136,14 +136,18 @@ mod select;
 // BigInt values (spec-temporal B2; OBJECT_LAYOUT 7): the BIGINT cell (kind 9) and its operations.
 mod bigint;
 
+mod array_buffer; // TypedArray TA-1 (OBJECT_LAYOUT 9): ArrayBuffer and SAB data, BYTES, the BufferTable
+mod typed_array; // TypedArray TA-1 (OBJECT_LAYOUT 9): the view cells and their exotic methods
+
 #[cfg(test)]
 mod tests;
 
 pub use abi::{
-    Args, ArgsBuilder, CollectionCursor, Cx, Downcast, FlatStr, HostFn, IntoKey, IteratorRecord,
-    JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local, MatchRecord,
-    ObjectClass, PrimitiveType, PromiseCapability, PromiseRejectionOperation,
-    PromiseRejectionTracker, PromiseState, PropertyDescriptor, Rest, ScratchList, ToPrimitiveHint,
+    Args, ArgsBuilder, ArrayIterKind, CollectionCursor, Cx, Downcast, FlatStr, HostFn, IntoKey,
+    IteratorRecord, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
+    MatchRecord, ObjectClass, PrimitiveType, PromiseCapability, PromiseRejectionOperation,
+    PromiseRejectionTracker, PromiseState, PropertyDescriptor, Rest, ScratchList, SharedBlockRef,
+    ToPrimitiveHint,
 };
 pub use atoms::Atom;
 pub use builtins::{

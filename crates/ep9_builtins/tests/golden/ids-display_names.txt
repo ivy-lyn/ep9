@@ -1,0 +1,7 @@
+# ep9 builtin ids: module display_names, block 37. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x4a00   37.0         constructor  2       "DisplayNames"  (%Intl.DisplayNames%)
+0x4a01   37.1         method       1       "supportedLocalesOf"  (%Intl.DisplayNames%.supportedLocalesOf w-c)
+0x4a02   37.2         method       1       "of"  (%Intl.DisplayNames.prototype%.of w-c)
+0x4a03   37.3         method       0       "resolvedOptions"  (%Intl.DisplayNames.prototype%.resolvedOptions w-c)

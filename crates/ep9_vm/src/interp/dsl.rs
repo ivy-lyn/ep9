@@ -324,6 +324,22 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 /// inline and continues at the next pc. The `ics_only` expansions (MODES-D11, MODES-D19; M5-P3
 /// PROFILE6) drop the record: (b) tail-calls [`skip_next`] (no record, the next pc), (c)
 /// continues at the next pc. Their fast handlers have no record code; the bits are dead there.
+///
+/// **The no-change test (M8-P1 RECCOST2).** In a `full` (b) handler the arm first runs
+/// `profile::adds_bit` (the test of `profile::record`: the vector through the frame's
+/// FunctionInfo, then the slot's value half; no store). Only a record that adds a bit tail-calls
+/// [`record_next`], which tests again and stores it, so every slot gets the same bits (FACT_SCHEMA
+/// 2). A record with no new bit tail-calls [`skip_next`], as the `ics_only` arm does: no call of
+/// `record_next`, and the handler's own dispatch stays apart from this arm (an inline dispatch
+/// here made LLVM merge it with the int32 dispatch: one more `jmp` on the int32 path of `Add`
+/// on x86-64). x86-64: the test is about 11 instructions and `skip_next` 3, where the call took
+/// 18 (`record_next` 16 and the jump); no fast handler saves a register on entry for it (the
+/// slot operand is a volatile read, so LLVM does not load it at the handler entry). Three
+/// opcodes keep the plain tail call: with the test, x86-64 `Div` and `DivSmi` got 2 more
+/// instructions on their int32 path (LLVM merged two dispatch tails), and aarch64
+/// `ForInPrepare` built a frame on entry. Of the `Flow::RecordPair` arms only `TestEqual` has a
+/// test (a pair form, M8-P5 LEVER-8): the whole `profile::compare_bits` of a pair is too much
+/// code for a fast handler ([`record_pair_exit`]).
 macro_rules! record_exit {
     (return, ics_only, $name:ident, $st:ident, $r:ident) => {{
         let _ = $r;
@@ -333,7 +349,38 @@ macro_rules! record_exit {
         let _ = $r;
         $st.next
     }};
+    (return, full, Div, $st:ident, $r:ident) => {{
+        $crate::interp::dsl::record_exit!(@call Div, $st, $r)
+    }};
+    (return, full, DivSmi, $st:ident, $r:ident) => {{
+        $crate::interp::dsl::record_exit!(@call DivSmi, $st, $r)
+    }};
+    (return, full, ForInPrepare, $st:ident, $r:ident) => {{
+        $crate::interp::dsl::record_exit!(@call ForInPrepare, $st, $r)
+    }};
     (return, full, $name:ident, $st:ident, $r:ident) => {{
+        const PLACE: u64 = $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name);
+        // SAFETY: `pc` is this one-byte-scale instruction of verified code; its one-byte slot
+        // operand is at `PLACE & 0xFF` (`slot_place`). A volatile read, so LLVM does not move
+        // it to the handler entry, where it would hold a register on every path.
+        let slot = unsafe { core::ptr::read_volatile($st.pc.add((PLACE & 0xFF) as usize)) };
+        // The no-change test (M8-P1 RECCOST2): no bit is new, so no record; the tail call of
+        // `skip_next` (as `ics_only`), not the handler's own dispatch, so LLVM does not merge
+        // this arm into the dispatch of the int32 paths.
+        if !$crate::profile::adds_bit(
+            &$st,
+            $crate::interp::dsl::FSlot(u32::from(slot)),
+            $r.bits() as u32,
+        ) {
+            $crate::interp::dsl::skip_exit!($name, $st)
+        }
+        $crate::interp::dsl::record_exit!(@call $name, $st, $r)
+    }};
+    (become, full, $name:ident, $st:ident, $r:ident) => {{
+        $crate::profile::record(&$st, $r);
+        $st.next
+    }};
+    (@call $name:ident, $st:ident, $r:ident) => {{
         let St {
             cx, pc, fp, acc, ..
         } = $st;
@@ -345,34 +392,40 @@ macro_rules! record_exit {
             >(cx, pc, fp, acc, $r.bits());
         }
     }};
-    (become, full, $name:ident, $st:ident, $r:ident) => {{
-        $crate::profile::record(&$st, $r);
-        $st.next
-    }};
 }
 pub(crate) use record_exit;
 
 /// The record arms of an `ics_only` sibling handler: a tail call of [`skip_next`] with the
-/// handler's state and the instruction length, no record.
+/// handler's state and the opcode (one copy per opcode, M8-P5 LEVER-8), no record.
 macro_rules! skip_exit {
     ($name:ident, $st:ident) => {{
         let St {
             cx, pc, fp, acc, ..
         } = $st;
         // SAFETY: `pc` is this one-byte-scale instruction of verified code in the live frame
-        // `fp`; `one_byte_len` is its length.
+        // `fp`; its opcode is `$name`, so `skip_next` finds its length.
         unsafe {
-            return $crate::interp::dsl::skip_next::<
-                { $crate::interp::dsl::one_byte_len(ep9_bytecode::Opcode::$name) },
-            >(cx, pc, fp, acc);
+            return $crate::interp::dsl::skip_next::<{ ep9_bytecode::Opcode::$name as u8 }>(
+                cx, pc, fp, acc,
+            );
         }
     }};
 }
 pub(crate) use skip_exit;
 
 /// The `Flow::RecordPair` arm of a threaded fast handler: as [`record_exit`], with the operand
-/// pair as the last two arguments of [`record_pair_next`] and the slot place as its const
+/// pair as the last two arguments of [`record_pair_next`] and the opcode as its const
 /// parameter. `ics_only`: no record, as in [`record_exit`].
+///
+/// **The pair no-change test (M8-P5 LEVER-8).** `TestEqual` gives a pair only with null or
+/// undefined on a side (`interp/ops.rs`). The bits of such a pair need one kind read at most
+/// (`profile::nullish_pair_bits`), so its `full` (b) arm finds them and runs the test of
+/// `profile::adds_bit` (no store): with no new bit it tail-calls [`skip_next`], as
+/// [`record_exit`] does; with a new bit it tail-calls [`record_next`] with those bits, which
+/// tests again and stores them (`profile::record`), so every slot gets the same bits as
+/// `profile::record_pair` gives (FACT_SCHEMA 2). A pair with no nullish side (none from
+/// `TestEqual` today) takes [`record_pair_next`]. The other opcodes keep the plain tail call:
+/// `TestEqualStrict` gives pairs of any classes, too much code for a fast handler.
 macro_rules! record_pair_exit {
     (return, ics_only, $name:ident, $st:ident, $p:ident) => {{
         let _ = $p;
@@ -382,21 +435,47 @@ macro_rules! record_pair_exit {
         let _ = $p;
         $st.next
     }};
-    (return, full, $name:ident, $st:ident, $p:ident) => {{
-        let St {
-            cx, pc, fp, acc, ..
-        } = $st;
+    (return, full, TestEqual, $st:ident, $p:ident) => {{
+        const PLACE: u64 = $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::TestEqual);
         let (l, r) = $p.operands();
-        // SAFETY: as in `record_exit`.
-        unsafe {
-            return $crate::interp::dsl::record_pair_next::<
-                { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) },
-            >(cx, pc, fp, acc, l, r);
+        if let Some(bits) = $crate::profile::nullish_pair_bits(l, r) {
+            // SAFETY: as in `record_exit`: the one-byte slot operand is at `PLACE & 0xFF`. A
+            // volatile read, so LLVM does not move it to the handler entry.
+            let slot = unsafe { core::ptr::read_volatile($st.pc.add((PLACE & 0xFF) as usize)) };
+            // The pair no-change test: no new bit, so no record; the tail call of `skip_next`.
+            if !$crate::profile::adds_bit(
+                &$st,
+                $crate::interp::dsl::FSlot(u32::from(slot)),
+                bits,
+            ) {
+                $crate::interp::dsl::skip_exit!(TestEqual, $st)
+            }
+            // A new bit: the record of these bits (`record_next`, as for a `Flow::Record`), so
+            // the pair is dead here and the handler needs no more registers.
+            let rec = $crate::profile::Rec::new($crate::interp::dsl::FSlot(u32::from(slot)), bits);
+            $crate::interp::dsl::record_exit!(@call TestEqual, $st, rec)
         }
+        $crate::interp::dsl::record_pair_exit!(@call TestEqual, $st, l, r)
+    }};
+    (return, full, $name:ident, $st:ident, $p:ident) => {{
+        let (l, r) = $p.operands();
+        $crate::interp::dsl::record_pair_exit!(@call $name, $st, l, r)
     }};
     (become, full, $name:ident, $st:ident, $p:ident) => {{
         $crate::profile::record_pair(&$st, $p);
         $st.next
+    }};
+    (@call $name:ident, $st:ident, $l:ident, $r:ident) => {{
+        let St {
+            cx, pc, fp, acc, ..
+        } = $st;
+        // SAFETY: as in `record_exit`: `pc` is this one-byte-scale instruction of verified
+        // code in the live frame `fp`, and its opcode is `$name`.
+        unsafe {
+            return $crate::interp::dsl::record_pair_next::<
+                { ep9_bytecode::Opcode::$name as u8 },
+            >(cx, pc, fp, acc, $l, $r);
+        }
     }};
 }
 pub(crate) use record_pair_exit;
@@ -525,8 +604,10 @@ macro_rules! record_next_fn {
         /// registers are saved here, not on entry to every handler that may record
         /// (M4-P1 PROFILE-X64). One copy per `PLACE` (M7-P2 RECCOST): the slot operand's
         /// offset and the instruction length are constants, so it decodes no word (x86-64: 16
-        /// instructions on the path that adds no bit, 22 before). `cargo xtask disasm-check`
-        /// follows the jump to it as part of the handler.
+        /// instructions on the path that adds no bit, 22 before). Since M8-P1 RECCOST2 a
+        /// handler tail-calls it only for a record that adds a bit, except `Div`, `DivSmi` and
+        /// `ForInPrepare` ([`record_exit`]). `cargo xtask disasm-check` follows the jump to it
+        /// as part of the handler.
         ///
         /// # Safety
         /// `pc` is an instruction of verified code at one-byte scale in the live top frame
@@ -544,6 +625,8 @@ macro_rules! record_next_fn {
             debug_native_stack_check(cx);
             let (off, len) = ((PLACE & 0xFF) as usize, ((PLACE >> 8) & 0xFF) as usize);
             debug_assert!(off != 0, "Flow::Record from an opcode without a slot operand");
+            #[cfg(test)]
+            exit_count::RECORD.with(|n| n.set(n.get() + 1));
             // SAFETY: caller contract: the one-byte slot operand is at `pc + off` and the
             // instruction is `len` bytes long, in verified code.
             let (slot, next) = unsafe { (u32::from(*pc.add(off)), pc.add(len)) };
@@ -565,16 +648,17 @@ macro_rules! record_next_fn {
 macro_rules! record_pair_next_fn {
     ($($abi:literal => $cfg:meta;)*) => {$(
         /// The record of a `Flow::RecordPair` (sibling expansion): `profile::record_compare`
-        /// of the pair `l`, `r` for the slot operand of the instruction at `pc` (`PLACE`, a
-        /// `slot_place`), then the dispatch of the next instruction. Out of line for the
-        /// reason of `record_next`.
+        /// of the pair `l`, `r` for the slot operand of the instruction at `pc` (its opcode
+        /// byte is `OP`; the slot place is the opcode's `slot_place`), then the dispatch of the
+        /// next instruction. Out of line for the reason of `record_next`. One copy per opcode
+        /// (M8-P5 LEVER-8), as [`skip_next`]: its dispatch jump is a jump site of its own.
         ///
         /// # Safety
         /// `pc` is an instruction of verified code at one-byte scale in the live top frame
-        /// `fp`, and `PLACE` is its `slot_place`.
+        /// `fp`, and `OP` is its opcode byte.
         #[cfg($cfg)]
         #[inline(never)]
-        pub(crate) unsafe extern $abi fn record_pair_next<const PLACE: u64>(
+        pub(crate) unsafe extern $abi fn record_pair_next<const OP: u8>(
             cx: &mut $crate::interp::Cx,
             pc: *const u8,
             fp: *mut u64,
@@ -584,8 +668,12 @@ macro_rules! record_pair_next_fn {
         ) -> u64 {
             #[cfg(debug_assertions)]
             debug_native_stack_check(cx);
-            let (off, len) = ((PLACE & 0xFF) as usize, ((PLACE >> 8) & 0xFF) as usize);
+            distinct_copy::<OP>();
+            let place = const { slot_place(opcode_of(OP)) };
+            let (off, len) = ((place & 0xFF) as usize, ((place >> 8) & 0xFF) as usize);
             debug_assert!(off != 0, "Flow::RecordPair from an opcode without a slot operand");
+            #[cfg(test)]
+            exit_count::RECORD_PAIR.with(|n| n.set(n.get() + 1));
             // SAFETY: caller contract.
             let (slot, next) = unsafe { (u32::from(*pc.add(off)), pc.add(len)) };
             let slot = $crate::interp::dsl::FSlot(slot);
@@ -617,19 +705,28 @@ record_next_fn! {
 macro_rules! skip_next_fn {
     ($($abi:literal => $cfg:meta;)*) => {$(
         /// The `Flow::Record` and `Flow::RecordPair` arms of an `ics_only` sibling expansion
-        /// (MODES-D11): no record, the dispatch of the instruction `LEN` bytes after `pc`.
-        /// Out of line, as [`record_next`] is for the `full` table, so a fast handler keeps the
-        /// shape of its `full` twin: LLVM does not merge a rare record path (a double result,
-        /// a compare of two non-int32 values) into the int32 path with selects, which cost
-        /// the int32 path a few instructions (t0-loop +1.9% on M5-P3 a64 before this helper).
-        /// `cargo xtask disasm-check` follows the jump to it as part of the handler.
+        /// (MODES-D11), and of a `full` one with no new bit (M8-P1 RECCOST2, M8-P5 LEVER-8):
+        /// no record, the dispatch of the next instruction (the opcode `OP` at `pc` gives its
+        /// length). Out of line, as [`record_next`] is for the `full` table, so a fast handler
+        /// keeps the shape of its `full` twin: LLVM does not merge a rare record path (a double
+        /// result, a compare of two non-int32 values) into the int32 path with selects, which
+        /// cost the int32 path a few instructions (t0-loop +1.9% on M5-P3 a64 before this
+        /// helper). `cargo xtask disasm-check` follows the jump to it as part of the handler.
+        ///
+        /// **One copy per opcode (M8-P5 LEVER-8, S0 C5).** Up to M8-P4 there was one copy per
+        /// length: every opcode of one length shared its dispatch jump, which a branch
+        /// predictor keys by its address, so the next handlers of all those opcodes mixed at
+        /// one jump (x86-64 cachegrind, 51e20683: `skip_next::<3>` 11.8% of the indirect
+        /// mispredicts of navier-stokes, 5.9% of raytrace). With `OP` each opcode has its own copy,
+        /// so its own jump where the linker keeps the copies (an ELF link; the win64 release link
+        /// folds them: [`distinct_copy`]). The instructions stay the same (3 on x86-64).
         ///
         /// # Safety
         /// `pc` is an instruction of verified code at one-byte scale in the live top frame
-        /// `fp`, `LEN` bytes long.
+        /// `fp`, and `OP` is its opcode byte.
         #[cfg($cfg)]
         #[inline(never)]
-        pub(crate) unsafe extern $abi fn skip_next<const LEN: usize>(
+        pub(crate) unsafe extern $abi fn skip_next<const OP: u8>(
             cx: &mut $crate::interp::Cx,
             pc: *const u8,
             fp: *mut u64,
@@ -637,8 +734,10 @@ macro_rules! skip_next_fn {
         ) -> u64 {
             #[cfg(debug_assertions)]
             debug_native_stack_check(cx);
-            // SAFETY: caller contract: the next instruction starts `LEN` bytes after `pc`.
-            let next = unsafe { pc.add(LEN) };
+            distinct_copy::<OP>();
+            // SAFETY: caller contract: the next instruction starts `one_byte_len` of the
+            // opcode `OP` bytes after `pc`.
+            let next = unsafe { pc.add(const { one_byte_len(opcode_of(OP)) }) };
             // SAFETY: `next` is an instruction start of verified code.
             let h = cx.table[unsafe { *next } as usize];
             // SAFETY: the table holds handlers of the sibling expansion; the state is valid.
@@ -656,6 +755,59 @@ skip_next_fn! {
 /// The instruction length of `op` at one-byte scale, for [`skip_next`].
 pub(crate) const fn one_byte_len(op: ep9_bytecode::Opcode) -> usize {
     op.info().size(OperandScale::Single)
+}
+
+/// The opcode of the byte `op`, for the const parameters of [`skip_next`] and
+/// [`record_pair_next`] (an opcode byte: `Opcode::$name as u8`). Const evaluation fails for a
+/// byte that is no opcode.
+pub(crate) const fn opcode_of(op: u8) -> ep9_bytecode::Opcode {
+    match ep9_bytecode::Opcode::from_u8(op) {
+        Some(o) => o,
+        None => panic!("not an opcode byte"),
+    }
+}
+
+/// Keeps the copies of a helper that differ only in the const parameter `OP` apart (the
+/// copies of one length of [`skip_next`], of one slot place of [`record_pair_next`]): the same
+/// code in two functions makes LLVM merge them (MergeFunctions, on in optimized builds: the
+/// x86-64 cross build without this gave `TestEqualStrict` the `record_pair_next` copy of
+/// `TestEqual`), and then the opcodes would share one dispatch jump again. An `asm!` block
+/// whose text is an assembler comment that names `OP` (no instruction; no register, memory,
+/// stack or flag), so the copies differ in LLVM IR only: win64 link /OPT:ICF folds them again.
+#[inline(always)]
+pub(crate) fn distinct_copy<const OP: u8>() {
+    // SAFETY: the template is a comment only: no instruction, no operand.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "# ep9 copy {op}",
+            op = const OP,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    // SAFETY: as above.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "// ep9 copy {op}",
+            op = const OP,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}
+
+/// Test builds only: the runs of [`record_next`] and [`record_pair_next`] on this thread, for
+/// the tests of the no-change exits (M8-P5 LEVER-8: a `TestEqual` pair with no new bit runs
+/// neither).
+#[cfg(test)]
+pub(crate) mod exit_count {
+    use core::cell::Cell;
+    thread_local! {
+        /// The runs of `record_next`.
+        pub(crate) static RECORD: Cell<u32> = const { Cell::new(0) };
+        /// The runs of `record_pair_next`.
+        pub(crate) static RECORD_PAIR: Cell<u32> = const { Cell::new(0) };
+    }
 }
 
 /// The cold handler of opcode `$name` in an [`expand_threaded`] expansion. `full`: the cold

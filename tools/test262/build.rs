@@ -12,6 +12,11 @@
 //! `1`, `0`, or empty when git cannot answer; gates5 high 1), which the exec JSON writes as
 //! `"runner_dirty"`: a runner built from an edit that was undone later still says so. The
 //! paths and the watch rule are in `runner_build.rs` (tested in tests/runner_build.rs).
+//!
+//! And the fork line (`EP9_RUNNER_FORKS`, FORK-CHECKOUT-ATTEST): `regress=pinned icu4x=pinned`
+//! when each fork checkout that cargo builds is its pin plus its patch set (`fork_attest` of
+//! scripts/sync-lib.sh), with `stale` or `absent` in place of `pinned` otherwise; empty when the
+//! check cannot run. The exec JSON writes it as `"runner_forks"`.
 
 use std::path::PathBuf;
 
@@ -73,4 +78,22 @@ fn main() {
         None => "",
     };
     println!("cargo:rustc-env=EP9_RUNNER_DIRTY={flag}");
+
+    // FORK-CHECKOUT-ATTEST: whether the fork checkouts that cargo builds are their pins plus
+    // their patches (`regress=pinned icu4x=pinned`; empty when the check cannot run), kept fresh
+    // by watching each fork's stamp, HEAD and built dir (runner_build.rs).
+    for p in runner_build::fork_watch_paths(&root) {
+        println!("cargo:rerun-if-changed={}", p.display());
+    }
+    let forks = runner_build::fork_attest(&root);
+    if forks.is_none() {
+        println!(
+            "cargo:rerun-if-changed={}",
+            out.join(NO_GIT_WATCH).display()
+        );
+    }
+    println!(
+        "cargo:rustc-env=EP9_RUNNER_FORKS={}",
+        forks.as_deref().unwrap_or("")
+    );
 }

@@ -8,11 +8,15 @@
 #   FAKE_FAIL=n:w      engine n exits 3 on workload w
 #   FAKE_WRONG_COUNTED=n:w   engine n prints a wrong result for workload w, but only in a counted
 #                      run (fake-bench.sh sets FAKE_COUNTED=1): right in the output check
+#   FAKE_BUILD_n=TEXT  engine n's --version also prints "ep9 build: TEXT" on stderr (the
+#                      P0-BUILDID line; n with "-" as "_": FAKE_BUILD_ep9_head)
 name=$(basename "$0")
 if [ "$1" = "--version" ]; then
   echo "fake $name 0.0"
   # The build line of an M5-P0 ep9 (FAKE_NO_BUILD=1: a binary from before, with none).
   if [ -z "$FAKE_NO_BUILD" ]; then echo "features none; preset jitless"; fi
+  eval "b=\${FAKE_BUILD_$(echo "$name" | tr -- - _):-}"
+  if [ -n "$b" ]; then echo "ep9 build: $b" >&2; fi
   exit 0
 fi
 for a; do f=$a; done

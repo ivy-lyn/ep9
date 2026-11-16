@@ -13,6 +13,7 @@
 //! | `a_strong_key_slot_keeps_the_key` | the negative control: the same steps on a Map keep the key, so the weak test can fail |
 //! | `a_rehash_drops_dead_weak_entries` | a rehash of a weak table copies only live keys |
 //! | `an_identity_hash_is_stable_hidden_and_not_an_address` | H12-Q1: stored once, flag bit 9, not listed, frozen objects too, the same sequence in two isolates |
+//! | `a_map_whose_table_slot_holds_another_cell_panics` and 3 more (SAFE-COLL-FORGE) | a table or index slot written by safe `Cx` calls: a panic in every build or a bounded walk, never a raw access outside the table |
 
 use std::hint::black_box;
 
@@ -25,7 +26,7 @@ use crate::kinds::{self, FLAG_HASH_PRESENT};
 use crate::object::{self, cell};
 use crate::ordered_table::{self as table, MAP_WIDTH, SET_WIDTH};
 use crate::runtime::{Root, Runtime, val};
-use crate::{Dispatch, Isolate, conv, property, string};
+use crate::{Cx, Dispatch, Isolate, JsObject, Local, conv, property, string};
 
 /// Bytes of zeros between the test's frame and the frames that make the cells (the pattern
 /// of tests/layout3.rs; tests/mod.rs is frozen, so each file has its own copy).
@@ -621,5 +622,107 @@ fn a_deleted_entry_is_a_hole_not_undefined() {
         table::set(rt, map, UNDEFINED, num(2.0)).unwrap();
         assert_eq!(get(rt, map, UNDEFINED), Some(num(2.0)));
         rt.heap.drop_global(h);
+    });
+}
+
+// ---- SAFE-COLL-FORGE: slots that safe code can write ----------------------------------------
+//
+// `Cx::set_slot` writes any slot of a Map, Set or iterator object, and `Cx::slot` reads a real
+// table out of one. The table code trusts the fields of the cell it gets, so before the release
+// checks these steps wrote or read outside the table cell in release builds (SIGSEGV, SIGBUS
+// or a hang; route SAFE-COLL-FORGE). Each test uses safe `Cx` calls only.
+
+/// Runs `f` with a builtin-ABI context of a fresh isolate (the `tests::slots` form).
+fn with_cx<R>(f: impl FnOnce(&mut Cx<'_>) -> R) -> R {
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let iso: &mut Isolate = &mut iso;
+    let mut cx = Cx::new(&mut iso.cx);
+    f(&mut cx)
+}
+
+/// A plain object whose words at +8 .. +56 would read as table fields (the TA-1 judge repro).
+fn table_look_alike<'s>(cx: &mut Cx<'s>) -> Local<'s, JsObject> {
+    let x = cx.new_object();
+    for (k, v) in [("a", 1), ("b", 1), ("c", 1), ("d", 0), ("e", -1)] {
+        cx.set(x, k, Local::int32(v), true).unwrap();
+    }
+    x
+}
+
+/// A Map Iterator made from safe calls: `[[IteratedObject]]` table `t`, index 0, kind keys.
+fn forged_map_iterator<'s>(cx: &mut Cx<'s>, t: Local<'s>) -> Local<'s, JsObject> {
+    let it = cx.new_object_with_slots(Local::null(), ObjectClass::MapIterator, 3);
+    let class = ObjectClass::MapIterator;
+    cx.set_slot(it, class, 0, t).unwrap();
+    cx.set_slot(it, class, 1, Local::int32(0)).unwrap();
+    cx.set_slot(it, class, 2, Local::int32(0)).unwrap();
+    it
+}
+
+#[test]
+#[should_panic(expected = "a collection slot holds no ORDERED_TABLE cell")]
+fn a_map_whose_table_slot_holds_another_cell_panics() {
+    with_cx(|cx| {
+        let x = table_look_alike(cx);
+        let m = cx.new_object_with_slots(Local::null(), ObjectClass::Map, 1);
+        cx.set_slot(m, ObjectClass::Map, 0, x).unwrap();
+        let _ = cx.collection_set(m, ObjectClass::Map, Local::int32(7), Local::number(1e6));
+    });
+}
+
+#[test]
+#[should_panic(expected = "the table slot of a collection holds an obsolete table")]
+fn a_map_whose_table_slot_holds_an_obsolete_table_panics() {
+    with_cx(|cx| {
+        let map = ObjectClass::Map;
+        let a = cx.new_collection(Local::null(), map);
+        let old = cx.slot(a, map, 0).unwrap();
+        // A new table has room for 4 entries: the 5th set rehashes, so `old` forwards (its
+        // bucket head 0 holds the new table, not an entry index).
+        for k in 0..5 {
+            cx.collection_set(a, map, Local::int32(k), Local::int32(k))
+                .unwrap();
+        }
+        let b = cx.new_collection(Local::null(), map);
+        cx.set_slot(b, map, 0, old).unwrap();
+        // Some key hashes to bucket 0 (2 buckets).
+        for k in 0..16 {
+            let _ = cx.collection_get(b, map, Local::int32(k));
+        }
+    });
+}
+
+#[test]
+#[should_panic(expected = "a collection slot holds no ORDERED_TABLE cell")]
+fn an_iterator_whose_table_slot_holds_another_cell_panics() {
+    with_cx(|cx| {
+        let x = table_look_alike(cx);
+        let it = forged_map_iterator(cx, x.into());
+        let _ = cx.collection_iterator_next(it, ObjectClass::MapIterator);
+    });
+}
+
+/// An iterator index past the entries of an obsolete table counts as their end: the walk goes
+/// on in the new table after the entries the rehash copied.
+#[test]
+fn an_iterator_index_past_the_entries_of_an_obsolete_table_is_their_end() {
+    with_cx(|cx| {
+        let (map, iter) = (ObjectClass::Map, ObjectClass::MapIterator);
+        let m = cx.new_collection(Local::null(), map);
+        for k in 0..4 {
+            cx.collection_set(m, map, Local::int32(k), Local::int32(k))
+                .unwrap();
+        }
+        let t = cx.slot(m, map, 0).unwrap();
+        let it = forged_map_iterator(cx, t);
+        let first = cx.collection_iterator_next(it, iter).unwrap();
+        assert_eq!(first.and_then(|v| v.as_number()), Some(0.0));
+        // The 5th set rehashes: the iterator's table is obsolete now.
+        cx.collection_set(m, map, Local::int32(4), Local::int32(4))
+            .unwrap();
+        cx.set_slot(it, iter, 1, Local::int32(-1)).unwrap();
+        let next = cx.collection_iterator_next(it, iter).unwrap();
+        assert_eq!(next.and_then(|v| v.as_number()), Some(4.0));
+        assert!(cx.collection_iterator_next(it, iter).unwrap().is_none());
     });
 }

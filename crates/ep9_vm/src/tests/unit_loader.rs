@@ -5,13 +5,13 @@
 //! |---|---|
 //! | `unit_loader_*_preset*` | MC-p0-cx-1: a unit variant with lowering `jit` is skipped under every preset (JIT, jitless, hybrid), before `select()`; `select()` alone would pick it under hybrid |
 //! | `unit_loader_counts_*` | each skip reason, the digest binding (MC-w31-8), one load per function |
-//! | `unit_loader_*_fuse*` | steps 6-7: a popped or unknown fuse makes the object a dependency that does not hold |
+//! | `unit_loader_*_fuse*` | steps 6-7: a popped or unknown fuse makes the object a dependency that does not hold; MC-w35-5 (M8-P4): step 8 installs a pick whose fuse refs are GuardFuse reads |
 //! | `unit_loader_api_*` | the Cx API: the isolate's policy (MC-w24-3 form), no install in M7-P4 (MC-w30-2), the bytecode runs; one intern table (MC-w25-9) |
 //! | `unit_loader_registered_*` | MC-w33-2.2: unit text copied at run time (`ep9_platform::unit_text`, no `jit`), its unwind records registered by the loader (JIT review O3), installed by step 8 from Rust, entered by `call_native` and walked by `ep9_platform::unwind` |
 //! | `unit_loader_installs_nothing_*`, `unit_loader_maps_*`, `unit_loader_a_text_larger_*` | O3: no unwind data, no install; A2-UNIT-SHARE and MC-w34-4: one text per process keyed by its bytes, mapped only on a pick, and a text that cannot fit gives "no-text" |
 //! | `unit_loader_build_*` | SHSTK-ENGINE: the ep9_vm build script runs the shadow-stack refusal |
 //! | `unit_loader_a_text_from_*`, `unit_loader_a_whole_*`, `unit_loader_a_full_*` | M7-P5 Codex A1: a shared text is synced on the thread that runs it; Codex A2 (child processes, `unit_loader_child_case`): the unwind mode is chosen before a text maps, and a probe that could not run is not cached |
-//! | `unit_loader_a_constructor_*` | M7-P5 JIT review F1 (M6-ORCH-386): step 8 installs no constructor, so `new`, the Rust construct path (`Reflect.construct`) and `super()` run its bytecode; the tests that install use the methods `g` and `id` |
+//! | `unit_loader_a_constructor_*`, `unit_loader_construct_*`, `class_ctors::*` | M7-P5 JIT review F1 (M6-ORCH-386) form 2, then M8-P1 A2-CONSTRUCT (M8-PLAN-D25, D26): step 8 installs an ordinary function, and `new`, the Rust construct path (`Reflect.construct`), `super()`, a bound target and a construct of another realm enter its unit code with the results, receiver, errors and stacks of its bytecode; the caller counts a call or a construct of unit code (the vector at call 8). M8-P4 A2-GATE (MC-w29-8 step 2, MC-w33-6): a class constructor too (not with `spike-native`), and a call of one throws its TypeError |
 //!
 //! The JS-level checks (a unit from `ep9_unit::check`, M-R9 with and without a loaded unit)
 //! are in `crates/ep9_unit/tests/loader.rs`: ep9_vm tests cannot compile JS.
@@ -320,8 +320,8 @@ fn unit_loader_counts_one_string_table_pass_per_load() {
 
 // ---- steps 6-7: fuse refs --------------------------------------------------------------------
 
-/// A variant that names a fuse: picked while the fuse is wired and intact; not picked after
-/// the fuse pops, and never for an index this build does not know.
+/// A variant that names a fuse: picked while the fuse is wired and intact; not picked after the
+/// fuse pops, never for an unknown index. Since MC-w35-5 (M8-P4) step 8 installs the pick.
 #[test]
 fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     let with_fuse = |index: u32| FunctionCode {
@@ -347,14 +347,14 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     let iso = defs_isolate(ExecOptions::jitless());
     let r = load(&iso, &Policy::JITLESS, &[with_fuse(1000)]);
     assert_eq!(r.count(Reason::Bytecode), 1);
-    // A wired fuse is a dependency: step 8 does not install it (no pop path re-selects yet).
+    // MC-w35-5 (M8-P4): a wired static fuse is a GuardFuse read (H31:138): step 8 installs it.
     let iso = defs_isolate(ExecOptions::jitless());
     iso.rt.fuses.wire(&iso.rt, 0).unwrap();
     let lu = info(&iso, "g").loaded_unit().unwrap();
     let mut f = with_fuse(0);
     f.variants[0].len = call0_bytes().0.len() as u32;
-    // SAFETY: the dependency refusal comes before `install_code`; no code is installed (the
-    // text and its unwind data are the frame stub's).
+    // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g` and reads no
+    // fuse), and `stub_unwind` describes it.
     let r = unsafe {
         unit_loader::load_and_install(
             &iso.rt,
@@ -370,9 +370,9 @@ fn unit_loader_a_popped_or_unknown_fuse_is_never_picked() {
     };
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
-        (0, 1)
+        (1, 0)
     );
-    assert_eq!(info(&iso, "g").slot.kind_byte(), DispatchKind::Interp as u8);
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::AotBaseline));
 }
 
 /// One variant of the Cx API: (kind, lowering, entry, len, cpu, fuse ids).
@@ -1588,8 +1588,8 @@ fn unit_loader_install_refuses_aot_opt_and_a_class_constructor() {
         },
     ];
     let lu = info(&iso, "g").loaded_unit().unwrap();
-    // SAFETY: both picks are refused before any slot write (AotOpt; a class constructor); the
-    // text and its unwind data are the frame stub's.
+    // SAFETY: the AotOpt pick is refused before any slot write; `K` (a class constructor) is
+    // installed over the frame stub only where `installs_class_code` holds, and never runs.
     let r = unsafe {
         unit_loader::load_and_install(
             &iso.rt,
@@ -1603,17 +1603,24 @@ fn unit_loader_install_refuses_aot_opt_and_a_class_constructor() {
             0,
         )
     };
+    // MC-w29-8 step 2 (M8-P4 A2-GATE): the class-constructor half flips on purpose: step 8
+    // installs `K` as AotBaseline unit code, except in a `spike-native` build, whose T0
+    // `call_fast` has no class-constructor check for an AotBaseline slot. AotOpt: never.
+    let class_code = crate::native::installs_class_code(DispatchKind::AotBaseline);
+    assert_eq!(class_code, !cfg!(feature = "spike-native"));
     assert_eq!(r.count(Reason::Picked), 2);
+    let want = if class_code { (1, 1) } else { (0, 2) };
     assert_eq!(
         (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
-        (0, 2)
+        want
     );
-    for name in ["id", "K"] {
-        assert_eq!(
-            info(&iso, name).slot.kind_byte(),
-            DispatchKind::Interp as u8
-        );
-    }
+    let k = if class_code {
+        DispatchKind::AotBaseline
+    } else {
+        DispatchKind::Interp
+    };
+    assert_eq!(info(&iso, "id").slot.kind(), Some(DispatchKind::Interp));
+    assert_eq!(info(&iso, "K").slot.kind(), Some(k));
 }
 
 // ---- SHSTK-ENGINE ------------------------------------------------------------------------------
@@ -1859,7 +1866,7 @@ fn unit_loader_a_full_range_at_the_mode_choice_is_tried_again() {
     run_child("busy");
 }
 
-// ---- JIT review F1 (M7-P5 fixer r4, M6-ORCH-386): step 8 installs no constructor --------------
+// ---- JIT review F1 (M7-P5 fixer r4, M6-ORCH-386), M8-P1 A2-CONSTRUCT (M8-PLAN-D25): constructors -
 
 /// `rconstruct(f, a)`: Construct(f, [a], f) from Rust (`Cx::construct`, the path of
 /// `Reflect.construct`: `call::construct_with`, then `call_bytecode` with new.target set).
@@ -1946,16 +1953,20 @@ fn super_c_walk() -> VerifiedUnit {
     unit("", vec![s.finish(), d.finish()])
 }
 
-/// JIT review F1 (M6-ORCH-386, fix form 2): step 8 installs no function that has
-/// `[[Construct]]`, so every construct path runs its bytecode. One installing load lists the
-/// constructor `c` and the method `g` over the same frame stub: `g` is installed, `c` is not
-/// installable and keeps its Interp slot. `new c(walk)`, `rconstruct(c, walk)` (the Rust
-/// construct path of `Reflect.construct`) and `super(walk)` from `class D extends c` give the
-/// results of an isolate with no install (before the fix each gave "not implemented ...
-/// calling code of this dispatch kind"). The call `g(walk)` enters the unit code (42), and
-/// `new g(walk)` of the installed method throws the TypeError of an isolate with no install.
+/// JIT review F1 (M6-ORCH-386, fix form 2), then M8-P1 A2-CONSTRUCT (M8-PLAN-D25, MC-w29-8 step
+/// 1): this test flips on purpose with D25. Form 2 installed no function with `[[Construct]]`;
+/// since D25 step 8 installs an ordinary function, and every construct path enters its unit
+/// code through `native::native_callee` with new.target in its frame (the class constructor
+/// stays refused: `unit_loader_install_refuses_aot_opt_and_a_class_constructor`). One
+/// installing load lists the constructor `c` and the method `g` over the same frame stub:
+/// both are installed. `new c(walk)`, `rconstruct(c, walk)` (the Rust construct path of
+/// `Reflect.construct`) and `super(walk)` from `class D extends c` give the results of an
+/// isolate with no install, and each runs the unit code of `c` (`walk` sees the stub's return
+/// address of `c` on the native stack). Before form 2 each gave "not implemented ... calling
+/// code of this dispatch kind". The call `g(walk)` enters the unit code (42), and `new
+/// g(walk)` of the installed method throws the TypeError of an isolate with no install.
 #[test]
-fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
+fn unit_loader_a_constructor_is_installed_and_construct_enters_its_unit_code() {
     let shown = |iso: &mut Isolate, u: VerifiedUnit| {
         iso.with_cx_checkpoint(|cx| cx.run_script(u, "n.js").map(|v| cx.display(v)))
             .map_err(|e| format!("{e:?}"))
@@ -1989,6 +2000,8 @@ fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
             0,
         )
     };
+    // The return address of the call in the stub of `c` (in the mapped unit text).
+    let c_ret = code_of(info(&iso, "c")).map(|u| u.code_at(0).unwrap().start + call0_bytes().1);
     let mut wrong = Vec::new();
     for (name, make) in [
         ("new c(walk)", new_c_walk as fn() -> VerifiedUnit),
@@ -1996,21 +2009,29 @@ fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
         ("super(walk)", super_c_walk),
     ] {
         let before = shown(&mut plain, make());
+        WALKED.with(|x| x.borrow_mut().take());
         let after = shown(&mut iso, make());
+        let ips = WALKED.with(|x| x.borrow_mut().take()).unwrap_or_default();
         assert!(before.is_ok(), "{name} with no install: {before:?}");
         if after != before {
             wrong.push(format!(
                 "{name}: no install {before:?}, after the load {after:?}"
             ));
         }
+        if c_ret.is_none_or(|ret| !ips.contains(&ret)) {
+            wrong.push(format!(
+                "{name}: the unit code of c did not run ({c_ret:x?})"
+            ));
+        }
     }
+    // D25: `c` is installed now (form 2 counted it not installable: [2, 1, 1]).
     let counts = [Reason::Picked, Reason::Installed, Reason::NotInstallable].map(|x| r.count(x));
-    if counts != [2, 1, 1] {
+    if counts != [2, 2, 0] {
         wrong.push(format!("picked, installed, not-installable: {counts:?}"));
     }
-    if info(&iso, "c").slot.kind_byte() != DispatchKind::Interp as u8 {
+    if info(&iso, "c").slot.kind_byte() != DispatchKind::AotBaseline as u8 {
         wrong.push(format!(
-            "the slot of c: {} (not Interp)",
+            "the slot of c: {} (not AotBaseline)",
             info(&iso, "c").slot.kind_byte()
         ));
     }
@@ -2036,4 +2057,1453 @@ fn unit_loader_a_constructor_is_not_installed_so_construct_runs_its_bytecode() {
         "new g(walk): {e}"
     );
     assert!(!e.contains("not implemented"), "new g(walk): {e}");
+}
+
+// ---- M8-P1 A2-CONSTRUCT: construct cases and the caller's count (M8-PLAN-D25, D26) ----------
+
+/// Records the native stack in [`WALKED`], as `walk` does.
+fn record_walk() {
+    let ips = ep9_platform::unwind::native_return_addresses(512);
+    WALKED.with(|w| *w.borrow_mut() = Some(ips));
+}
+
+/// `mkobj()`: a new object with `tag` "own" (a constructor body that returns an object).
+/// Records the native stack, as `walk` does.
+fn mkobj<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    record_walk();
+    let o = cx.new_object();
+    let tag = cx.new_string("own")?;
+    cx.set(o, "tag", tag, true)?;
+    Ok(o.into())
+}
+
+/// `undef()`: undefined (a constructor body that returns nothing). Records the native stack.
+fn undef<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    record_walk();
+    Ok(Local::from_bits(Value::UNDEFINED.to_bits()))
+}
+
+/// `boom()`: throws an Error "boom" (a throw in the constructor body, under its frame).
+/// Records the native stack.
+fn boom<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    record_walk();
+    Err(cx.throw_error(crate::runtime::ErrorKind::Error, "boom"))
+}
+
+/// `rconstruct3(f, a, nt)`: Construct(f, [a], nt) from Rust (`Reflect.construct(f, [a], nt)`).
+fn rconstruct3<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.construct(args.get(0), &[args.get(1)], args.get(2))
+        .map(|o| o.value())
+}
+
+/// `f.bindf(t)`: a bound function of `this` with the bound `this` `t` and no bound argument.
+fn bindf<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let target = this.as_function().unwrap();
+    cx.new_bound_function(target, args.get(0), args.rest(1))
+        .map(|f| f.value())
+}
+
+/// `c.prototype.tag = "c"; K.prototype.tag = "K"; bc = bindf.call(c, undefined);` and the
+/// realm B (`other`) with `c`, `walk`, `mkobj`, `undef` and `boom` of this realm.
+fn construct_setup(iso: &mut Isolate) {
+    let mut s = Asm::script(0);
+    let (o, p) = (s.b.new_register(), s.b.new_register());
+    for (ctor, tag) in [("c", "c"), ("K", "K")] {
+        s.lda_global(ctor);
+        s.b.star(o);
+        s.get_named(o, "prototype");
+        s.b.star(p);
+        s.lda_str(tag);
+        s.set_named(p, "tag");
+    }
+    let l = s.b.new_register_list(2);
+    s.lda_global("c");
+    s.b.star(l.get(0)).lda_undefined().star(l.get(1));
+    s.lda_global("bindf");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_property1(f, l.get(0), l.get(1), slot);
+    s.sta_global("bc");
+    s.b.lda_undefined().return_();
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(unit("", vec![s.finish()]), "setup.js")
+            .map(|_| ())
+    })
+    .unwrap();
+    iso.with_cx(|cx| {
+        let a = cx.global();
+        let b = cx.create_realm()?;
+        cx.set(a, "other", b, true)?;
+        for name in ["c", "walk", "mkobj", "undef", "boom"] {
+            let v = cx.get(a, name)?;
+            cx.set(b, name, v, true)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A jitless isolate (GC stress `stress`) that ran `defs()` and [`construct_setup`], with the
+/// host functions of this section; with `install`, the frame stubs of `g` (text offset 0) and
+/// `c` (offset 64) are installed. Returns the isolate and the return address of the call in
+/// the stub of `c` (`None` with no install).
+fn construct_isolate(install: bool, stress: bool) -> (Isolate, Option<usize>) {
+    let config = IsolateConfig {
+        heap: ep9_heap::HeapConfig {
+            gc_stress: u32::from(stress),
+            verify_after_gc: stress,
+            ..ep9_heap::HeapConfig::default()
+        },
+        ..IsolateConfig::default()
+    };
+    let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+    for (name, n, f) in [
+        ("walk", 0, walk as crate::host::HostFn),
+        ("mkobj", 0, mkobj),
+        ("undef", 0, undef),
+        ("boom", 0, boom),
+        ("rconstruct", 2, rconstruct),
+        ("rconstruct3", 3, rconstruct3),
+        ("bindf", 1, bindf),
+    ] {
+        iso.register_host_function(name, n, f);
+    }
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
+    construct_setup(&mut iso);
+    if !install {
+        return (iso, None);
+    }
+    let starts = [0, 64];
+    let mut c_stub = FunctionCode {
+        function: C,
+        digest: digest(C),
+        ..g_stub()
+    };
+    c_stub.variants[0].entry = starts[1] as u32;
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: as in `unit_loader_a_constructor_is_installed_and_construct_enters_its_unit_code`:
+    // the text holds the frame stub at offsets 0 and 64 (each runs the call at bytecode offset
+    // 0 of `g` and of `c`), and `stub_unwind_at` describes both.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &stub_text_at(&starts),
+            &stub_unwind_at(&starts),
+            &[],
+            0,
+            &[g_stub(), c_stub],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(r.count(Reason::Installed), 2, "{:?}", r.rows());
+    let ret = code_of(info(&iso, "c")).unwrap().code_at(0).unwrap().start + call0_bytes().1;
+    (iso, Some(ret))
+}
+
+/// `return <new ctor(arg)>.tag;` with `new` by the `Construct` opcode (`ctor` a global).
+fn new_tag(ctor: &str, arg: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let l = s.b.new_register_list(1);
+    let o = s.b.new_register();
+    s.lda_global(arg);
+    s.b.star(l.get(0));
+    s.construct_global(ctor, l);
+    s.b.star(o);
+    s.get_named(o, "tag");
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
+/// `return rconstruct3(c, walk, K).tag;` (`Reflect.construct(c, [walk], K)`: the receiver's
+/// prototype comes from new.target `K`, not from `c`).
+fn rconstruct3_tag() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let l = s.b.new_register_list(3);
+    let o = s.b.new_register();
+    for (i, name) in ["c", "walk", "K"].into_iter().enumerate() {
+        s.lda_global(name);
+        s.b.star(l.get(i as u32));
+    }
+    s.lda_global("rconstruct3");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver(f, l, 3, slot);
+    s.b.star(o);
+    s.get_named(o, "tag");
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
+/// Runs `u` in `iso` (in realm B, `other`, when `in_b`): the completion value shown, or the
+/// exception with its message and stack.
+fn shown_in(iso: &mut Isolate, u: VerifiedUnit, in_b: bool) -> Result<String, String> {
+    iso.with_cx_checkpoint(|cx| {
+        if !in_b {
+            return cx.run_script(u, "case.js").map(|v| cx.display(v));
+        }
+        let a = cx.global();
+        let b = cx.get(a, "other")?.as_object().unwrap();
+        cx.with_realm(b, |cx| cx.run_script(u, "case-b.js").map(|v| cx.display(v)))
+    })
+    .map_err(|e| format!("{} | {:?}", e.message, e.stack))
+}
+
+/// MC-w36-3 (the 6 construct cases; plan v13 4.2 task 5, the FASTDIFF form of this file:
+/// `fastpath_diff.rs` cannot install unit code). Each case runs in an isolate with no install
+/// and in one where `c` (and `g`) run their unit code, with and without GC stress, and must
+/// give the same result, receiver and error: (1) a base constructor that returns an object,
+/// (2) a primitive, (3) nothing; (4) `new` of a bound function whose target is installed; (5)
+/// `new` from another realm (`slow::call` sends it to `call::construct_function_object`, the
+/// Rust path); (6) `Reflect.construct(c, [walk], K)` with new.target `K` ≠ `c`; and (7) a
+/// throw in the constructor body with `Error.stack` through the unit frame (MC-w35-7: the
+/// loader-installed text form beside `native_entry.rs`). In the install isolate each case
+/// that calls `walk` sees the stub's return address of `c` on the native stack (the unit code
+/// ran); before D25 `c` was not installed (form 2).
+#[test]
+fn unit_loader_construct_of_unit_code_gives_the_bytecode_results() {
+    type Case = (
+        &'static str,
+        fn() -> VerifiedUnit,
+        bool,
+        Result<&'static str, &'static str>,
+    );
+    let cases: [Case; 7] = [
+        ("object", || new_tag("c", "mkobj"), false, Ok("own")),
+        ("primitive", || new_tag("c", "walk"), false, Ok("c")),
+        ("nothing", || new_tag("c", "undef"), false, Ok("c")),
+        ("bound", || new_tag("bc", "walk"), false, Ok("c")),
+        ("cross-realm", || new_tag("c", "walk"), true, Ok("c")),
+        ("reflect", rconstruct3_tag, false, Ok("K")),
+        ("throw", || new_tag("c", "boom"), false, Err("boom")),
+    ];
+    for stress in [false, true] {
+        let (mut plain, _) = construct_isolate(false, stress);
+        let (mut iso, ret) = construct_isolate(true, stress);
+        let ret = ret.unwrap();
+        let mut wrong = Vec::new();
+        for (name, make, in_b, want) in cases {
+            let before = shown_in(&mut plain, make(), in_b);
+            WALKED.with(|x| x.borrow_mut().take());
+            let after = shown_in(&mut iso, make(), in_b);
+            let ips = WALKED.with(|x| x.borrow_mut().take()).unwrap_or_default();
+            let label = format!("{name} stress={stress}");
+            match (&before, want) {
+                (Ok(v), Ok(w)) if v == w => {}
+                (Err(e), Err(w)) if e.starts_with(&format!("Error: {w}")) => {}
+                _ => wrong.push(format!(
+                    "{label}: with no install {before:?}, want {want:?}"
+                )),
+            }
+            if after != before {
+                wrong.push(format!(
+                    "{label}: no install {before:?}, installed {after:?}"
+                ));
+            }
+            if !ips.contains(&ret) {
+                wrong.push(format!("{label}: the unit code of c did not run"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        // The stack of the throw names the frame of `c` (the unit frame; its call `f()`).
+        let e = shown_in(&mut iso, new_tag("c", "boom"), false).unwrap_err();
+        assert!(e.contains("at c ("), "the stack names c: {e}");
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+        drop(plain);
+    }
+}
+
+/// `g(walk)` `n` times in one script (n T0 calls of `g`); returns the last result.
+fn call_g_walk_n(n: u32) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let a = s.a.get(0);
+    for _ in 0..n {
+        s.lda_global("walk");
+        s.b.star(a);
+        s.lda_global("g");
+        s.b.star(s.f);
+        let (f, slot) = (s.f, s.call);
+        s.b.call_undefined_receiver1(f, a, slot);
+    }
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
+/// MC-w29-1 (M8-PLAN-D26): the caller counts a call of unit code, so a unit function gets its
+/// vector at the 8th call (threshold 8, `isolate.rs`), as its bytecode does, on each path: T0
+/// calls of `g` (`slow::call` before `call_native_cold`), T0 constructs of `c` (before the
+/// construct arm's native entry), calls from Rust (`Cx::call`) and constructs from Rust
+/// (`Reflect.construct`), both counted at the pushed frame as `slow::count_entry` counts. The
+/// unit code counts nothing itself. Before D26 no call of a native slot counted, so the unit
+/// function never got a vector (H32-Q5 (2): native slot calls skipped `count_call`). With
+/// `spike-native` the T0 call takes the spike entry, which counts nothing.
+#[test]
+fn unit_loader_construct_and_call_of_unit_code_count_at_the_caller() {
+    let has_vector = |iso: &Isolate, name: &str| crate::feedback::vector(info(iso, name)).is_some();
+    // T0 calls and T0 constructs.
+    let (mut iso, _) = construct_isolate(true, false);
+    let v42 = Ok(Value::int32(42).to_bits());
+    assert_eq!(run_js(&mut iso, call_g_walk_n(7)), v42);
+    assert!(!has_vector(&iso, "g"), "g after 7 T0 calls");
+    assert_eq!(run_js(&mut iso, call_g_walk_n(1)), v42);
+    // With `spike-native` a T0 call of native code takes the spike entry first
+    // (`slow::call` `call_native`), which counts nothing (the `native.rs` module doc; the
+    // `tests::native` A-hot test pins it); the default build counts it.
+    let t0_calls_count = !cfg!(feature = "spike-native");
+    assert_eq!(has_vector(&iso, "g"), t0_calls_count, "g after 8 T0 calls");
+    for i in 1..=8 {
+        assert_eq!(
+            shown_in(&mut iso, new_tag("c", "walk"), false),
+            Ok("c".into())
+        );
+        assert_eq!(has_vector(&iso, "c"), i == 8, "c after {i} T0 constructs");
+    }
+    // Calls and constructs from Rust.
+    let (mut iso, _) = construct_isolate(true, false);
+    let [g, c, w] = ["g", "c", "walk"].map(|n| iso.global_raw(n).unwrap());
+    for i in 1..=8 {
+        let v = iso.call_raw(g, Value::UNDEFINED, &[w]).unwrap();
+        assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+        assert_eq!(has_vector(&iso, "g"), i == 8, "g after {i} calls from Rust");
+        let r = iso.with_cx_checkpoint(|cx| {
+            let (c, w): (Local<'_>, Local<'_>) =
+                (Local::from_bits(c.to_bits()), Local::from_bits(w.to_bits()));
+            let o = cx.construct(c, &[w], c)?;
+            cx.get(o, "tag").map(|t| cx.display(t))
+        });
+        assert_eq!(r.as_deref(), Ok("c"));
+        assert_eq!(
+            has_vector(&iso, "c"),
+            i == 8,
+            "c after {i} constructs from Rust"
+        );
+    }
+}
+
+// ---- M8-P2 A2-CUT: C-w22-1 (a text blob at any address) and MC-w23-15 (landing pads) -----
+
+/// Installs `fc` over `text` and `unwind` in a jitless isolate of `defs()` through
+/// [`unit_loader::load_and_install_with_pads`]; the isolate and the load counts.
+fn padded_isolate(text: &[u8], unwind: &[u8], fc: FunctionCode, pads: bool) -> (Isolate, Report) {
+    let iso = defs_isolate(ExecOptions::jitless());
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: each caller's text runs the bytecode of `g` from the variant entry (the frame
+    // stub, after a `bti c` or not), and `unwind` describes the stub.
+    let r = unsafe {
+        unit_loader::load_and_install_with_pads(
+            &iso.rt,
+            lu,
+            text,
+            unwind,
+            &[],
+            0,
+            &[fc],
+            Some(&Policy::JITLESS),
+            0,
+            pads,
+        )
+    };
+    (iso, r)
+}
+
+/// `g(walk)` through the Rust entry (`blr` on AArch64): 42 when the unit code ran.
+fn g_walk_gives_42(iso: &mut Isolate) {
+    let g = iso.global_raw("g").unwrap();
+    let w = iso.global_raw("walk").unwrap();
+    let v = call_through_entry(iso, g, &[w]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+}
+
+/// C-w22-1: the unit text of an embedder blob may lie at any address (here one byte into a
+/// buffer, so not even 2-aligned): the loader copies it into a page of the process code range,
+/// installs `g`, and its unit code runs. A blob in memory is never a load error for its
+/// address; the 64 KiB rule is the file layout (ep9_unit container v3). This holds on the old
+/// code too (the loader always copied); the test pins it.
+#[test]
+fn unit_loader_a_text_at_an_unaligned_address_is_copied_and_runs() {
+    let text = stub_text();
+    let mut buf = vec![0u8; text.len() + 1];
+    buf[1..].copy_from_slice(&text);
+    let blob = &buf[1..];
+    let at = blob.as_ptr() as usize;
+    assert!(!at.is_multiple_of(2), "{at:#x}");
+    let (mut iso, r) = padded_isolate(blob, &stub_unwind(), g_stub(), false);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
+    assert!(CodeRange::process().unwrap().contains(code.start));
+    assert!(code.start.is_multiple_of(4096) && code.start != at);
+    g_walk_gives_42(&mut iso);
+}
+
+/// MC-w23-15: a unit with the compat flag `has_pads` whose entry is `bti c` maps as BTI
+/// guarded pages where the target has them (Linux and Android AArch64 with a BTI CPU and
+/// kernel), and its code runs there (a `blr` into `bti c`). With the flag but an entry that is
+/// not a pad (the plain frame stub), the loader does not trust the flag and maps plain RX: in
+/// guarded pages that call would fault. Other targets: plain RX for both.
+#[test]
+fn unit_loader_a_padded_text_maps_with_bti_where_the_target_has_it() {
+    let guarded = cfg!(all(
+        any(target_os = "linux", target_os = "android"),
+        target_arch = "aarch64"
+    )) && {
+        #[cfg(target_arch = "aarch64")]
+        {
+            std::arch::is_aarch64_feature_detected!("bti")
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            false
+        }
+    };
+    let stub = call0_bytes().0.len() as u32;
+    // AArch64: `bti c` at the entry (offset 0), the frame stub at 4. Elsewhere no pad form:
+    // the plain stub.
+    let (text, unwind, len) = if cfg!(target_arch = "aarch64") {
+        let mut t = stub_text_at(&[4]);
+        t[..4].copy_from_slice(&0xd503_245fu32.to_le_bytes());
+        (t, stub_unwind_at(&[4]), 4 + stub)
+    } else {
+        (stub_text(), stub_unwind(), stub)
+    };
+    let fc = FunctionCode {
+        function: G,
+        digest: digest(G),
+        variants: vec![variant(
+            DispatchKind::AotBaseline,
+            lowering::JITLESS,
+            0,
+            len,
+        )],
+    };
+    let (mut iso, r) = padded_isolate(&text, &unwind, fc, true);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let uc = code_of(info(&iso, "g")).unwrap();
+    assert_eq!(unit_loader::text_bti(uc), Some(guarded));
+    g_walk_gives_42(&mut iso);
+    // A JS call: T0 enters the unit code too.
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
+    );
+    // The flag with an entry that is no pad: plain RX, and the code runs.
+    let (mut iso, r) = padded_isolate(&stub_text(), &stub_unwind(), g_stub(), true);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    let uc = code_of(info(&iso, "g")).unwrap();
+    assert_eq!(unit_loader::text_bti(uc), Some(false));
+    g_walk_gives_42(&mut iso);
+}
+
+// The frame stub of `call0_bytes`, linked into this test binary's own executable pages with
+// its unwind entries in the binary's own tables (the assembler makes them from the CFI or SEH
+// directives): what the static linker does with the text of a `.o` unit (H35 S1; route
+// MC-w34-5). A data symbol names it, so no linker thunk stands between the name and the bytes.
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_test,\"ax\",%progbits",
+    ".p2align 4",
+    ".globl ep9_linked_test_text",
+    ".hidden ep9_linked_test_text",
+    "ep9_linked_test_text:",
+    LINKED_A64_BODY!(),
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+core::arch::global_asm!(
+    ".section __TEXT,__text,regular,pure_instructions",
+    ".p2align 4",
+    ".globl _ep9_linked_test_text",
+    ".private_extern _ep9_linked_test_text",
+    "_ep9_linked_test_text:",
+    LINKED_A64_BODY!(),
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android", target_vendor = "apple")
+))]
+macro_rules! LINKED_A64_BODY {
+    () => {
+        concat!(
+            ".cfi_startproc\n",
+            "stp x29, x30, [sp, #-16]!\n",
+            ".cfi_def_cfa_offset 16\n",
+            ".cfi_offset w30, -8\n",
+            ".cfi_offset w29, -16\n",
+            "mov x29, sp\n",
+            ".cfi_def_cfa w29, 16\n",
+            "ldr x16, [x0, #{table}]\n",
+            "ldr x16, [x16, #{entry}]\n",
+            "mov w2, #0\n",
+            "mov x3, xzr\n",
+            "blr x16\n",
+            "ldp x29, x30, [sp], #16\n",
+            ".cfi_def_cfa wsp, 0\n",
+            ".cfi_restore w30\n",
+            ".cfi_restore w29\n",
+            "ret\n",
+            ".cfi_endproc\n",
+        )
+    };
+}
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android", target_vendor = "apple")
+))]
+use LINKED_A64_BODY;
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_test,\"ax\",@progbits",
+    ".p2align 4",
+    ".globl ep9_linked_test_text",
+    ".hidden ep9_linked_test_text",
+    "ep9_linked_test_text:",
+    ".cfi_startproc",
+    "push rbp",
+    ".cfi_def_cfa_offset 16",
+    ".cfi_offset rbp, -16",
+    "mov rbp, rsp",
+    ".cfi_def_cfa_register rbp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    ".cfi_def_cfa rsp, 8",
+    "ret",
+    ".cfi_endproc",
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "x86_64", windows))]
+core::arch::global_asm!(
+    ".section .text$ep9lt,\"xr\"",
+    ".p2align 4",
+    ".globl ep9_linked_test_text",
+    ".def ep9_linked_test_text",
+    ".scl 2",
+    ".type 32",
+    ".endef",
+    "ep9_linked_test_text:",
+    ".seh_proc ep9_linked_test_text",
+    "push rbp",
+    ".seh_pushreg rbp",
+    ".seh_endprologue",
+    "mov rbp, rsp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    "ret",
+    ".seh_endproc",
+    ".text",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+unsafe extern "C" {
+    /// The first byte of the linked frame stub (above).
+    static ep9_linked_test_text: u8;
+}
+
+/// The linked frame stub: `call0_bytes().0.len()` bytes in this binary's text.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn linked_stub() -> &'static [u8] {
+    let len = call0_bytes().0.len();
+    // SAFETY: the global_asm above places the stub's bytes, `len` of them, at the symbol, in
+    // the binary's read-execute text, never written.
+    unsafe { core::slice::from_raw_parts(&raw const ep9_linked_test_text, len) }
+}
+
+/// Route MC-w34-5 (the `.o` unit form, H35 S1 and H35-Q3): a registered linked text runs in
+/// place. The frame stub is linked into this binary (as the static linker links the text of a
+/// `.o` unit) with its unwind entries in the binary's own tables; after static registration
+/// (`ep9_platform::linked::register`), an installing load with that text and with no unwind
+/// data maps nothing and registers nothing (the code address is the linked text, outside the
+/// process code range), installs `g`, and `call_native` runs it; the system unwinder walks from
+/// `walk` through the linked frame into the Rust caller. The same bytes copied (not
+/// registered) take the blob path: without unwind data they install nothing ("no-unwind").
+#[test]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn unit_loader_a_registered_linked_text_runs_in_place() {
+    use ep9_platform::linked::{LinkedUnit, linked_text, register};
+    use ep9_platform::unit_text::{Form, UnitText};
+    let text = linked_stub();
+    assert_eq!(
+        text,
+        &call0_bytes().0[..],
+        "the linked stub is the frame stub"
+    );
+    // Not registered yet: not a linked text.
+    assert!(linked_text(text).is_none() && UnitText::linked(text).is_none());
+    let unit: &'static [u8] = Box::leak(vec![0x55u8; 64].into_boxed_slice());
+    let rec: &'static LinkedUnit = Box::leak(Box::new(LinkedUnit::new(unit, text)));
+    // SAFETY: `text` is in this binary's text, never written, and the binary's unwind tables
+    // cover it (the directives above); `unit` lives for the process.
+    unsafe { register(rec) }.unwrap();
+    assert_eq!(rec.text().as_ptr(), text.as_ptr());
+    assert_eq!(linked_text(text).map(<[u8]>::as_ptr), Some(text.as_ptr()));
+    // Only the exact range is the linked text.
+    assert!(linked_text(&text[1..]).is_none() && linked_text(&text[..4]).is_none());
+    assert_eq!(UnitText::linked(text).unwrap().form(), Form::Linked);
+
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: the linked text is the frame stub (it runs the bytecode of `g`), and the binary's
+    // tables describe it, so no unwind data is passed.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            text,
+            &[],
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
+    assert_eq!(code.start, text.as_ptr() as usize, "the code runs in place");
+    let range = CodeRange::process().unwrap();
+    assert!(!range.contains(code.start));
+    let g = iso.global_raw("g").unwrap();
+    let w = iso.global_raw("walk").unwrap();
+    WALKED.with(|x| x.borrow_mut().take());
+    let v = call_through_entry(&mut iso, g, &[w]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+    let ips = WALKED.with(|x| x.borrow_mut().take()).expect("walk ran");
+    let ret = code.start + call0_bytes().1;
+    let at = ips.iter().position(|&ip| ip == ret).unwrap_or_else(|| {
+        panic!("the walk misses the linked frame (return address {ret:#x}): {ips:x?}")
+    });
+    assert!(
+        ips.len() - at >= 4,
+        "the walk stops at the linked frame: {ips:x?}"
+    );
+    drop(iso);
+
+    // The same bytes, copied: the blob path, which needs unwind data.
+    let copy = text.to_vec();
+    let iso = defs_isolate(ExecOptions::jitless());
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: as above; with no unwind data the blob path installs nothing.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            &copy,
+            &[],
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::NoUnwind), r.count(Reason::Installed)),
+        (1, 0),
+        "{:?}",
+        r.rows()
+    );
+}
+
+// ---- M8-P4 A2-GATE: MC-w35-5, the GuardFuse-only install rule -------------------------------
+
+/// MC-w35-5 (H31:138): step 8 installs a pick only when each fuse ref is a GuardFuse read: a
+/// static fuse that this build knows and that holds. A dynamic fuse is an invalidation
+/// dependency (not installable until H29 A4); a popped or unknown static fuse keeps the
+/// bytecode.
+#[test]
+fn unit_loader_install_takes_only_guard_fuse_reads() {
+    use crate::select::Dep;
+    let ok = |index| Dep::Static {
+        index,
+        intact: true,
+    };
+    assert!(unit_loader::guard_fuse_reads_only(&[]));
+    assert!(unit_loader::guard_fuse_reads_only(&[ok(0), ok(1)]));
+    let popped = Dep::Static {
+        index: 0,
+        intact: false,
+    };
+    let unknown = ok(u32::MAX);
+    let dynamic = Dep::Dynamic {
+        kind: 1,
+        intact: true,
+    };
+    for d in [popped, unknown, dynamic] {
+        assert!(!unit_loader::guard_fuse_reads_only(&[d]), "{d:?}");
+        assert!(!unit_loader::guard_fuse_reads_only(&[ok(0), d]), "{d:?}");
+    }
+}
+
+/// MC-w35-5: the unit code of a pick with a static fuse ref runs, and a pop after the install
+/// leaves it installed: its GuardFuse reads take the slow path at each use (H31:138), so no
+/// frame needs a swap. A fuse that popped before the load keeps the bytecode (no pick).
+#[test]
+fn unit_loader_a_guard_fuse_pick_runs_and_stays_after_a_pop() {
+    let install = |iso: &Isolate| {
+        let lu = info(iso, "g").loaded_unit().unwrap();
+        let mut f = g_stub();
+        f.variants[0].fuses = vec![0];
+        // SAFETY: the text at offset 0 is the frame stub (it runs the bytecode of `g` and reads
+        // no fuse), and `stub_unwind` describes it.
+        unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &stub_text(),
+                &stub_unwind(),
+                &[],
+                0,
+                &[f],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        }
+    };
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    iso.rt.fuses.wire(&iso.rt, 0).unwrap();
+    let r = install(&iso);
+    assert_eq!(r.count(Reason::Installed), 1, "{:?}", r.rows());
+    g_walk_gives_42(&mut iso);
+    iso.rt.fuses.pop(&iso.rt, FuseRef::Static(0));
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::AotBaseline));
+    g_walk_gives_42(&mut iso);
+    // Popped before the load: no pick, nothing installed, the bytecode runs.
+    let mut iso = defs_isolate(ExecOptions::jitless());
+    iso.rt.fuses.wire(&iso.rt, 0).unwrap();
+    iso.rt.fuses.pop(&iso.rt, FuseRef::Static(0));
+    let r = install(&iso);
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (0, 0)
+    );
+    assert_eq!(info(&iso, "g").slot.kind(), Some(DispatchKind::Interp));
+    assert_eq!(
+        run_js(&mut iso, call_g_walk()),
+        Ok(Value::int32(42).to_bits())
+    );
+}
+
+// ---- M8-P4 A2-GATE: class constructors (MC-w29-8 step 2, the MC-w33-6 contract) -------------
+
+/// The installs of class constructors: not in a `spike-native` build, where `install_code`
+/// keeps refusing them (`native::installs_class_code`; that refusal is a `tests::native` test).
+#[cfg(not(feature = "spike-native"))]
+mod class_ctors {
+    use super::*;
+
+    /// The source of the class unit (positions for stack traces).
+    const SRC: &str = "class B { constructor(f) { return f(); } }\n\
+class D extends B { constructor(f) { return f(); } }\n\
+class S extends B { constructor(f) { super(f); } }\n";
+
+    /// Function 1 `B` (a base class constructor), function 2 `D extends B` (a derived
+    /// constructor that never calls `super()`), function 3 `S extends B` (T0 only).
+    const B: u32 = 1;
+    const D: u32 = 2;
+
+    /// The position of the first `f()` after `from` in [`SRC`].
+    fn call_at(from: &str) -> u32 {
+        let start = pos(SRC, from) as usize;
+        (start + SRC[start..].find("f()").unwrap()) as u32
+    }
+
+    /// The class unit: `B` and `D` are `return f();` (the call at bytecode offset 0, the
+    /// offset the frame stub passes; for `D` an undefined result is the ReferenceError of a
+    /// `this` binding that `super()` never set, and 1 the TypeError, as the MC-w33-6 contract
+    /// says); `S` is `super(f);` (a construct of `B` with new.target `S`). The script makes
+    /// each a global (`D` and `S` by DefineClass with the heritage `B`) and sets
+    /// `<C>.prototype.tag` to the class name.
+    fn class_defs() -> VerifiedUnit {
+        use ep9_bytecode::{RegisterList, RuntimeId};
+        let ctor = |name: &str, kind: FunctionKind, from: &str, to: Option<&str>| {
+            let end = to.map_or(SRC.len() as u32, |t| pos(SRC, t) - 1);
+            let mut m = meta(name, 1, 0, pos(SRC, from), end);
+            m.kind = kind;
+            m.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+            Asm::new(m)
+        };
+        let return_f = |a: &mut Asm, from: &str| {
+            let a0 = a.b.parameter(0);
+            a.b.set_expression_position(call_at(from));
+            let slot = a.call;
+            a.b.call_undefined_receiver0(a0, slot).return_();
+        };
+        let mut b = ctor(
+            "B",
+            FunctionKind::ClassConstructor,
+            "class B",
+            Some("class D"),
+        );
+        return_f(&mut b, "class B");
+        let mut d = ctor(
+            "D",
+            FunctionKind::DerivedConstructor,
+            "class D",
+            Some("class S"),
+        );
+        return_f(&mut d, "class D");
+        let mut s3 = ctor("S", FunctionKind::DerivedConstructor, "class S", None);
+        let a0 = s3.b.parameter(0);
+        let (this, sup) = (s3.b.new_register(), s3.b.new_register());
+        let l = s3.b.new_register_list(1);
+        s3.b.lda_the_hole().star(this);
+        s3.b.lda_current_function().get_super_constructor(sup);
+        s3.b.throw_if_not_super_constructor(sup);
+        s3.b.ldar(a0).star(l.get(0));
+        let slot = s3.call;
+        s3.b.lda_new_target().construct(sup, l, 1, slot);
+        s3.b.star(this);
+        s3.b.ldar(this).throw_super_not_called_if_hole().return_();
+        let mut s = Asm::script(SRC.len());
+        let kb = s.b.function_constant(FunctionId(B));
+        s.b.create_closure(kb, s.closure, 0);
+        s.sta_global("B");
+        for (i, name) in [(D, "D"), (3, "S")] {
+            let (cls, heritage) = (s.b.new_register(), s.b.new_register());
+            let def = RegisterList::new(cls.local_index().unwrap(), 2);
+            assert_eq!(heritage.local_index(), Some(cls.local_index().unwrap() + 1));
+            let k = s.b.function_constant(FunctionId(i));
+            s.b.create_closure(k, s.closure, 0).star(cls);
+            s.lda_global("B");
+            s.b.star(heritage)
+                .call_runtime(RuntimeId::DefineClass, def, 2);
+            s.b.ldar(cls);
+            s.sta_global(name);
+        }
+        let (o, p) = (s.b.new_register(), s.b.new_register());
+        for name in ["B", "D", "S"] {
+            s.lda_global(name);
+            s.b.star(o);
+            s.get_named(o, "prototype");
+            s.b.star(p);
+            s.lda_str(name);
+            s.set_named(p, "tag");
+        }
+        s.b.lda_undefined().return_();
+        let fns = vec![s.finish(), b.finish(), d.finish(), s3.finish()];
+        unit(SRC, fns)
+    }
+
+    /// `one()`: 1 (a derived constructor's result that is not an object). Records the native
+    /// stack.
+    fn one<'s>(
+        _cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        _args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        record_walk();
+        Ok(Local::from_bits(Value::int32(1).to_bits()))
+    }
+
+    /// The host functions of this section and their arity.
+    const HOSTS: [(&str, u32, crate::host::HostFn); 6] = [
+        ("walk", 0, walk),
+        ("mkobj", 0, mkobj),
+        ("undef", 0, undef),
+        ("one", 0, one),
+        ("boom", 0, boom),
+        ("rconstruct3", 3, rconstruct3),
+    ];
+
+    /// A jitless isolate (GC stress `stress`) with the forwarders, the host functions and the
+    /// realm `other` (with `B`, `D`, `S` and the host functions of this realm), that ran
+    /// [`class_defs`]. With `install` the frame stubs of `B` (text offset 0) and `D` (64) are
+    /// installed. Returns the isolate and the return address of the call in each stub.
+    fn class_isolate(install: bool, stress: bool) -> (Isolate, Option<[usize; 2]>) {
+        let config = IsolateConfig {
+            builtins: Some(&FORWARDERS),
+            heap: ep9_heap::HeapConfig {
+                gc_stress: u32::from(stress),
+                verify_after_gc: stress,
+                ..ep9_heap::HeapConfig::default()
+            },
+            ..IsolateConfig::default()
+        };
+        let mut iso = Isolate::new_with(config, ExecOptions::jitless()).unwrap();
+        for (name, n, f) in HOSTS {
+            iso.register_host_function(name, n, f);
+        }
+        iso.with_cx_checkpoint(|cx| cx.run_script(class_defs(), "classes.js").map(|_| ()))
+            .unwrap();
+        iso.with_cx(|cx| {
+            let a = cx.global();
+            let b = cx.create_realm()?;
+            cx.set(a, "other", b, true)?;
+            for name in ["B", "D", "S"].into_iter().chain(HOSTS.map(|h| h.0)) {
+                let v = cx.get(a, name)?;
+                cx.set(b, name, v, true)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        if !install {
+            return (iso, None);
+        }
+        let starts = [0, 64];
+        let stub = |function: u32, at: usize| FunctionCode {
+            function,
+            digest: unit_function_digest(&class_defs(), function).unwrap(),
+            variants: vec![variant(
+                DispatchKind::AotBaseline,
+                lowering::JITLESS,
+                at as u32,
+                call0_bytes().0.len() as u32,
+            )],
+        };
+        let lu = info(&iso, "B").loaded_unit().unwrap();
+        // SAFETY: the text holds the frame stub at offsets 0 and 64 (each runs the call at
+        // bytecode offset 0 of `B` and of `D` and returns its result: the bytecode of each,
+        // whose `return` gives the call's result), and `stub_unwind_at` describes both.
+        let r = unsafe {
+            unit_loader::load_and_install(
+                &iso.rt,
+                lu,
+                &stub_text_at(&starts),
+                &stub_unwind_at(&starts),
+                &[],
+                0,
+                &[stub(B, starts[0]), stub(D, starts[1])],
+                Some(&Policy::JITLESS),
+                0,
+            )
+        };
+        assert_eq!(
+            (r.count(Reason::Installed), r.count(Reason::NotInstallable)),
+            (2, 0),
+            "{:?}",
+            r.rows()
+        );
+        let ret = |name: &str| {
+            let fi = info(&iso, name);
+            assert_eq!(fi.slot.kind(), Some(DispatchKind::AotBaseline), "{name}");
+            code_of(fi).unwrap().code_at(0).unwrap().start + call0_bytes().1
+        };
+        let rets = [ret("B"), ret("D")];
+        (iso, Some(rets))
+    }
+
+    /// `return rconstruct3(<f>, <a>, <nt>).tag;` (`Reflect.construct(f, [a], nt)`, the Rust
+    /// construct path).
+    fn reflect_tag(f: &str, a: &str, nt: &str) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(3);
+        let o = s.b.new_register();
+        for (i, name) in [f, a, nt].into_iter().enumerate() {
+            s.lda_global(name);
+            s.b.star(l.get(i as u32));
+        }
+        s.lda_global("rconstruct3");
+        s.b.star(s.f);
+        let (fr, slot) = (s.f, s.call);
+        s.b.call_undefined_receiver(fr, l, 3, slot);
+        s.b.star(o);
+        s.get_named(o, "tag");
+        s.b.return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// `return <f>(walk);` (a T0 call: `call_fast` sends a class constructor cold).
+    fn call_walk(f: &str) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let a = s.a.get(0);
+        s.lda_global("walk");
+        s.b.star(a);
+        s.lda_global(f);
+        s.b.star(s.f);
+        let (fr, slot) = (s.f, s.call);
+        s.b.call_undefined_receiver1(fr, a, slot).return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// `return fcall.call(<f>, undefined, walk);` (the forwarder form of
+    /// `Function.prototype.call`).
+    fn fcall_walk(f: &str) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(3);
+        s.lda_global(f);
+        s.b.star(l.get(0)).lda_undefined().star(l.get(1));
+        s.lda_global("walk");
+        s.b.star(l.get(2));
+        s.lda_global("fcall");
+        s.b.star(s.f);
+        let (fr, slot) = (s.f, s.call);
+        s.b.call_property(fr, l, 3, slot).return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// MC-w29-8 step 2 under the MC-w33-6 contract (M7-P5-D7): step 8 installs the class
+    /// constructors `B` (base) and `D` (derived), and each construct case gives the result,
+    /// receiver and error of an isolate with no install, with and without GC stress, and runs
+    /// the unit code (the stub's return address is on the native stack). `B`: a primitive
+    /// result, an object, nothing, from another realm, `super()` from `S` (a T0 derived
+    /// class: the receiver's prototype is `S`'s), and `Reflect.construct(B, [walk], D)`. `D`
+    /// (the HOLE is its `this` binding: it never calls `super()`): an object result; nothing
+    /// gives the caller's ReferenceError and 1 its TypeError (`call::construct_result`), also
+    /// from another realm and through `Reflect.construct`. On the code before M8-P4 nothing is
+    /// installed (both picks are not installable).
+    #[test]
+    fn unit_loader_class_constructors_install_and_construct_gives_the_bytecode_results() {
+        type Case = (
+            &'static str,
+            VerifiedUnit,
+            bool,
+            Result<&'static str, &'static str>,
+            usize,
+        );
+        let cases = || -> Vec<Case> {
+            vec![
+                ("B primitive", new_tag("B", "walk"), false, Ok("B"), 0),
+                ("B object", new_tag("B", "mkobj"), false, Ok("own"), 0),
+                ("B nothing", new_tag("B", "undef"), false, Ok("B"), 0),
+                ("B other realm", new_tag("B", "walk"), true, Ok("B"), 0),
+                ("super() into B", new_tag("S", "walk"), false, Ok("S"), 0),
+                (
+                    "Reflect B nt D",
+                    reflect_tag("B", "walk", "D"),
+                    false,
+                    Ok("D"),
+                    0,
+                ),
+                (
+                    "B throw",
+                    new_tag("B", "boom"),
+                    false,
+                    Err("Error: boom"),
+                    0,
+                ),
+                ("D object", new_tag("D", "mkobj"), false, Ok("own"), 1),
+                (
+                    "D no super",
+                    new_tag("D", "undef"),
+                    false,
+                    Err("ReferenceError"),
+                    1,
+                ),
+                (
+                    "D result 1",
+                    new_tag("D", "one"),
+                    false,
+                    Err("TypeError"),
+                    1,
+                ),
+                (
+                    "D other realm no super",
+                    new_tag("D", "undef"),
+                    true,
+                    Err("ReferenceError"),
+                    1,
+                ),
+                (
+                    "D other realm 1",
+                    new_tag("D", "one"),
+                    true,
+                    Err("TypeError"),
+                    1,
+                ),
+                (
+                    "Reflect D",
+                    reflect_tag("D", "mkobj", "D"),
+                    false,
+                    Ok("own"),
+                    1,
+                ),
+                (
+                    "Reflect D no super",
+                    reflect_tag("D", "undef", "D"),
+                    false,
+                    Err("ReferenceError"),
+                    1,
+                ),
+            ]
+        };
+        for stress in [false, true] {
+            let (mut plain, _) = class_isolate(false, stress);
+            let (mut iso, rets) = class_isolate(true, stress);
+            let rets = rets.unwrap();
+            let mut wrong = Vec::new();
+            for ((name, u, in_b, want, ran), (_, u2, ..)) in cases().into_iter().zip(cases()) {
+                let before = shown_in(&mut plain, u, in_b);
+                WALKED.with(|x| x.borrow_mut().take());
+                let after = shown_in(&mut iso, u2, in_b);
+                let ips = WALKED.with(|x| x.borrow_mut().take()).unwrap_or_default();
+                let label = format!("{name} stress={stress}");
+                match (&before, want) {
+                    (Ok(v), Ok(w)) if v == w => {}
+                    (Err(e), Err(w)) if e.starts_with(w) => {}
+                    _ => wrong.push(format!(
+                        "{label}: with no install {before:?}, want {want:?}"
+                    )),
+                }
+                if after != before {
+                    wrong.push(format!(
+                        "{label}: no install {before:?}, installed {after:?}"
+                    ));
+                }
+                if !ips.contains(&rets[ran]) {
+                    wrong.push(format!("{label}: the unit code did not run"));
+                }
+            }
+            assert!(wrong.is_empty(), "{wrong:#?}");
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        }
+    }
+
+    /// A class constructor with unit code keeps the TypeError of `[[Call]]` (§10.2.1 step 2)
+    /// on every call path, as with no install: a T0 call (`slow::call` throws before its
+    /// native arms), a forwarded `Function.prototype.call`, a call from Rust (`Cx::call`:
+    /// `call_bytecode` throws first) and the Rust native entry (`native_callee` refuses it, so
+    /// `call_native` does not enter it). Its unit code never runs on these paths.
+    #[test]
+    fn unit_loader_a_class_constructor_with_unit_code_still_throws_when_called() {
+        let (mut plain, _) = class_isolate(false, false);
+        let (mut iso, _) = class_isolate(true, false);
+        for name in ["B", "D"] {
+            for u in [call_walk as fn(&str) -> VerifiedUnit, fcall_walk] {
+                let before = shown_in(&mut plain, u(name), false);
+                WALKED.with(|x| x.borrow_mut().take());
+                let after = shown_in(&mut iso, u(name), false);
+                assert!(WALKED.with(|x| x.borrow_mut().take()).is_none(), "{name}");
+                assert_eq!(after, before, "{name}");
+                let e = after.unwrap_err();
+                assert!(
+                    e.starts_with(&format!(
+                        "TypeError: Class constructor {name} cannot be invoked without 'new'"
+                    )),
+                    "{name}: {e}"
+                );
+            }
+            let (f, w) = (
+                iso.global_raw(name).unwrap(),
+                iso.global_raw("walk").unwrap(),
+            );
+            let e = iso.call_raw(f, Value::UNDEFINED, &[w]).unwrap_err();
+            assert!(
+                e.message.contains("cannot be invoked without 'new'"),
+                "{name}"
+            );
+            assert!(call_through_entry(&mut iso, f, &[w]).is_none(), "{name}");
+            assert!(
+                crate::native::native_callee(f.to_bits()).is_none(),
+                "{name}"
+            );
+            assert!(
+                crate::native::native_construct_callee(f.to_bits()).is_some(),
+                "{name}"
+            );
+        }
+    }
+}
+
+// ---- M8-P5 MC-w40-7: the linked text under GC stress, and a JS throw through it -------------
+
+// A second copy of the linked frame stub (the `ep9_linked_test_text` form above), for
+// `unit_loader_a_registered_linked_text_runs_in_place_under_gc_stress`: a text is registered
+// once per process, and `unit_loader_a_registered_linked_text_runs_in_place` checks that its
+// own text is not registered yet, so the two tests cannot share one text.
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_gc_test,\"ax\",%progbits",
+    ".p2align 4",
+    ".globl ep9_linked_gc_test_text",
+    ".hidden ep9_linked_gc_test_text",
+    "ep9_linked_gc_test_text:",
+    LINKED_A64_BODY!(),
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "aarch64", target_vendor = "apple"))]
+core::arch::global_asm!(
+    ".section __TEXT,__text,regular,pure_instructions",
+    ".p2align 4",
+    ".globl _ep9_linked_gc_test_text",
+    ".private_extern _ep9_linked_gc_test_text",
+    "_ep9_linked_gc_test_text:",
+    LINKED_A64_BODY!(),
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "android")
+))]
+core::arch::global_asm!(
+    ".pushsection .text.ep9_linked_gc_test,\"ax\",@progbits",
+    ".p2align 4",
+    ".globl ep9_linked_gc_test_text",
+    ".hidden ep9_linked_gc_test_text",
+    "ep9_linked_gc_test_text:",
+    ".cfi_startproc",
+    "push rbp",
+    ".cfi_def_cfa_offset 16",
+    ".cfi_offset rbp, -16",
+    "mov rbp, rsp",
+    ".cfi_def_cfa_register rbp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    ".cfi_def_cfa rsp, 8",
+    "ret",
+    ".cfi_endproc",
+    ".popsection",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+#[cfg(all(target_arch = "x86_64", windows))]
+core::arch::global_asm!(
+    ".section .text$ep9lg,\"xr\"",
+    ".p2align 4",
+    ".globl ep9_linked_gc_test_text",
+    ".def ep9_linked_gc_test_text",
+    ".scl 2",
+    ".type 32",
+    ".endef",
+    "ep9_linked_gc_test_text:",
+    ".seh_proc ep9_linked_gc_test_text",
+    "push rbp",
+    ".seh_pushreg rbp",
+    ".seh_endprologue",
+    "mov rbp, rsp",
+    "mov rax, qword ptr [rdi + {table}]",
+    "xor edx, edx",
+    "xor ecx, ecx",
+    "call qword ptr [rax + {entry}]",
+    "pop rbp",
+    "ret",
+    ".seh_endproc",
+    ".text",
+    table = const layout::CX_RUNTIME_TABLE,
+    entry = const layout::RT_CALL_ANY,
+);
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+unsafe extern "C" {
+    /// The first byte of the second linked frame stub (above).
+    static ep9_linked_gc_test_text: u8;
+}
+
+/// The second linked frame stub: `call0_bytes().0.len()` bytes in this binary's text.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn linked_gc_stub() -> &'static [u8] {
+    let len = call0_bytes().0.len();
+    // SAFETY: as in `linked_stub`: the global_asm above places the stub's bytes, `len` of
+    // them, at the symbol, in the binary's read-execute text, never written.
+    unsafe { core::slice::from_raw_parts(&raw const ep9_linked_gc_test_text, len) }
+}
+
+/// `return g(<f>);` with `f` the global `f` (as [`call_g_walk`]).
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn call_g_with(f: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let a = s.a.get(0);
+    s.lda_global(f);
+    s.b.star(a);
+    s.lda_global("g");
+    s.b.star(s.f);
+    let (f, slot) = (s.f, s.call);
+    s.b.call_undefined_receiver1(f, a, slot).return_();
+    unit("", vec![s.finish()])
+}
+
+/// MC-w40-7 (M8-P5): `unit_loader_a_registered_linked_text_runs_in_place` under GC stress, and
+/// a JS throw through the linked frame (A2-REPORT fixer_need 1). The isolate collects before
+/// every allocation and verifies the heap after each collection (`construct_isolate` with
+/// stress: `gc_stress` 1, `verify_after_gc`). `g` runs the second linked stub in place. While
+/// the linked frame is live, `walk` walks through it, and `mkobj` allocates (so collections
+/// run) and gives a new object that stays whole. Then `boom` throws through the linked frame,
+/// from Rust and from T0: `Error.stack` names `g`, the function of the linked frame. Last, a
+/// full collection and `verify_heap`. Limit: a root walk that skipped the VM frame of the
+/// linked code would not make this test fail. Each Value of that frame is a copy that its
+/// caller (a T0 frame, or a Rust local that the conservative scan sees) or a global also holds,
+/// and the stub reads its frame only before its one call; its native part holds no Value.
+#[test]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+fn unit_loader_a_registered_linked_text_runs_in_place_under_gc_stress() {
+    use ep9_platform::linked::{LinkedUnit, linked_text, register};
+    let text = linked_gc_stub();
+    assert_eq!(
+        text,
+        &call0_bytes().0[..],
+        "the linked stub is the frame stub"
+    );
+    let unit: &'static [u8] = Box::leak(vec![0x55u8; 64].into_boxed_slice());
+    let rec: &'static LinkedUnit = Box::leak(Box::new(LinkedUnit::new(unit, text)));
+    // SAFETY: as in `unit_loader_a_registered_linked_text_runs_in_place`: `text` is in this
+    // binary's text, never written, and the binary's unwind tables cover it.
+    unsafe { register(rec) }.unwrap();
+    assert_eq!(linked_text(text).map(<[u8]>::as_ptr), Some(text.as_ptr()));
+
+    let (mut iso, _) = construct_isolate(false, true);
+    let lu = info(&iso, "g").loaded_unit().unwrap();
+    // SAFETY: as in `unit_loader_a_registered_linked_text_runs_in_place`: the linked text is
+    // the frame stub (it runs the bytecode of `g`), and the binary's tables describe it.
+    let r = unsafe {
+        unit_loader::load_and_install(
+            &iso.rt,
+            lu,
+            text,
+            &[],
+            &[],
+            0,
+            &[g_stub()],
+            Some(&Policy::JITLESS),
+            0,
+        )
+    };
+    assert_eq!(
+        (r.count(Reason::Picked), r.count(Reason::Installed)),
+        (1, 1),
+        "{:?}",
+        r.rows()
+    );
+    let code = code_of(info(&iso, "g")).unwrap().code_at(0).unwrap();
+    assert_eq!(code.start, text.as_ptr() as usize, "the code runs in place");
+    let ret = code.start + call0_bytes().1;
+    let through = |what: &str| {
+        let ips = WALKED.with(|x| x.borrow_mut().take()).expect(what);
+        let at = ips.iter().position(|&ip| ip == ret).unwrap_or_else(|| {
+            panic!("{what}: the walk misses the linked frame (return address {ret:#x}): {ips:x?}")
+        });
+        assert!(
+            ips.len() - at >= 4,
+            "{what}: the walk stops at the linked frame: {ips:x?}"
+        );
+    };
+    let [g, w, m, b] = ["g", "walk", "mkobj", "boom"].map(|n| iso.global_raw(n).unwrap());
+
+    // From Rust: `walk` and `mkobj` through the linked frame.
+    WALKED.with(|x| x.borrow_mut().take());
+    let v = call_through_entry(&mut iso, g, &[w]).unwrap().unwrap();
+    assert_eq!(v.to_bits(), Value::int32(42).to_bits());
+    through("g(walk)");
+    let before = iso.gc_stats().collections;
+    let o = call_through_entry(&mut iso, g, &[m]).unwrap().unwrap();
+    through("g(mkobj)");
+    assert!(
+        iso.gc_stats().collections > before,
+        "no collection ran under the linked frame"
+    );
+    let tag = iso.with_cx_checkpoint(|cx| {
+        let o: Local<'_> = Local::from_bits(o.to_bits());
+        let o = o.as_object().expect("mkobj gives an object");
+        cx.get(o, "tag").map(|t| cx.display(t))
+    });
+    assert_eq!(tag.as_deref(), Ok("own"));
+
+    // From T0: the script frame calls `g`, which enters the linked text.
+    WALKED.with(|x| x.borrow_mut().take());
+    assert_eq!(
+        run_js(&mut iso, call_g_with("walk")),
+        Ok(Value::int32(42).to_bits())
+    );
+    through("T0 g(walk)");
+
+    // A JS throw through the linked frame, from Rust and from T0.
+    WALKED.with(|x| x.borrow_mut().take());
+    let e = call_through_entry(&mut iso, g, &[b]).unwrap().unwrap_err();
+    through("g(boom)");
+    let stack = e.stack.unwrap_or_default();
+    assert!(e.message.starts_with("Error: boom"), "{}", e.message);
+    assert!(stack.contains("at g ("), "the stack names g: {stack}");
+    WALKED.with(|x| x.borrow_mut().take());
+    let e = shown_in(&mut iso, call_g_with("boom"), false).unwrap_err();
+    through("T0 g(boom)");
+    assert!(e.starts_with("Error: boom"), "{e}");
+    assert!(e.contains("at g ("), "the stack names g: {e}");
+
+    iso.collect_garbage();
+    iso.verify_heap().unwrap();
 }

@@ -1,0 +1,19 @@
+# The public API of ep9_vm from rustdoc JSON (H20-Q6): `cargo xtask api-list` compares,
+# `cargo xtask api-list --bless` writes this file (tools/xtask/src/api_list.rs has the line
+# form). Build: nightly-2026-10-04, --target x86_64-unknown-linux-gnu, --features jit,
+# doc-hidden items read, rustdoc JSON format_version 61. One line per item, sorted.
+fx::Chain :: dyn Shape :: fn area(&self) -> f64
+fx::Chain :: dyn Shape :: trait Shape: Base
+fx::Chain :: supertrait Base :: fn id(&self) -> u8
+fx::Chain :: type Chain = Hop1
+fx::Direct :: dyn Shape :: fn area(&self) -> f64
+fx::Direct :: dyn Shape :: trait Shape: Base
+fx::Direct :: supertrait Base :: fn id(&self) -> u8
+fx::Direct :: type Direct = dyn Shape + Send
+fx::Downcast :: supertrait Sealed :: fn get(&self) -> T
+fx::Downcast :: supertrait Sealed :: trait Sealed<T = u32>
+fx::Downcast :: trait Downcast: Sealed
+fx::Obj :: dyn Shape :: fn area(&self) -> f64
+fx::Obj :: dyn Shape :: trait Shape: Base
+fx::Obj :: supertrait Base :: fn id(&self) -> u8
+fx::Obj :: type Obj = dyn Shape

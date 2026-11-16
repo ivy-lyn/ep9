@@ -907,3 +907,44 @@ fn the_class_set_walk_fits_the_nesting_cap() {
         .join()
         .unwrap();
 }
+
+/// RX1-SUB-QUAD: `[A--B1--B2--...]` with n operands, A of n strings and a range set. The
+/// subtraction visits each element a fixed number of times (the old loop rescanned A per
+/// operand: n * n). A count of the visits, not a time bound.
+#[test]
+fn class_subtraction_work_grows_linearly() {
+    let n = 16 * 1024;
+    let mut p = String::from("[[\\p{L}\\q{keep");
+    for k in 0..n {
+        p.push_str(&format!("|x{k}"));
+    }
+    p.push_str("}]");
+    for k in 0..n {
+        p.push_str(&format!("--[\\q{{x{k}}}\\u{{{:X}}}]", 0x4e00 + k));
+    }
+    p.push(']');
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(move || {
+            let parsed = parse_str(&p, flags("v")).unwrap();
+            crate::sets::SUBTRACTION_WORK.with(|w| w.set(0));
+            let set = class_set(&parsed.tree, flags("v")).unwrap();
+            let work = crate::sets::SUBTRACTION_WORK.with(std::cell::Cell::get);
+            let letters = class_set(&parse_str("[\\p{L}]", flags("v")).unwrap().tree, flags("v"))
+                .unwrap()
+                .ranges;
+            let removed = [r(0x4e00, 0x4e00 + n - 1)];
+            assert_eq!(set.ranges, crate::charset::subtract(&letters, &removed));
+            let keys: Vec<Vec<u32>> = set.strings.keys().map(|k| k.0.clone()).collect();
+            assert_eq!(
+                keys,
+                vec!["keep".chars().map(u32::from).collect::<Vec<_>>()]
+            );
+            // About 2n operand elements, plus A's ranges and the union once.
+            let bound = 4 * n as usize + 4 * letters.len();
+            assert!(work <= bound, "{work} visits for n = {n} (bound {bound})");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

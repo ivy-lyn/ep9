@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // perf CI v0 (ci.yml job perf-ci-v0; docs/plan/10-quality.md section 2): instruction counts of the
-// T0 kernels, ci-v0 and the generated v8-v7 richards and deltablue, under one counter, as one JSON
-// file plus a Markdown table. Tools: tools/bench/README.md "perf CI v0".
+// T0 kernels, ci-v0, the generated v8-v7 richards and deltablue and the start-up row (`ep9 -e 0`,
+// with a budget), under one counter, as one JSON file plus a Markdown table. Tools:
+// tools/bench/README.md "perf CI v0".
 //
 //   node .github/scripts/perf-ci-v0.mjs --ep9 target/release/ep9 --bench target/release/ep9-bench \
 //     --out perf-ci-v0.json [--md FILE] [--counter cachegrind] [--runs 3] [--warmup 0] \
@@ -14,6 +15,10 @@
 //   richards, deltablue
 //             written by tools/bench/cross/v8v7.mjs from the pinned third_party/bench-v8v7
 //             (bash scripts/sync-bench.sh bench-v8v7); it checks the pin
+//   startup   no file: `ep9 -e 0`, the start-up path (STARTUP-LAYOUT, plan v13 section 6.2). Its
+//             row has a budget (STARTUP_BUDGETS) for its counter and target: the table says
+//             "within" or "OVER BUDGET" (a record: the exit status does not change; on GitHub a
+//             warning). No budget for the counter and target: "no budget"
 //
 // Per workload:
 //   1. check  one run of ep9 with no counter: exit 0 and stdout = the expected output of
@@ -48,7 +53,39 @@ import { WORKLOADS } from "../../tools/bench/cross/workloads.mjs";
 import { hostInfo } from "../../tools/bench/lib/host.mjs";
 
 export const SCHEMA = "ep9-perf-ci/v1";
-export const DEFAULT_WORKLOADS = ["t0-loop", "t0-branchy", "t0-call", "t0-prop", "ci-v0", "richards", "deltablue"];
+export const DEFAULT_WORKLOADS = ["t0-loop", "t0-branchy", "t0-call", "t0-prop", "ci-v0", "richards", "deltablue", "startup"];
+
+/** The start-up row: `ep9 -e 0` (no workload file; it prints nothing). */
+export const STARTUP = "startup";
+const STARTUP_ARGV = ["-e", "0"];
+
+/**
+ * The start-up budgets: the median instruction count of `ep9 -e 0` per counter (the ep9-bench
+ * `counter` id) and target. A budget is a ceiling 7.5-15% above a reading, so a start-up cost on
+ * the scale of the B0 row (+7.07%, M7-B0-BENCH) or of a few INTL W1 rows (+1.5% each) shows.
+ * Raise one only by a decisions-log row.
+ */
+export const STARTUP_BUDGETS = [
+  {
+    counter: "cachegrind-i-refs",
+    target: "x86_64-unknown-linux-gnu",
+    instructions: 3_300_000,
+    source: "(est.) the x86 empty-script row of M7-P2 (+45,458 Ir = +1.58%: about 2.88M) and M7-P3 (+1.57%), plus about 10%; set again from the first CI reading",
+  },
+  {
+    counter: "macos-time-l-instructions-retired",
+    target: "aarch64-apple-darwin",
+    instructions: 27_000_000,
+    source: "the mac a64 reading 25.11M (ep9-bench, 3 runs + 1 warm-up, at 2b07f2dd, STARTUP-LAYOUT) plus about 7.5%",
+  },
+];
+
+/** The budget of a start-up count: { instructions, source, over } or null (no budget). */
+export function startupBudget(counter, target, median) {
+  const b = STARTUP_BUDGETS.find((x) => x.counter === counter && x.target === target);
+  if (!b) return null;
+  return { instructions: b.instructions, source: b.source, over: typeof median === "number" && median > b.instructions };
+}
 
 class UsageError extends Error {}
 
@@ -96,7 +133,7 @@ export function parseArgs(argv) {
   }
   if (!o.ep9 || !o.bench || !o.out) throw new UsageError("--ep9, --bench and --out are required");
   for (const w of o.workloads) {
-    if (!WORKLOADS[w]) throw new UsageError(`unknown workload ${w} (known: ${Object.keys(WORKLOADS).join(", ")})`);
+    if (!WORKLOADS[w] && w !== STARTUP) throw new UsageError(`unknown workload ${w} (known: ${[...Object.keys(WORKLOADS), STARTUP].join(", ")})`);
   }
   return o;
 }
@@ -112,6 +149,7 @@ const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
 /** The file of one workload and what it must print; throws when v8v7.mjs cannot generate it. */
 function prepare(name, work) {
+  if (name === STARTUP) return { name, command: `ep9 ${STARTUP_ARGV.join(" ")}`, argv: STARTUP_ARGV, expect: "" };
   const w = WORKLOADS[name];
   if (!w.v8v7) {
     const file = path.join(ROOT, w.file);
@@ -133,12 +171,15 @@ function prepare(name, work) {
   };
 }
 
+/** The ep9 arguments of a workload: its file, or the start-up row's `-e 0`. */
+const argvOf = (w) => w.argv ?? [w.path];
+
 /** Runs ep9-bench on one workload; resolves to { bench, error, refused }. */
 function count(o, w, commit, tmp) {
   const out = path.join(tmp, `${w.name}.bench.json`);
   const expect = path.join(tmp, `${w.name}.expect.txt`);
   writeFileSync(expect, w.expect);
-  const args = ["--counter", o.counter, "--runs", String(o.runs), "--warmup", String(o.warmup), "--name", w.name, "--out", out, "--expect-stdout", expect, "--", o.ep9, w.path];
+  const args = ["--counter", o.counter, "--runs", String(o.runs), "--warmup", String(o.warmup), "--name", w.name, "--out", out, "--expect-stdout", expect, "--", o.ep9, ...argvOf(w)];
   const env = commit && !process.env.GITHUB_SHA ? { ...process.env, EP9_COMMIT: commit } : process.env;
   return new Promise((resolve) => {
     const child = spawn(o.bench, args, { env, stdio: ["ignore", "ignore", "pipe"], timeout: o.timeoutS * 1000 });
@@ -194,7 +235,8 @@ export async function run(o) {
         rows.push({ name, status: "error", error: e.message });
         continue;
       }
-      const r = spawnRun({ bin: o.ep9, args: [] }, w.path, o.timeoutS);
+      const argv = argvOf(w);
+      const r = spawnRun({ bin: o.ep9, args: argv.slice(0, -1) }, argv.at(-1), o.timeoutS);
       try {
         checkRun(r, { engine: "ep9", workload: name, expect: w.expect });
         rows.push({ ...w, status: "ok" });
@@ -215,18 +257,25 @@ export async function run(o) {
         r.status = refused ? "refused" : "error";
         r.error = error ?? "ep9-bench gave no count";
       }
+      if (r.name === STARTUP) {
+        r.budget = startupBudget(bench?.counter ?? null, bench?.target ?? null, r.instructions?.median);
+        if (r.budget?.over && process.env.GITHUB_ACTIONS) {
+          process.stdout.write(`::warning title=perf-ci-v0 startup::ep9 -e 0 ${r.instructions.median} instructions, over the budget ${r.budget.instructions}\n`);
+        }
+      }
       process.stderr.write(`perf-ci-v0: ${r.name}: ${r.instructions?.median ?? "no count"}${r.error ? ` (${r.error})` : ""}\n`);
     });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
   // One key order for every row; the local path of a generated file is left out.
-  const workloads = rows.map(({ name, status, error, instructions, bench, path: _, ...file }) => ({
+  const workloads = rows.map(({ name, status, error, instructions, bench, budget, path: _, argv: __, ...file }) => ({
     name,
     status,
     error: error ?? null,
     instructions: instructions ?? null,
     ...file,
+    ...(name === STARTUP ? { budget: budget ?? null } : {}),
     bench: bench ?? null,
   }));
   const counted = workloads.find((r) => r.bench?.counter);
@@ -261,7 +310,8 @@ export function renderMarkdown(res) {
   for (const r of res.workloads) {
     const i = r.instructions;
     const spread = i ? `${(((i.max - i.min) / i.median) * 100).toFixed(4)}%` : "";
-    lines.push(`| ${r.name} | ${fmt(i?.median)} | ${fmt(i?.min)} | ${fmt(i?.max)} | ${spread} | ${r.status}${r.error ? `: ${cell(r.error)}` : ""} |`);
+    const budget = r.name !== STARTUP || !i ? "" : r.budget ? `; budget ${fmt(r.budget.instructions)}: ${r.budget.over ? "OVER BUDGET" : "within"}` : "; no budget for this counter and target";
+    lines.push(`| ${r.name} | ${fmt(i?.median)} | ${fmt(i?.min)} | ${fmt(i?.max)} | ${spread} | ${r.status}${budget}${r.error ? `: ${cell(r.error)}` : ""} |`);
   }
   if (!res.complete) lines.push("", "**Incomplete:** a workload has no count (see status).");
   return `${lines.join("\n")}\n`;

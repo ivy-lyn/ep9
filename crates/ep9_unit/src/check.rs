@@ -418,3 +418,27 @@ fn compare_v2(h: &UnitHeader, host: &HostInfo) -> Option<Verdict> {
     }
     None
 }
+
+/// The bytes of the section `kind` of a unit that passes S4 steps 1 and 2 (its layout and its
+/// content hash), or `None` when the unit does not pass them or has no such section. The
+/// versions are not compared (steps 3 and 4 are [`check`]'s): the `.o` writer and an embedder
+/// read sections with it.
+pub fn unit_section(bytes: &[u8], kind: SectionKind) -> Option<&[u8]> {
+    let (_, sections) = verify(bytes).ok()?;
+    sections.get(kind).map(|r| &bytes[r])
+}
+
+/// [`check`] for a linked unit (the `.o` form, H35 S1 and H35-Q3): `unit` is the container that
+/// the object holds in read-only data, `text` the linked text (`ep9_platform::linked`). The
+/// content hash covers the container, not the linked text, so a `Load` also needs the linked
+/// text to be the container's text section, byte for byte; else BYTECODE (the bytecode is
+/// covered by the hash, the native code is not this unit's). Any other outcome is
+/// [`check`]'s.
+pub fn check_linked(unit: &[u8], text: &[u8], host: &HostInfo) -> Outcome {
+    match check(unit, host) {
+        Outcome::Load if unit_section(unit, SectionKind::Text).unwrap_or(&[]) != text => {
+            Outcome::Bytecode
+        }
+        o => o,
+    }
+}

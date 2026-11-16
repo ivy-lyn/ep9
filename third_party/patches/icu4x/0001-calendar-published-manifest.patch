@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ep9
-Subject: [PATCH] icu_calendar: the published 2.3.0 manifest, so a checkout
+Subject: [PATCH] icu_calendar: the published 2.4.0 manifest, so a checkout
  builds on its own
 
 The icu4x workspace gives components/calendar its dependencies through
@@ -11,17 +11,17 @@ checkout, not the crates.io packages that the rest of the graph uses
 (two copies of each, and two sets of types).
 
 This replaces components/calendar/Cargo.toml with the manifest of the
-crates.io icu_calendar 2.3.0 package (the file that `cargo package`
+crates.io icu_calendar 2.4.0 package (the file that `cargo package`
 wrote; its sources equal src/ at this commit), which names each
 dependency by its crates.io version and inherits nothing.
 
 Not for upstream: only a downstream [patch] needs it.
 ---
- components/calendar/Cargo.toml | 316 ++++++++++++++++++++++++++-------
- 1 file changed, 253 insertions(+), 63 deletions(-)
+ components/calendar/Cargo.toml | 319 ++++++++++++++++++++++++++++++++---------
+ 1 file changed, 255 insertions(+), 64 deletions(-)
 
 diff --git a/components/calendar/Cargo.toml b/components/calendar/Cargo.toml
-index 8392ef9..5316349 100644
+index 721b86a..99c5e94 100644
 --- a/components/calendar/Cargo.toml
 +++ b/components/calendar/Cargo.toml
 @@ -1,21 +1,54 @@
@@ -43,7 +43,7 @@ index 8392ef9..5316349 100644
 +edition = "2024"
 +rust-version = "1.88"
  name = "icu_calendar"
-+version = "2.3.0"
++version = "2.4.0"
 +authors = ["The ICU4X Project Developers"]
 +build = false
 +include = [
@@ -93,7 +93,7 @@ index 8392ef9..5316349 100644
  
  [package.metadata.docs.rs]
  all-features = true
-@@ -23,73 +56,230 @@ all-features = true
+@@ -23,77 +56,235 @@ all-features = true
  [package.metadata.cargo-all-features]
  max_combination_size = 3
  
@@ -124,7 +124,7 @@ index 8392ef9..5316349 100644
 -serde_json = { workspace = true }
 -simple_logger = { workspace = true }
 -ureq = { workspace = true }
--insta = "1.38.0"
+-insta = { workspace = true }
 -time = { workspace = true, features = ["large-dates"]}
 -
 -
@@ -213,6 +213,12 @@ index 8392ef9..5316349 100644
  
  [[bench]]
 -name = "convert"
++name = "preferred"
++path = "benches/preferred.rs"
+ harness = false
+ 
+ [[bench]]
+-name = "preferred"
 +name = "until"
 +path = "benches/until.rs"
  harness = false
@@ -244,25 +250,25 @@ index 8392ef9..5316349 100644
 +default-features = false
 +
 +[dependencies.icu_calendar_data]
-+version = "~2.3.0"
++version = "~2.4.0"
 +optional = true
 +default-features = false
 +
 +[dependencies.icu_locale_core]
-+version = "2.3.0"
++version = "2.4.0"
 +default-features = false
 +
 +[dependencies.icu_locale_fallback]
-+version = "~2.3.0"
++version = "~2.4.0"
 +optional = true
 +default-features = false
 +
 +[dependencies.icu_provider]
-+version = "2.3.0"
++version = "2.4.0"
 +default-features = false
 +
 +[dependencies.ixdtf]
-+version = "0.6.5"
++version = "0.6.7"
 +optional = true
 +default-features = false
 +
@@ -283,17 +289,17 @@ index 8392ef9..5316349 100644
 +default-features = false
 +
 +[dependencies.tinystr]
-+version = "0.8.4"
++version = "0.8.5"
 +features = ["zerovec"]
 +default-features = false
 +
 +[dependencies.zerovec]
-+version = "0.11.7"
++version = "0.11.9"
 +features = ["derive"]
 +default-features = false
 +
 +[dev-dependencies.insta]
-+version = "1.38.0"
++version = "1.43.2"
 +
 +[dev-dependencies.itertools]
 +version = "0.14.0"

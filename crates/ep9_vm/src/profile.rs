@@ -47,7 +47,7 @@
 //! | Flow | Fast bodies | Record (sibling: tail-called function) |
 //! |---|---|---|
 //! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); an int32 `+`, `-`, `Inc` or `Dec` that overflows, on its overflow arm ([`INT32_OVERFLOW`], MODES-D16); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next::<PLACE>`: it reads the slot operand at its constant offset) |
-//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<PLACE>`: it gets the pair) |
+//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next::<OP>`: it gets the pair; `TestEqual` first: [`nullish_pair_bits`]) |
 //! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
 //!
 //! The match loop, `become` and the prefixed step record inline (`Flow::recorded`).
@@ -376,9 +376,9 @@ fn add_bits(st: &St<'_>, s: FSlot, bits: u32) {
 
 /// A record that a fast body leaves to its dispatch (`interp::Flow::Record`): add `bits` to the
 /// int32 value half of one slot. The fast body only computes the bits; [`record`] runs after
-/// it, in `interp::dsl::record_next` (the sibling expansion: a tail-called out-of-line
-/// function, so the handler has no record code and saves no register on entry) or inline (the
-/// match loop, `become`, prefixed instructions).
+/// it, in `interp::dsl::record_next` (the sibling expansion: a tail call after `adds_bit`
+/// found a new bit, so the handler has no record store and saves no register on entry) or
+/// inline (the match loop, `become`, prefixed instructions).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Rec(u64);
 
@@ -1083,3 +1083,102 @@ const _: () = {
     assert!(FALSE | 1 == TRUE && TRUE | 1 == TRUE && NULL | 8 == UNDEFINED);
     assert!(UNDEFINED | 8 == UNDEFINED && HOLE | 1 != TRUE && HOLE | 8 != UNDEFINED);
 };
+
+// ---- The no-change test of a record exit (M8-P1 RECCOST2) ---------------------------------
+//
+// A `full` sibling handler whose fast body returns `interp::Flow::Record` runs [`adds_bit`]
+// before its tail call of `interp::dsl::record_next` (`interp::dsl::record_exit`). When no bit
+// is new (the usual case after a site's first runs: a number `+` on doubles records `NUMBER`
+// each time) the handler tail-calls `dsl::skip_next` (as `ics_only`), so the record costs the
+// test and a jump (the V8 form: write feedback only when it changes). `record_next` still runs
+// [`record`], which tests again and stores only a new bit (V9-D6), so every slot gets the same
+// bits as before (FACT_SCHEMA 2; `ep9_builtins` `tests/facts_export.rs` compares the
+// `Dispatch::Match` records, which run inline, with the sibling ones).
+
+/// True if the record of `bits` for slot `s` would add a bit: the running function has its
+/// vector and the int32 value half of `s` lacks one of `bits`. The test of [`add_bits`] (the
+/// same loads, no store). It uses only scratch registers and calls nothing, so a fast handler
+/// that runs it saves no register on entry on x86-64 (plan v13 rule 81).
+///
+/// It finds the FunctionInfo by clearing bit 49 of the frame's native word (the address that
+/// `frame::native_addr` gives: a native word is an address below 2^49 plus 2^49), with no
+/// 64-bit constant. `native_addr` adds `0xFFFE_0000_0000_0000`, the int32 tag mask, and a mask
+/// of the low 49 bits is `2^49 - 1`, beside the `2^49` that boxes a double: with either one
+/// LLVM kept the constant in a register from the handler entry (constant hoisting), and the
+/// int32 paths of `TestLessThan` or `Mul` got one more instruction on x86-64. So x86-64 clears
+/// the bit with `btr` in an `asm!` block; aarch64 has the mask as an `and` immediate.
+#[inline(always)]
+pub(crate) fn adds_bit(st: &St<'_>, s: FSlot, bits: u32) -> bool {
+    let w = st.hdr(crate::frame::slot::FUNCTION_INFO);
+    #[cfg(target_arch = "x86_64")]
+    let a = {
+        let mut a = w;
+        // SAFETY: `btr` clears bit 49 of a register and changes only the flags: no memory
+        // access, no stack.
+        unsafe {
+            core::arch::asm!("btr {a}, 49", a = inout(reg) a, options(pure, nomem, nostack));
+        }
+        a
+    };
+    // A VM stack slot (the extref-lint `VM_STACK` list, H25): only the `frame` encoding. The
+    // offset `frame::native(0)` is 2^49 after inlining; debug builds check the `frame` decode.
+    #[cfg(not(target_arch = "x86_64"))]
+    let a = w & (crate::frame::native(0) - 1);
+    debug_assert!(a as usize == crate::frame::native_addr(w));
+    let fi = core::ptr::with_exposed_provenance::<crate::unit::FunctionInfo>(a as usize);
+    // SAFETY: header slot 4 of a live frame holds the native word of its FunctionInfo
+    // (`St::info`), and `a` is the address that `native_addr` gives for it.
+    let Some(v) = feedback::vector(unsafe { &*fi }) else {
+        return false;
+    };
+    let old = value(v, s.0);
+    debug_assert!(is_i32(old), "a profile slot holds an int32: {old:#x}");
+    old as u32 & bits != bits
+}
+
+// ---- The pair no-change test of a RecordPair exit (M8-P5 LEVER-8) --------------------------
+//
+// `interp::Flow::RecordPair` had no no-change test (M8-P1 RECCOST2 gave one only to
+// `Flow::Record`): every pair tail-called `interp::dsl::record_pair_next`, which ran the whole
+// [`compare_bits`] (the class of each operand, a cell kind read and an atom test for each
+// cell, then the class pair) before its test. `TestEqual` gives a pair only with null or
+// undefined on a side (`interp/ops.rs`, the `x == null` arm), and the bits of such a pair need
+// much less ([`nullish_pair_bits`]): two nullish values give NULLISH; an object (a cell whose
+// kind is a receiver kind, [`KIND_CLASS`]) gives RECEIVER | NULLISH; any other value gives
+// OTHER (its class with NULLISH is no class pair of `compare_pair`). So the `full` sibling
+// handler of `TestEqual` finds these bits and runs the test of [`adds_bit`] (the pair form of
+// the RECCOST2 test, `interp::dsl::record_pair_exit`): no new bit, the tail call of
+// `skip_next`; a new bit, the tail call of `record_next` with these bits ([`record`] stores
+// them as [`record_pair`] would), so every slot gets the same bits (FACT_SCHEMA 2). The oracle
+// of `tests::feedback` checks [`nullish_pair_bits`] against the old `compare_bits` on every
+// pair of its value set.
+
+const _: () = assert!(NULL | 8 == UNDEFINED && UNDEFINED | 8 == UNDEFINED && NULL != UNDEFINED);
+
+/// The [`compare_bits`] of the pair `l`, `r` if null or undefined is on a side, else `None`:
+/// NULLISH for two nullish values, RECEIVER | NULLISH for a nullish value and an object, else
+/// OTHER. One cell kind read at most; no atom test.
+#[inline(always)]
+pub(crate) fn nullish_pair_bits(l: u64, r: u64) -> Option<u32> {
+    // `v | 8 == UNDEFINED` holds for null and undefined only (the `compare_operand` test).
+    let other = if l | 8 == UNDEFINED {
+        r
+    } else if r | 8 == UNDEFINED {
+        l
+    } else {
+        return None;
+    };
+    let h = if other | 8 == UNDEFINED {
+        CompareHint::NULLISH.bits()
+    } else if other >> 49 == 0
+        && other & OTHER_TAG == 0
+        // SAFETY: a cell Value held by the VM is live (crate invariant, object.rs).
+        && KIND_CLASS[usize::from(unsafe { cell_ptr(other).header() }.kind())]
+            == CompareHint::RECEIVER
+    {
+        CompareHint::RECEIVER.bits() | CompareHint::NULLISH.bits()
+    } else {
+        CompareHint::OTHER.bits()
+    };
+    Some(u32::from(h))
+}
