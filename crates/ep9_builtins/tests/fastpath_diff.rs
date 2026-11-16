@@ -1175,8 +1175,8 @@ const CASES: &[Case] = &[
     },
     // M7-P4 LEVER-2 (TSPASS2): the IC hit of a prefixed site. `f` loads 300 other names
     // first, so the name constant of `o.x` needs a `Wide` operand, and its loop body is longer
-    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): on aarch64 the
-    // `Wide` fast body runs them (`interp/ops.rs` `prefix_runs_fast`). Mono, falsy, a string
+    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): the `Wide` fast
+    // body (aarch64) or cold block (x86-64, `tails::wide`) runs them. Mono, falsy, a string
     // ToBoolean (cold), a getter (cold), 8 shapes (megamorphic), a prototype load and its change.
     Case {
         path: "ic-named",
@@ -1292,6 +1292,121 @@ const CASES: &[Case] = &[
              for (var j = 0; j < 8; j++) { var o = {}; o['p' + j] = j; o.x = j + 1; r.push(f(o, 3)); }\n\
              var P = { x: 100 }; var c = Object.create(P); r.push(f(c, 2)); P.x = 5; r.push(f(c, 2));\n\
              print(r.join(' '));",
+        ),
+    },
+    // M9-P1 X86-WIDE-FAST: forward jumps of `interp/ops.rs` `prefix_set` at `Wide` scale (each
+    // over 64 `i |= 0`): `||` (JumpIfToBooleanTrue), `&&` and `if` (JumpIfToBooleanFalse), `??`
+    // and `?.` (JumpIfUndefinedOrNull), a default parameter (JumpIfNotUndefined); aarch64 runs
+    // them in the `Wide` fast body, x86-64 in its cold block (`tails::wide`). The spec form passes
+    // strings: no fast ToBoolean case, so the cold body runs after the fast body.
+    Case {
+        path: "t0-operators",
+        name: "prefixed (Wide) forward jumps: ToBoolean, nullish, a default parameter",
+        src: "function g(a, b, c, k, d = (k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, 'D')) {\n\
+              var i = 0;\n\
+              var x = (a || (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 0)) ? 'T' : 'F';\n\
+              var y = (b && (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 1)) ? 'T' : 'F';\n\
+              if (a) { i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0; y += 'i'; }\n\
+              var z = c ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'N');\n\
+              var w = c?.p ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'Q');\n\
+              return [x, y, z, w, d, i, k].join(' ');\n\
+              }\n\
+              print(g(1, 0, null, 0), g(0, 1, 5, 0, 'e'), g(1, 1, undefined, 0), g(0, 0, { p: 'P' }, 0));",
+        spec: Some(
+            "function g(a, b, c, k, d = (k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, 'D')) {\n\
+             var i = 0;\n\
+             var x = (a || (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 0)) ? 'T' : 'F';\n\
+             var y = (b && (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 1)) ? 'T' : 'F';\n\
+             if (a) { i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0; y += 'i'; }\n\
+             var z = c ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'N');\n\
+             var w = c?.p ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'Q');\n\
+             return [x, y, z, w, d, i, k].join(' ');\n\
+             }\n\
+             print(g('1', '', null, 0), g('', '1', 5, 0, 'e'), g('1', '1', undefined, 0), g('', '', { p: 'P' }, 0));",
         ),
     },
     // M7-P5 LEVER-4 (ICWIDE): `keyed_ic::fast_set` stores a missing element of an Array in
