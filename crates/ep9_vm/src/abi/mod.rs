@@ -1272,13 +1272,18 @@ impl<'s> Cx<'s> {
 
     /// ToIntegerOrInfinity (§7.1.5).
     pub fn to_integer_or_infinity(&mut self, v: impl Into<Local<'s>>) -> JsResult<f64> {
+        let v = v.into();
+        // An int32 is its own integer (ToNumber gives it back; +0 for 0): no call.
+        if let Some(i) = v.as_int32() {
+            return Ok(f64::from(i));
+        }
         let d = self.to_number(v)?;
         Ok(if d.is_nan() || d == 0.0 {
             0.0
         } else if d.is_infinite() {
             d
         } else {
-            d.trunc()
+            trunc_exact(d)
         })
     }
 
@@ -1737,6 +1742,22 @@ impl<'s> Cx<'s> {
             return Ok(Self::local(crate::frame::HOLE));
         }
         call::call_with(self.cx, f, this, args.len, |k| args.bits(k), UNDEFINED).map(Self::local)
+    }
+}
+
+/// `d.trunc()` (IEEE roundToIntegralTowardZero) with the same bits for every `d`, also -0,
+/// NaN and the infinities, but with no libm call on a baseline x86-64 build (no SSE4.1
+/// `roundsd`): a `d` with `|d| < 2^52` may have a fraction, and it fits in an i64, so the
+/// i64 round trip (cvttsd2si / fcvtzs) truncates it exactly; `copysign` keeps the sign of a
+/// result of 0 (-0.5 -> -0). Every other `d` is already integral, or NaN, or infinite, and
+/// is its own result. Scalar code on every target (no SIMD, no feature test).
+#[inline]
+pub(crate) fn trunc_exact(d: f64) -> f64 {
+    const TWO_POW_52: f64 = 4_503_599_627_370_496.0;
+    if d.abs() < TWO_POW_52 {
+        ((d as i64) as f64).copysign(d)
+    } else {
+        d
     }
 }
 

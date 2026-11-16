@@ -910,3 +910,125 @@ fn flat_str_downcast_refuses_a_rope() {
         assert_eq!(cx.code_unit_at(again, 0), Some(u16::from(b'a')));
     });
 }
+
+/// `abi::trunc_exact` (the libm-free form of `Cx::to_integer_or_infinity`) has the bits of
+/// `f64::trunc` for every input: the edges around 0, 0.5, 2^52, 2^53 and 2^63, the
+/// extremes, subnormals, NaN, the infinities and 1,000,000 random bit patterns (H36: trunc is
+/// exact).
+#[test]
+fn trunc_exact_has_the_bits_of_f64_trunc() {
+    use crate::abi::trunc_exact;
+    fn same(d: f64) {
+        assert_eq!(
+            trunc_exact(d).to_bits(),
+            d.trunc().to_bits(),
+            "trunc_exact({d:e}) (bits {:#x})",
+            d.to_bits()
+        );
+    }
+    let p52 = 4_503_599_627_370_496.0_f64;
+    let p53 = 9_007_199_254_740_992.0_f64;
+    let p63 = 9_223_372_036_854_775_808.0_f64;
+    let edges = [
+        0.0,
+        0.5,
+        0.49999999999999994,
+        1.0,
+        1.5,
+        2.5,
+        0.9999999999999999,
+        p52 - 0.5,
+        p52 - 1.0,
+        p52,
+        p52 + 1.0,
+        p53,
+        p53 + 2.0,
+        p63,
+        p63 * 2.0,
+        1e300,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1),
+        f64::from_bits(0x000F_FFFF_FFFF_FFFF),
+        f64::EPSILON,
+        2_147_483_647.5,
+        2_147_483_648.5,
+        4_294_967_296.25,
+        f64::INFINITY,
+    ];
+    for d in edges {
+        same(d);
+        same(-d);
+    }
+    let nan = trunc_exact(f64::NAN);
+    assert!(nan.is_nan());
+    // Random bit patterns (xorshift64*, a fixed seed): every exponent, so most are huge or
+    // tiny; a second set keeps the exponent below 2^53 where the round trip runs.
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    let mut finite = 0;
+    while finite < 1_000_000 {
+        let d = f64::from_bits(next());
+        if d.is_finite() {
+            same(d);
+            finite += 1;
+        }
+    }
+    for _ in 0..1_000_000 {
+        let r = next();
+        // Exponent field 0x3FE..=0x434 (0.5 <= |d| < 2^54): the fraction cases.
+        let e = 0x3FE + (r >> 52) % (0x434 - 0x3FE + 1);
+        let d = f64::from_bits((r & 0x800F_FFFF_FFFF_FFFF) | (e << 52));
+        same(d);
+    }
+}
+
+/// `Cx::to_integer_or_infinity` of an int32 (the call-free path) gives the bits of the
+/// general path (ToNumber, then the §7.1.5 steps with `f64::trunc`); NaN -> +0, -0 -> +0,
+/// the infinities and fractions keep their old results.
+#[test]
+fn to_integer_or_infinity_int32_path_matches_the_general_steps() {
+    fn general(d: f64) -> f64 {
+        if d.is_nan() || d == 0.0 {
+            0.0
+        } else if d.is_infinite() {
+            d
+        } else {
+            d.trunc()
+        }
+    }
+    with_cx(false, no_setup, |cx, _| {
+        for i in [i32::MIN, i32::MIN + 1, -2, -1, 0, 1, 2, 65_535, i32::MAX] {
+            let v = Local::int32(i);
+            assert!(v.as_int32().is_some());
+            let got = cx.to_integer_or_infinity(v).unwrap();
+            assert_eq!(got.to_bits(), general(f64::from(i)).to_bits(), "int32 {i}");
+        }
+        for d in [
+            f64::NAN,
+            -0.0,
+            0.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.5,
+            0.5,
+            -2.7,
+            2.7,
+            2_147_483_648.5,
+            -2_147_483_649.5,
+            1e300,
+            -1e-300,
+        ] {
+            let got = cx.to_integer_or_infinity(Local::number(d)).unwrap();
+            assert_eq!(got.to_bits(), general(d).to_bits(), "number {d:e}");
+        }
+        // A String still converts (the general path).
+        let s = cx.new_string(" -12.9 ").unwrap();
+        assert_eq!(cx.to_integer_or_infinity(s).unwrap(), -12.0);
+    });
+}
