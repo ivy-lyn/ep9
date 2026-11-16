@@ -17,7 +17,7 @@
 //!   1. front end (only if the text is a RegularExpressionBody: no line terminator, no
 //!      unescaped / outside a class, no trailing \, not empty, no * first; and not if the
 //!      text has a code point that the front end and RX1 take differently in a group name,
-//!      the known front-end difference below)
+//!      the known front-end difference below; such a code point outside the list is a crash)
 //!        check_early_errors("/<text>/<flags>") as a sloppy script
 //!        Ok -> valid; Syntax -> invalid; Range (the depth caps) -> no check
 //!        valid != RX1 valid -> panic
@@ -194,11 +194,17 @@
 //!   (UCD 17, DL M9-PRE-UNICODE) have different ID_Start and ID_Continue tables: at the M9-P1
 //!   merge, 12,860 code points in 38 ranges are ID_Continue for the front end and not for
 //!   RX1 (12,823 in 27 ranges also ID_Start; U+3D000..U+3FC3F is 11,328 of them), and 0 the
-//!   other way. The target does not keep a list: it asks both parsers about each code point
-//!   (`id_differs`), so the skip follows a table change on either side. Check 1 does not
-//!   compare a text with such a code point (any `\` counts as an escape start: skipping more
-//!   is safe); checks 2 and 3 still run. The move of RX1 to Unicode 18 is in the M2-exit G8
-//!   batch.
+//!   other way. These 38 ranges are a reviewed list (`KNOWN_ID_DIFFERENCE`). The target asks
+//!   both parsers about each code point of a text (`id_differs`). Check 1 does not compare a
+//!   text with a code point that they take differently and that is in the list (any `\`
+//!   counts as an escape start: skipping more is safe); checks 2 and 3 still run. A code
+//!   point that they take differently and that is not in the list is a crash ("new
+//!   front-end/RX1 identifier difference at U+XXXX"): a new find, for example after an oxc or
+//!   RX1 update. At start (`fuzz_target!` init), the target probes a sample of the list (the
+//!   first, middle and last code point of each range must differ, the code point before and
+//!   after each range must not), so a stale list stops the run. The move of RX1 to Unicode 18
+//!   is in the M2-exit G8 batch; that change must make the list again (the start check stops
+//!   the run until it does).
 #![no_main]
 
 use std::cell::RefCell;
@@ -228,23 +234,79 @@ const FIXED_PROBES: [u32; 26] = [
 /// input).
 const MAX_PROBE_SOURCES: usize = 48;
 
-/// True if the front end and RX1 take `c` differently in a group name: the known front-end
-/// difference (the module doc; their ID_Start and ID_Continue tables are of different
-/// Unicode versions). Each parser is asked about `c` as the first character of a name
-/// (`(?<c>a)`, ID_Start) and as a later one (`(?<ac>a)`, ID_Continue), with `u`. ASCII is
-/// not asked (the two tables agree on it, and `>`, `\` or `/` would break the probe), and a
-/// surrogate is no character. The answer of each code point is kept for the process.
-fn id_differs(c: u32) -> bool {
-    thread_local! {
-        static ANSWERS: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
-    }
+/// The reviewed front-end/RX1 identifier difference of check 1 (the module doc): the
+/// code points, as inclusive ranges in order, that are ID_Continue for the front end
+/// (oxc_regular_expression 0.158.0 with `unicode-id-start` 1.5.0, Unicode 18.0.0) and not for
+/// RX1 (`ep9_rx1` unicode_tables.rs, UCD 17.0.0): 12,860 code points in 38 ranges (12,823 of
+/// them in 27 ranges are also ID_Start; the other way, 0). Made at the M9-P1 merge from a
+/// probe of every code point U+0080..U+10FFFF with a copy of [`probe_id_differs`],
+/// against the real `ep9_frontend` and `ep9_rx1`: the probe set is equal to the difference of
+/// the two tables. Make it again after an oxc or RX1 Unicode update.
+const KNOWN_ID_DIFFERENCE: [(u32, u32); 38] = [
+    (0x558, 0x558),
+    (0x58b, 0x58c),
+    (0x5c8, 0x5c9),
+    (0xb53, 0xb54),
+    (0x1ade, 0x1adf),
+    (0x1aec, 0x1af0),
+    (0x208f, 0x208f),
+    (0x209d, 0x209f),
+    (0xa7dd, 0xa7dd),
+    (0xa7e2, 0xa7e2),
+    (0xab6c, 0xab6d),
+    (0x107bb, 0x107bf),
+    (0x10ecb, 0x10ecf),
+    (0x10ed9, 0x10eee),
+    (0x10ef0, 0x10ef9),
+    (0x11b0a, 0x11b0a),
+    (0x11df0, 0x11df1),
+    (0x1246f, 0x1246f),
+    (0x12475, 0x1247f),
+    (0x12550, 0x12686),
+    (0x18cd6, 0x18cda),
+    (0x18d1f, 0x18d20),
+    (0x18e00, 0x19191),
+    (0x191a0, 0x191d2),
+    (0x1b123, 0x1b128),
+    (0x1b168, 0x1b168),
+    (0x1d127, 0x1d128),
+    (0x1d250, 0x1d252),
+    (0x1d25b, 0x1d25c),
+    (0x1d25f, 0x1d25f),
+    (0x1d280, 0x1d281),
+    (0x1d6a6, 0x1d6a6),
+    (0x1df1f, 0x1df24),
+    (0x1df2b, 0x1df81),
+    (0x1df90, 0x1df96),
+    (0x1dfcd, 0x1dfff),
+    (0x2b81e, 0x2b81e),
+    (0x3d000, 0x3fc3f),
+];
+
+/// True if `c` is in [`KNOWN_ID_DIFFERENCE`].
+fn is_known_id_difference(c: u32) -> bool {
+    KNOWN_ID_DIFFERENCE
+        .binary_search_by(|&(from, to)| {
+            if to < c {
+                std::cmp::Ordering::Less
+            } else if from > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// True if the front end and RX1 take `c` differently in a group name. Each parser is asked
+/// about `c` as the first character of a name (`(?<c>a)`, ID_Start) and as a later one
+/// (`(?<ac>a)`, ID_Continue), with `u`. ASCII is not asked (the two tables agree on it, and
+/// `>`, `\` or `/` would break the probe), and a surrogate is no character.
+fn probe_id_differs(c: u32) -> bool {
     let Some(ch) = char::from_u32(c).filter(|ch| !ch.is_ascii()) else {
         return false;
     };
-    if let Some(known) = ANSWERS.with_borrow(|a| a.get(&c).copied()) {
-        return known;
-    }
-    let differs = [format!("(?<{ch}>a)"), format!("(?<a{ch}>a)")]
+    [format!("(?<{ch}>a)"), format!("(?<a{ch}>a)")]
         .iter()
         .any(|name| {
             let front = ep9_frontend::check_early_errors(
@@ -253,9 +315,56 @@ fn id_differs(c: u32) -> bool {
             )
             .is_ok();
             front != ep9_rx1::parse_str(name, Flags::UNICODE).is_ok()
-        });
-    ANSWERS.with_borrow_mut(|a| a.insert(c, differs));
+        })
+}
+
+/// True if [`probe_id_differs`] for `c` (the answer of each code point is kept for the
+/// process). Panics if the two parsers take `c` differently and `c` is not in
+/// [`KNOWN_ID_DIFFERENCE`]: a new difference (the module doc).
+fn id_differs(c: u32) -> bool {
+    thread_local! {
+        static ANSWERS: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
+    }
+    let differs = match ANSWERS.with_borrow(|a| a.get(&c).copied()) {
+        Some(known) => known,
+        None => {
+            let differs = probe_id_differs(c);
+            ANSWERS.with_borrow_mut(|a| a.insert(c, differs));
+            differs
+        }
+    };
+    assert!(
+        !differs || is_known_id_difference(c),
+        "new front-end/RX1 identifier difference at U+{c:04X}"
+    );
     differs
+}
+
+/// The start check of [`KNOWN_ID_DIFFERENCE`] (the module doc): the ranges are in order and
+/// do not touch; the first, middle and last code point of each range differ; the code point
+/// before and after each range does not (if it is not ASCII and not a surrogate).
+fn check_known_id_difference() {
+    for pair in KNOWN_ID_DIFFERENCE.windows(2) {
+        assert!(
+            pair[0].0 <= pair[0].1 && pair[0].1 + 1 < pair[1].0,
+            "KNOWN_ID_DIFFERENCE is not in order at U+{:04X}",
+            pair[1].0
+        );
+    }
+    for &(from, to) in &KNOWN_ID_DIFFERENCE {
+        for c in [from, from + (to - from) / 2, to] {
+            assert!(
+                probe_id_differs(c),
+                "KNOWN_ID_DIFFERENCE is stale: no front-end/RX1 identifier difference at U+{c:04X}"
+            );
+        }
+        for c in [from - 1, to + 1] {
+            assert!(
+                !probe_id_differs(c),
+                "new front-end/RX1 identifier difference at U+{c:04X}"
+            );
+        }
+    }
 }
 
 /// True if `text` is a RegularExpressionBody (ECMA-262 12.9.5): `/<text>/` lexes as one
@@ -320,7 +429,8 @@ fn has_id_difference(text: &str) -> bool {
 }
 
 /// Check 1: the front end and RX1 agree on "valid or not". A text with a code point that
-/// [`id_differs`] is not compared (the known front-end difference, the module doc).
+/// [`id_differs`] is not compared (the known front-end difference, the module doc); a
+/// difference outside [`KNOWN_ID_DIFFERENCE`] panics.
 fn check_front_end(text: &str, flags: Flags, rx1_valid: bool) {
     if !is_literal_body(text) || has_id_difference(text) {
         return;
@@ -874,7 +984,7 @@ fn check_class_set(units: &[u16], flags: Flags, rx1: &Pattern) {
     }
 }
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| {
+libfuzzer_sys::fuzz_target!(init: check_known_id_difference(), |data: &[u8]| {
     let Some((&bits, rest)) = data.split_first() else {
         return;
     };
