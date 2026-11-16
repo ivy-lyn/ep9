@@ -10,7 +10,7 @@
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
 //! | match loop (`--match-loop`) | For SP-Dispatch, whose 20-opcode x86-64 match loop LLVM threads (`ep9loop__<expansion>__<fn>`). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only. T0 (`ep9_vm`) releases sibling calls on every target (H15 ADR, 2026-10-21), so for T0 the loop line is a report, not a gate. |
-//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. The hot handlers (every handler whose name does not end in `_cold`) that build a frame on entry (the first instruction saves a register or grows the stack), with the registers each one saves on entry (the leading prologue, then each callee-saved register that the entry block stores before its first jump, call or return; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). |
+//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. The hot handlers (every handler whose name does not end in `_cold`) that build a frame on entry (the first instruction saves a register or grows the stack), with the registers each one saves on entry (the leading prologue, then each callee-saved register that the entry code saves before its first conditional branch, call, return or tail jump, with an unconditional jump inside the handler followed; a store of a callee-saved register in a form that the check does not know fails it; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). |
 //! | Mach-O data in code | x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE). The check drops what `llvm-objdump -d` decodes from those bytes, so table data never counts as jumps, calls, returns or stack accesses, and decodes the code after each table again from the table end, so a decode that ran across the table end cannot hide an instruction there. |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
@@ -1591,88 +1591,309 @@ fn prologue_saves(arch: Arch, text: &str) -> Option<usize> {
     }
 }
 
-/// The callee-saved registers of the handler ABI (x86-64: sysv64 on every OS, `dsl::handler!`;
-/// aarch64: x19-x30, d8-d15) that one instruction stores to the stack. x86-64: the register of
-/// a `push` of rbx, rbp or r12-r15 (on Win64 too: rdi, rsi and xmm6-xmm15 are not callee-saved
-/// under sysv64). aarch64: the x19-x30 and d8-d15 registers of an `stp` or `str` to `[sp ...]`
-/// (`fp` and `lr` read as x29 and x30).
-fn stack_saved_regs(arch: Arch, text: &str) -> Vec<String> {
+/// The mnemonic and the operands of one instruction, whitespace made single spaces. x86 prefix
+/// words (`lock`, `rep`, ...) are skipped, as in [`classify`].
+fn mnemonic_ops(text: &str) -> (String, String) {
     let t = text.replace(char::is_whitespace, " ");
-    let (m, ops) = t.split_once(' ').unwrap_or((t.as_str(), ""));
-    let ops = ops.trim();
+    let mut words = t.split(' ').filter(|w| !w.is_empty()).peekable();
+    while words
+        .next_if(|m| {
+            matches!(
+                *m,
+                "rex64" | "notrack" | "bnd" | "lock" | "rep" | "repne" | "cs" | "ds" | "data16"
+            )
+        })
+        .is_some()
+    {}
+    let m = words.next().unwrap_or("").to_string();
+    (m, words.collect::<Vec<_>>().join(" "))
+}
+
+/// The callee-saved register of the handler ABI that register operand `r` is a part of, by its
+/// full name, and true if `r` is the full register. x86-64 (sysv64 on every OS,
+/// `dsl::handler!`): rbx, rbp, r12-r15 (`%ebx`, `%bl`, `%r12d` and the other parts too).
+/// aarch64: x19-x30 (`w19`, `fp`, `lr` too) and d8-d15 (`s8`, `q8`, `v8.2d` too; only the d form
+/// is the full register that AAPCS64 saves).
+fn callee_saved(arch: Arch, r: &str) -> Option<(String, bool)> {
     match arch {
         Arch::X64 => {
-            if m.starts_with("push") {
-                let r = ops.trim_start_matches('%');
-                if matches!(r, "rbx" | "rbp" | "r12" | "r13" | "r14" | "r15") {
-                    return vec![r.to_string()];
+            let r = r.strip_prefix('%')?;
+            let full = match r {
+                "rbx" | "ebx" | "bx" | "bl" | "bh" => "rbx",
+                "rbp" | "ebp" | "bp" | "bpl" => "rbp",
+                _ => {
+                    let n = r.strip_prefix('r')?;
+                    let d = n.find(|c: char| !c.is_ascii_digit()).unwrap_or(n.len());
+                    if !matches!(&n[d..], "" | "d" | "w" | "b") {
+                        return None;
+                    }
+                    match &n[..d] {
+                        "12" => "r12",
+                        "13" => "r13",
+                        "14" => "r14",
+                        "15" => "r15",
+                        _ => return None,
+                    }
                 }
-            }
-            Vec::new()
+            };
+            Some((full.to_string(), r == full))
         }
         Arch::A64 => {
-            let Some((regs, mem)) = ops.split_once(", [") else {
-                return Vec::new();
-            };
-            if !matches!(m, "stp" | "str") || !(mem.starts_with("sp]") || mem.starts_with("sp,")) {
-                return Vec::new();
+            let r = r.split(['.', '[']).next().unwrap_or(r);
+            match r {
+                "fp" => return Some(("x29".to_string(), true)),
+                "lr" => return Some(("x30".to_string(), true)),
+                _ => {}
             }
-            regs.split(", ")
-                .map(|r| match r {
-                    "fp" => "x29",
-                    "lr" => "x30",
-                    r => r,
-                })
-                .filter(|r| match r.as_bytes().first() {
-                    Some(b'x') => r[1..].parse::<u32>().is_ok_and(|n| (19..=30).contains(&n)),
-                    Some(b'd') => r[1..].parse::<u32>().is_ok_and(|n| (8..=15).contains(&n)),
-                    _ => false,
-                })
-                .map(str::to_string)
-                .collect()
+            let (p, n) = r.split_at_checked(1)?;
+            let n: u32 = n.parse().ok()?;
+            match p {
+                "x" | "w" if (19..=30).contains(&n) => Some((format!("x{n}"), p == "x")),
+                "d" | "s" | "h" | "b" | "q" | "v" if (8..=15).contains(&n) => {
+                    Some((format!("d{n}"), p == "d"))
+                }
+                _ => None,
+            }
         }
     }
 }
 
-/// The registers that the entry block of `b` saves on entry. The rule has two parts:
+/// One instruction that writes registers to memory.
+struct Store<'a> {
+    /// The register operands that the instruction writes to memory.
+    srcs: Vec<&'a str>,
+    /// The base register of the address (`rsp`, `sp`, `x29`, ...).
+    base: &'a str,
+}
+
+/// The store that instruction `m ops` ([`mnemonic_ops`]) does, or `None` if it writes no
+/// register to memory. x86-64 (AT&T): an instruction with a register operand and a memory last
+/// operand that it writes (not `cmp`, `test`, `bt`); `push` is not a store here. aarch64: the
+/// `st*` stores (the status register of `stxr` and `stxp` is not a source), `swp*` and the
+/// `ld<op>` atomics (the first register is the source) and `cas*`.
+fn store_of<'a>(arch: Arch, m: &str, ops: &'a str) -> Option<Store<'a>> {
+    match arch {
+        Arch::X64 => {
+            let parts: Vec<&str> = ops.split(", ").collect();
+            let (last, srcs) = parts.split_last()?;
+            let reads_only = m.starts_with("cmp") && !m.starts_with("cmpxchg")
+                || m.starts_with("test")
+                || matches!(m, "bt" | "btw" | "btl" | "btq")
+                || ["ucomis", "comis", "vucomis", "vcomis", "ptest", "vptest"]
+                    .iter()
+                    .any(|p| m.starts_with(p));
+            if srcs.is_empty() || reads_only || m.starts_with("push") {
+                return None;
+            }
+            let (_, mem) = last.split_once('(')?;
+            let base = mem.split([',', ')']).next()?.trim_start_matches('%');
+            let srcs: Vec<&str> = srcs
+                .iter()
+                .copied()
+                .filter(|s| s.starts_with('%'))
+                .collect();
+            (!srcs.is_empty()).then_some(Store { srcs, base })
+        }
+        Arch::A64 => {
+            const LD_ATOMIC: [&str; 8] = [
+                "ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin",
+            ];
+            let first_only = m.starts_with("swp") || LD_ATOMIC.iter().any(|p| m.starts_with(p));
+            if !(m.starts_with("st") || m.starts_with("cas") || first_only) {
+                return None;
+            }
+            let (regs, mem) = ops.split_once('[')?;
+            let base = mem.split([',', ']']).next()?.trim();
+            let mut srcs: Vec<&str> = regs
+                .split(',')
+                .map(|r| r.trim().trim_matches(['{', '}']).trim())
+                .filter(|r| !r.is_empty())
+                .collect();
+            if (m.starts_with("stx") || m.starts_with("stlx")) && !srcs.is_empty() {
+                srcs.remove(0);
+            } else if first_only {
+                srcs.truncate(1);
+            }
+            Some(Store { srcs, base })
+        }
+    }
+}
+
+/// The registers that instruction `m ops` ([`mnemonic_ops`]) writes, as far as the entry scan
+/// needs them: x86-64 the last operand if it is a register (all register operands of `xchg`,
+/// `xadd` and `cmpxchg`); aarch64 the first operand (all registers before the address of a
+/// load or an atomic, the status register of `stxr`), and the base of a pre-index or
+/// post-index address. Compares, tests, pushes and stores write none.
+fn written_regs(arch: Arch, m: &str, ops: &str) -> Vec<String> {
+    let mut w = Vec::new();
+    match arch {
+        Arch::X64 => {
+            let parts: Vec<&str> = ops.split(", ").filter(|p| !p.is_empty()).collect();
+            let none = m.starts_with("cmp") && !m.starts_with("cmpxchg")
+                || m.starts_with("test")
+                || m.starts_with("push")
+                || matches!(m, "bt" | "btw" | "btl" | "btq");
+            if none {
+            } else if ["xchg", "xadd", "cmpxchg"].iter().any(|p| m.starts_with(p)) {
+                w.extend(
+                    parts
+                        .iter()
+                        .filter(|p| p.starts_with('%'))
+                        .map(|p| p.to_string()),
+                );
+            } else if let Some(l) = parts.last().filter(|l| l.starts_with('%')) {
+                w.push(l.to_string());
+            }
+        }
+        Arch::A64 => {
+            if let Some((regs, mem)) = ops.split_once('[') {
+                let base = mem.split([',', ']']).next().unwrap_or("").trim();
+                if mem.contains("]!") || mem.contains("], ") {
+                    w.push(base.to_string());
+                }
+                let regs = regs
+                    .split(',')
+                    .map(|r| r.trim().trim_matches(['{', '}']).trim())
+                    .filter(|r| !r.is_empty());
+                if m.starts_with("ld") || m.starts_with("swp") || m.starts_with("cas") {
+                    w.extend(regs.map(str::to_string));
+                } else if m.starts_with("stx") || m.starts_with("stlx") {
+                    w.extend(regs.take(1).map(str::to_string));
+                }
+            } else if !matches!(
+                m,
+                "cmp" | "cmn" | "tst" | "ccmp" | "ccmn" | "fcmp" | "fcmpe" | "fccmp" | "fccmpe"
+            ) && let Some(r) = ops.split(", ").next().filter(|r| !r.is_empty())
+            {
+                w.push(r.to_string());
+            }
+        }
+    }
+    w
+}
+
+/// The address that direct branch `insn` jumps to, from its printed operand (`b 0x40 <h+0x40>`,
+/// `jmp 0x40 <h+0x40>`); `None` if it has a relocation or no address.
+fn branch_addr(insn: &Insn) -> Option<u64> {
+    if insn.reloc.is_some() {
+        return None;
+    }
+    let head = insn.text.split('<').next()?;
+    let w = head.split_whitespace().last()?;
+    u64::from_str_radix(w.trim_end_matches(',').strip_prefix("0x")?, 16).ok()
+}
+
+/// The registers that handler block `b` saves on entry, or `Err(<instruction>)` for a store of
+/// a callee-saved register in a form that the rule does not know. The rule has two parts:
 ///
 /// 1. The leading prologue: from the first instruction, each instruction that
 ///    [`prologue_saves`] accepts adds its count, up to the first instruction that it does not
 ///    accept (an argument spill, a load, a move). A `push` counts 1 here whatever it pushes.
-/// 2. The rest of the entry block, up to the first jump, branch, call, return or trap
-///    ([`classify`]): a stack store of a callee-saved register of the handler ABI (x86-64:
-///    sysv64 on every OS, `dsl::handler!`; [`stack_saved_regs`]) adds 1 for each register
-///    that no earlier instruction of the block stored. So a save after an argument spill
-///    counts (`sub sp; stp x0, x1, [sp]; stp x20, x19, [sp, #0x10]` saves 2), and a later
-///    spill of a register that the prologue saved already does not count again. LLVM saves a
-///    callee-saved register before its first write, so a store of a register that is not
-///    saved yet is a save.
+/// 2. The rest of the entry code, up to the first conditional branch, call, return, trap,
+///    indirect jump or jump out of the handler (a tail jump; [`classify`]). An unconditional
+///    jump to an address in `b` is followed, once for each target, and the scan goes on there
+///    (that code runs on every entry too). A save of a callee-saved register of the handler
+///    ABI ([`callee_saved`]; x86-64: sysv64 on every OS, `dsl::handler!`) adds 1 for each
+///    register that is not saved yet and that no earlier instruction of the scan wrote
+///    ([`written_regs`]). A save is: x86-64 a `push`, or a `mov`/`movq` of the full register
+///    to memory based on `%rsp`, or on `%rbp` after the scan set `%rbp` from `%rsp`; aarch64
+///    an `stp`, `str` or `stur` (pre-index forms too) of x19-x30 or d8-d15 to memory based on
+///    `sp`, or on x29 after the scan set x29 from `sp`. A store of a register that an earlier
+///    instruction wrote is a spill (`mov x19, x1; stp x19, x20, [sp]` saves no new
+///    register): LLVM saves a callee-saved register before its first write.
 ///
-/// The scan ends at the first control transfer, so a save in a later block (shrink-wrapping)
-/// is not an entry save: that path does not run on every dispatch.
-fn entry_saves(arch: Arch, b: &Block) -> usize {
+/// Any other store of a callee-saved register that is not saved or written yet (a part of the
+/// register, another mnemonic, another base) is an error, not a silent 0: the check must learn
+/// the form first. A save in a block that a conditional branch reaches (shrink-wrapping) is not
+/// an entry save: that path does not run on every dispatch.
+fn entry_saves(arch: Arch, b: &Block) -> Result<usize, String> {
     let mut seen = BTreeSet::new();
+    let mut written = BTreeSet::new();
+    let mut fp = false;
     let mut saves = 0;
     let mut leading = true;
-    for i in &b.insns {
-        if leading {
-            if let Some(n) = prologue_saves(arch, &i.text) {
-                saves += n;
-                seen.extend(stack_saved_regs(arch, &i.text));
-                continue;
-            }
+    let mut jumped = BTreeSet::new();
+    let mut at = 0;
+    while let Some(i) = b.insns.get(at) {
+        at += 1;
+        let (m, ops) = mnemonic_ops(&i.text);
+        let lead = if leading {
+            prologue_saves(arch, &i.text)
+        } else {
+            None
+        };
+        if let Some(n) = lead {
+            saves += n;
+        } else {
             leading = false;
+            match classify(arch, i, b) {
+                Kind::Other => {}
+                Kind::Jump(None) => {
+                    match branch_addr(i).and_then(|a| b.insns.iter().position(|x| x.addr == a)) {
+                        Some(t) if jumped.insert(t) => {
+                            at = t;
+                            continue;
+                        }
+                        _ => break,
+                    }
+                }
+                _ => break,
+            }
         }
-        if !matches!(classify(arch, i, b), Kind::Other) {
-            break;
-        }
-        for r in stack_saved_regs(arch, &i.text) {
-            if seen.insert(r) {
+        // The registers that this instruction stores, and if the form is a save.
+        let (srcs, plain): (Vec<&str>, bool) = match arch {
+            Arch::X64 if m.starts_with("push") => (vec![ops.as_str()], true),
+            Arch::X64 => match store_of(arch, &m, &ops) {
+                Some(s) => {
+                    let base = s.base == "rsp" || s.base == "rbp" && fp;
+                    (s.srcs, matches!(m.as_str(), "mov" | "movq") && base)
+                }
+                None => (Vec::new(), false),
+            },
+            Arch::A64 => match store_of(arch, &m, &ops) {
+                Some(s) => {
+                    let base = s.base == "sp" || matches!(s.base, "x29" | "fp") && fp;
+                    (s.srcs, matches!(m.as_str(), "stp" | "str" | "stur") && base)
+                }
+                None => (Vec::new(), false),
+            },
+        };
+        for r in srcs {
+            let Some((reg, full)) = callee_saved(arch, r) else {
+                continue;
+            };
+            if lead.is_some() {
+                // A leading prologue instruction: its count is in `saves` already.
+                seen.insert(reg);
+            } else if seen.contains(&reg) || written.contains(&reg) {
+                // A spill, or a register that is counted already.
+            } else if plain && full {
+                seen.insert(reg);
                 saves += 1;
+            } else {
+                return Err(i.text.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        }
+        // The frame pointer: set from the stack pointer, or a general register again.
+        let sets_fp = match arch {
+            Arch::X64 => {
+                m.starts_with("mov") && ops == "%rsp, %rbp"
+                    || m.starts_with("lea") && ops.ends_with("(%rsp), %rbp")
+            }
+            Arch::A64 => {
+                m == "mov" && ops == "x29, sp" || m == "add" && ops.starts_with("x29, sp,")
+            }
+        };
+        for r in written_regs(arch, &m, &ops) {
+            if let Some((reg, _)) = callee_saved(arch, &r) {
+                if reg == if arch == Arch::X64 { "rbp" } else { "x29" } {
+                    fp = sets_fp;
+                }
+                written.insert(reg);
             }
         }
     }
-    saves
+    Ok(saves)
 }
 
 /// The hot handlers (name not ending in `_cold`) that build a frame on entry (the frame list
@@ -1690,7 +1911,9 @@ fn frame_rows(arch: Arch, handlers: &[Handler], blocks: &[Block]) -> Result<Vec<
             .first()
             .is_some_and(|i| is_frame_setup(arch, &i.text))
         {
-            rows.insert((h.exp.clone(), op.to_string()), entry_saves(arch, b));
+            let saves =
+                entry_saves(arch, b).map_err(|i| format!("unknown save form: {} {i}", h.name))?;
+            rows.insert((h.exp.clone(), op.to_string()), saves);
         }
     }
     Ok(rows
@@ -2370,6 +2593,12 @@ Section
 
     /// The ABI, the handler count and the frame rows of a fixture dump of any target.
     fn dump_rows(name: &str) -> (&'static str, usize, Vec<FrameRow>) {
+        let (abi, handlers, rows) = dump_frames(name);
+        (abi, handlers, rows.unwrap())
+    }
+
+    /// The ABI, the handler count and the `frame_rows` result of a fixture dump of any target.
+    fn dump_frames(name: &str) -> (&'static str, usize, Result<Vec<FrameRow>, String>) {
         let (format, blocks) = parse_disasm(&frames_fixture(name));
         let (arch, abi) = arch_of(&format).unwrap();
         let handlers: Vec<Handler> = blocks
@@ -2386,7 +2615,7 @@ Section
                 })
             })
             .collect();
-        let rows = frame_rows(arch, &handlers, &blocks).unwrap();
+        let rows = frame_rows(arch, &handlers, &blocks);
         (abi, handlers.len(), rows)
     }
 
@@ -2459,6 +2688,65 @@ Section
             assert!(frames_verdict(target, &golden, &before).unwrap().is_empty());
             let (_, _, after) = dump_rows(head);
             assert_eq!(frames_verdict(target, &golden, &after).unwrap(), [more]);
+        }
+    }
+
+    /// Codex M9-P0 r2: a save by `mov` to `%rsp` or to `%rbp` after `mov %rsp, %rbp` (x86-64), by
+    /// `stp` through x29 after `add x29, sp` or by `stur` (aarch64), or in the code after an
+    /// unconditional jump inside the handler, changes the row. So the golden of the build before
+    /// it fails the build after it.
+    #[test]
+    fn frames_save_forms_fail() {
+        for (base, head, target, rows, more) in [
+            (
+                "forms-x64-base.txt",
+                "forms-x64-head.txt",
+                FRAMES_TARGET,
+                [("FpSave", 1), ("JmpSave", 0), ("MovSave", 0)],
+                [
+                    "more saves: sib FpSave 1 -> 2",
+                    "more saves: sib JmpSave 0 -> 1",
+                    "more saves: sib MovSave 0 -> 1",
+                ],
+            ),
+            (
+                "forms-a64-base.txt",
+                "forms-a64-head.txt",
+                "aarch64-unknown-linux-gnu",
+                [("JmpSave", 2), ("StpFp", 2), ("Stur", 2)],
+                [
+                    "more saves: sib JmpSave 2 -> 3",
+                    "more saves: sib StpFp 2 -> 4",
+                    "more saves: sib Stur 2 -> 3",
+                ],
+            ),
+        ] {
+            let (_, _, before) = dump_rows(base);
+            let got: Vec<(&str, usize)> = before.iter().map(|r| (r.op.as_str(), r.saves)).collect();
+            assert_eq!(got, rows);
+            let golden = frames_text(target, &before);
+            assert!(frames_verdict(target, &golden, &before).unwrap().is_empty());
+            let (_, _, after) = dump_rows(head);
+            assert_eq!(frames_verdict(target, &golden, &after).unwrap(), more);
+        }
+    }
+
+    /// M9-P0 r3: a store of a callee-saved register in a form that the rule does not know (here
+    /// a part of the register) fails the check with the handler and the instruction, so the
+    /// check never counts it as 0 in silence.
+    #[test]
+    fn frames_unknown_save_form_fails() {
+        for (name, err) in [
+            (
+                "unknown-x64.txt",
+                "unknown save form: ep9h__sib__tail__Part movl %ebx, 0x8(%rsp)",
+            ),
+            (
+                "unknown-a64.txt",
+                "unknown save form: ep9h__sib__tail__Part str q8, [sp]",
+            ),
+        ] {
+            assert_eq!(dump_frames(name).2, Err(err.to_string()));
         }
     }
 
@@ -2545,7 +2833,7 @@ Section
     // Prologues from the m8-p5 builds of ep9_vm (llvm-objdump 1.99.1 text).
     #[test]
     fn prologue_saves_per_target() {
-        let a64 = |lines: &[&str]| entry_saves(Arch::A64, &block("h", lines));
+        let a64 = |lines: &[&str]| entry_saves(Arch::A64, &block("h", lines)).unwrap();
         // aarch64-apple-darwin CreateObjectLiteral: 12 callee-saved registers.
         assert_eq!(
             a64(&[
@@ -2583,15 +2871,31 @@ Section
                 "str\tx19, [sp, #-0x10]!",
                 "mov\tx19, x0",
                 "str\tx19, [sp, #0x8]",
-                "str\tw20, [sp, #0x4]",
                 "cbz\tx0, 0x40",
                 "stp\tx21, x22, [sp]",
             ]),
             1
         );
+        // A store of a register that an earlier instruction wrote is a spill (M9-P0 r3).
+        assert_eq!(
+            a64(&["sub\tsp, sp, #0x20", "mov\tx21, x0", "str\tx21, [sp]"]),
+            0
+        );
+        // A part of a callee-saved register that is not saved yet is an unknown save form (it
+        // was a silent 0 before M9-P0 r3).
+        let part = ["str\tx19, [sp, #-0x10]!", "str\tw20, [sp, #0x4]"];
+        assert_eq!(
+            entry_saves(Arch::A64, &block("h", &part)),
+            Err("str w20, [sp, #0x4]".to_string())
+        );
+        // An unconditional jump back to a save is followed once (the cycle guard).
+        assert_eq!(
+            a64(&["sub\tsp, sp, #0x20", "str\tx19, [sp]", "b\t0x1 <h+0x1>"]),
+            1
+        );
         // x86-64 handlers are sysv64 on every OS (`dsl::handler!`), so a Win64 dump uses the
         // SysV callee-saved set too: rbx, rbp, r12-r15.
-        let x64 = |lines: &[&str]| entry_saves(Arch::X64, &block("h", lines));
+        let x64 = |lines: &[&str]| entry_saves(Arch::X64, &block("h", lines)).unwrap();
         // x86_64-pc-windows-msvc StaContextSlot: 2 pushes, then the shadow space.
         let sta = [
             "pushq\t%r14",
@@ -2633,5 +2937,22 @@ Section
         assert_eq!(x64(&["movaps\t%xmm6, 0x30(%rsp)"]), 0);
         assert_eq!(x64(&["movaps\t%xmm5, 0x30(%rsp)"]), 0);
         assert_eq!(x64(&["movq\t%rsp, %rbp", "pushq\t%rbx"]), 1);
+        // A store of a register that an earlier instruction wrote is a spill (M9-P0 r3).
+        assert_eq!(
+            x64(&[
+                "subq\t$0x18, %rsp",
+                "movq\t%rdi, %rbx",
+                "movq\t%rbx, 0x8(%rsp)"
+            ]),
+            0
+        );
+        // A store through %rbp counts only after the scan set %rbp from %rsp.
+        assert_eq!(
+            entry_saves(
+                Arch::X64,
+                &block("h", &["subq\t$0x18, %rsp", "movq\t%r12, -0x8(%rbp)"])
+            ),
+            Err("movq %r12, -0x8(%rbp)".to_string())
+        );
     }
 }

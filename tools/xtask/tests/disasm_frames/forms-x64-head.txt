@@ -1,0 +1,35 @@
+frames.o:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000000000 <ep9h__sib__tail__MovSave>:
+       0:      	subq	$0x18, %rsp
+       4:      	movq	%rdi, 0x8(%rsp)
+       9:      	movq	%rbx, 0x10(%rsp)
+       e:      	movzbl	0x2(%rsi), %eax
+      12:      	movq	0x10(%rsp), %rbx
+      17:      	addq	$0x18, %rsp
+      1b:      	jmpq	*(%rdi,%rax,8)
+
+0000000000000000 <ep9h__sib__tail__FpSave>:
+       0:      	pushq	%rbp
+       1:      	movq	%rsp, %rbp
+       4:      	subq	$0x10, %rsp
+       8:      	movq	%rdi, -0x8(%rbp)
+       c:      	movq	%r12, -0x10(%rbp)
+      10:      	movzbl	0x2(%rsi), %eax
+      14:      	movq	-0x10(%rbp), %r12
+      18:      	addq	$0x10, %rsp
+      1c:      	popq	%rbp
+      1d:      	jmpq	*(%rdi,%rax,8)
+
+0000000000000000 <ep9h__sib__tail__JmpSave>:
+       0:      	subq	$0x18, %rsp
+       4:      	jmp	0xa <ep9h__sib__tail__JmpSave+0xa>
+       6:      	ud2
+       8:      	ud2
+       a:      	movq	%r13, 0x8(%rsp)
+       f:      	movzbl	0x2(%rsi), %eax
+      13:      	movq	0x8(%rsp), %r13
+      18:      	addq	$0x18, %rsp
+      1c:      	jmpq	*(%rdi,%rax,8)
