@@ -651,16 +651,16 @@ jobs:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
-      # cargo xtask disasm-check needs llvm-objdump, llvm-nm and llvm-ar from the sysroot.
-      - run: rustup component add llvm-tools
-      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 284
-      # handlers = ep9_vm::internals::THREADED_HANDLERS (opcodes + cold blocks + 3). Change the
-      # number when an opcode or a cold block is added. No --match-loop gate for ep9_vm: its
-      # match loop is the debug expansion, and its release shape is a report (H15 ADR, Rules).
+      - run: rustup component add llvm-tools # disasm-check needs llvm-objdump, llvm-nm and llvm-ar from the sysroot
+      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 284 handlers =
+      # ep9_vm::internals::THREADED_HANDLERS (opcodes + cold blocks + 3). Change the number when an opcode or a cold block is
+      # added. No --match-loop gate for ep9_vm: its match loop is the debug expansion, and its release shape is a report (H15 ADR, Rules).
       - name: ep9_vm handlers
         run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 284
-      # SP-Value, H11: the barrier fast path (rustc --emit asm; no llvm-tools needed).
-      - name: ep9_heap barrier
+      - name: ep9_vm handler frames # plan rule 81, docs/plan/10-quality.md 2026-11-16 note: its own check; a change that is meant updates the golden (--bless) in the same PR
+        if: ${{ !cancelled() }}
+        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --frames crates/ep9_vm/tests/golden/handler-frames.${{ matrix.name }}.txt
+      - name: ep9_heap barrier # SP-Value, H11: the barrier fast path (rustc --emit asm; no llvm-tools needed)
         if: ${{ !cancelled() }}
         run: bash crates/ep9_heap/disasm-barrier.sh
 
