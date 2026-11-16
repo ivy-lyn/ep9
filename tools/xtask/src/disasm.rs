@@ -10,7 +10,7 @@
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
 //! | match loop (`--match-loop`) | For SP-Dispatch, whose 20-opcode x86-64 match loop LLVM threads (`ep9loop__<expansion>__<fn>`). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only. T0 (`ep9_vm`) releases sibling calls on every target (H15 ADR, 2026-10-21), so for T0 the loop line is a report, not a gate. |
-//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. The hot handlers (every handler whose name does not end in `_cold`) that build a frame on entry (the first instruction saves a register or grows the stack), with the registers each one saves on entry, must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). |
+//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. The hot handlers (every handler whose name does not end in `_cold`) that build a frame on entry (the first instruction saves a register or grows the stack), with the registers each one saves on entry (the leading prologue, then each callee-saved register that the entry block stores before its first jump, call or return; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). |
 //! | Mach-O data in code | x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE). The check drops what `llvm-objdump -d` decodes from those bytes, so table data never counts as jumps, calls, returns or stack accesses, and decodes the code after each table again from the table end, so a decode that ran across the table end cannot hide an instruction there. |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
@@ -1611,13 +1611,97 @@ fn prologue_saves(arch: Arch, win64: bool, text: &str) -> Option<usize> {
     }
 }
 
-/// The registers that the entry prologue of `b` saves: the sum of [`prologue_saves`] from the
-/// first instruction up to the first instruction that is not part of a prologue.
+/// The callee-saved registers of the target ABI that one instruction stores to the stack.
+/// x86-64: the register of a `push` (SysV: rbx, rbp, r12-r15; Win64 also rdi, rsi), and on
+/// Win64 the xmm6-xmm15 source of a vector store to `(%rsp)`. aarch64: the x19-x30 and d8-d15
+/// registers of an `stp` or `str` to `[sp ...]` (`fp` and `lr` read as x29 and x30).
+fn stack_saved_regs(arch: Arch, win64: bool, text: &str) -> Vec<String> {
+    let t = text.replace(char::is_whitespace, " ");
+    let (m, ops) = t.split_once(' ').unwrap_or((t.as_str(), ""));
+    let ops = ops.trim();
+    match arch {
+        Arch::X64 => {
+            if m.starts_with("push") {
+                let r = ops.trim_start_matches('%');
+                let sysv = matches!(r, "rbx" | "rbp" | "r12" | "r13" | "r14" | "r15");
+                let w64 = win64 && matches!(r, "rdi" | "rsi");
+                return if sysv || w64 {
+                    vec![r.to_string()]
+                } else {
+                    Vec::new()
+                };
+            }
+            // The Win64 xmm saves: `prologue_saves` accepts exactly these stores.
+            if win64
+                && prologue_saves(arch, win64, text) == Some(1)
+                && let Some((src, _)) = ops.split_once(", ")
+            {
+                return vec![src.trim_start_matches('%').to_string()];
+            }
+            Vec::new()
+        }
+        Arch::A64 => {
+            let Some((regs, mem)) = ops.split_once(", [") else {
+                return Vec::new();
+            };
+            if !matches!(m, "stp" | "str") || !(mem.starts_with("sp]") || mem.starts_with("sp,")) {
+                return Vec::new();
+            }
+            regs.split(", ")
+                .map(|r| match r {
+                    "fp" => "x29",
+                    "lr" => "x30",
+                    r => r,
+                })
+                .filter(|r| match r.as_bytes().first() {
+                    Some(b'x') => r[1..].parse::<u32>().is_ok_and(|n| (19..=30).contains(&n)),
+                    Some(b'd') => r[1..].parse::<u32>().is_ok_and(|n| (8..=15).contains(&n)),
+                    _ => false,
+                })
+                .map(str::to_string)
+                .collect()
+        }
+    }
+}
+
+/// The registers that the entry block of `b` saves on entry. The rule has two parts:
+///
+/// 1. The leading prologue: from the first instruction, each instruction that
+///    [`prologue_saves`] accepts adds its count, up to the first instruction that it does not
+///    accept (an argument spill, a load, a move). A `push` counts 1 here whatever it pushes.
+/// 2. The rest of the entry block, up to the first jump, branch, call, return or trap
+///    ([`classify`]): a stack store of a callee-saved register of the target ABI
+///    ([`stack_saved_regs`]) adds 1 for each register that no earlier instruction of the block
+///    stored. So a save after an argument spill counts (`sub sp; stp x0, x1, [sp]; stp x20,
+///    x19, [sp, #0x10]` saves 2), and a later spill of a register that the prologue saved
+///    already does not count again. LLVM saves a callee-saved register before its first write,
+///    so a store of a register that is not saved yet is a save.
+///
+/// The scan ends at the first control transfer, so a save in a later block (shrink-wrapping)
+/// is not an entry save: that path does not run on every dispatch.
 fn entry_saves(arch: Arch, win64: bool, b: &Block) -> usize {
-    b.insns
-        .iter()
-        .map_while(|i| prologue_saves(arch, win64, &i.text))
-        .sum()
+    let mut seen = BTreeSet::new();
+    let mut saves = 0;
+    let mut leading = true;
+    for i in &b.insns {
+        if leading {
+            if let Some(n) = prologue_saves(arch, win64, &i.text) {
+                saves += n;
+                seen.extend(stack_saved_regs(arch, win64, &i.text));
+                continue;
+            }
+            leading = false;
+        }
+        if !matches!(classify(arch, i, b), Kind::Other) {
+            break;
+        }
+        for r in stack_saved_regs(arch, win64, &i.text) {
+            if seen.insert(r) {
+                saves += 1;
+            }
+        }
+    }
+    saves
 }
 
 /// The hot handlers (name not ending in `_cold`) that build a frame on entry (the frame list
@@ -2312,9 +2396,16 @@ Section
     /// The frame rows of a fixture dump (x86-64 SysV), with its handlers taken from the block
     /// names (nm gives them in the real check).
     fn fixture_rows(name: &str) -> Vec<FrameRow> {
+        let (abi, handlers, rows) = dump_rows(name);
+        assert_eq!(abi, "x64-sysv");
+        assert_eq!(handlers, 4);
+        rows
+    }
+
+    /// The ABI, the handler count and the frame rows of a fixture dump of any target.
+    fn dump_rows(name: &str) -> (&'static str, usize, Vec<FrameRow>) {
         let (format, blocks) = parse_disasm(&frames_fixture(name));
         let (arch, abi) = arch_of(&format).unwrap();
-        assert_eq!(abi, "x64-sysv");
         let handlers: Vec<Handler> = blocks
             .iter()
             .filter_map(|b| {
@@ -2329,8 +2420,8 @@ Section
                 })
             })
             .collect();
-        assert_eq!(handlers.len(), 4);
-        frame_rows(arch, false, &handlers, &blocks).unwrap()
+        let rows = frame_rows(arch, abi == "x64-win64", &handlers, &blocks).unwrap();
+        (abi, handlers.len(), rows)
     }
 
     #[test]
@@ -2377,6 +2468,32 @@ Section
                 "the golden is for x86_64-unknown-linux-gnu, this build is for x86_64-pc-windows-msvc"
             ]
         );
+    }
+
+    /// Codex M9-P0 r1: a callee-saved register save after an argument spill changes the row, so
+    /// the golden of the build before it fails the build after it.
+    #[test]
+    fn frames_save_after_spill_fails() {
+        for (base, head, target, more) in [
+            (
+                "spill-a64-base.txt",
+                "spill-a64-head.txt",
+                "aarch64-unknown-linux-gnu",
+                "more saves: sib StaSpill 0 -> 2",
+            ),
+            (
+                "spill-x64-base.txt",
+                "spill-x64-head.txt",
+                FRAMES_TARGET,
+                "more saves: sib StaSpill 0 -> 1",
+            ),
+        ] {
+            let (_, _, before) = dump_rows(base);
+            let golden = frames_text(target, &before);
+            assert!(frames_verdict(target, &golden, &before).unwrap().is_empty());
+            let (_, _, after) = dump_rows(head);
+            assert_eq!(frames_verdict(target, &golden, &after).unwrap(), [more]);
+        }
     }
 
     #[test]
@@ -2485,14 +2602,26 @@ Section
             1
         );
         assert_eq!(a64(&["pacibsp", "stp\td9, d8, [sp, #-0x20]!"]), 2);
-        // An argument spill is not a save, and it ends the prologue.
+        // An argument spill is not a save, but the saves after it count (Codex M9-P0 r1).
         assert_eq!(
             a64(&[
                 "sub\tsp, sp, #0x20",
                 "stp\tx0, x1, [sp]",
                 "stp\tx20, x19, [sp, #0x10]"
             ]),
-            0
+            2
+        );
+        // A store of a register that the prologue saved is a spill; the scan ends at a branch.
+        assert_eq!(
+            a64(&[
+                "str\tx19, [sp, #-0x10]!",
+                "mov\tx19, x0",
+                "str\tx19, [sp, #0x8]",
+                "str\tw20, [sp, #0x4]",
+                "cbz\tx0, 0x40",
+                "stp\tx21, x22, [sp]",
+            ]),
+            1
         );
         let x64 = |win64, lines: &[&str]| entry_saves(Arch::X64, win64, &block("h", lines));
         // x86_64-pc-windows-msvc StaContextSlot: 2 pushes, then the shadow space.
@@ -2511,7 +2640,28 @@ Section
             "pushq\t%rbx",
         ];
         assert_eq!(x64(true, &xmm), 2);
-        assert_eq!(x64(false, &xmm), 0);
+        // On SysV the xmm6 store ends the leading prologue; the push of rbx after it counts.
+        assert_eq!(x64(false, &xmm), 1);
+        // A push after an argument spill counts; a push of a caller-saved register does not,
+        // and the scan ends at a call.
+        let spill = [
+            "subq\t$0x18, %rsp",
+            "movq\t%rdi, 0x8(%rsp)",
+            "pushq\t%rbx",
+            "pushq\t%rax",
+            "callq\t0x0",
+            "pushq\t%r12",
+        ];
+        assert_eq!(x64(false, &spill), 1);
+        // Win64: rsi is callee-saved, and so is an xmm6 store after the spill.
+        let w64 = [
+            "subq\t$0x48, %rsp",
+            "movq\t%rcx, 0x40(%rsp)",
+            "pushq\t%rsi",
+            "movaps\t%xmm6, 0x20(%rsp)",
+        ];
+        assert_eq!(x64(true, &w64), 2);
+        assert_eq!(x64(false, &w64), 0);
         assert_eq!(x64(true, &["movaps\t%xmm5, 0x30(%rsp)"]), 0);
         assert_eq!(x64(false, &["movq\t%rsp, %rbp", "pushq\t%rbx"]), 1);
     }
