@@ -89,6 +89,8 @@ mod layout9;
 // TypedArray TA-1 (TA-VM): the buffer and view core.
 mod array_buffer;
 mod typed_array;
+// Form D keep-calls (M9-P1 X86-KEEPCALL): after the list, so no cited line above moves.
+mod keepcall;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;

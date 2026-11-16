@@ -383,7 +383,7 @@ fn ctx_store(st: &mut St<'_>, c: u64, i: CSlot, depth: u32) -> Flow {
     let rt = st.rt();
     let v = st.acc;
     match ctx_walk(c, depth) {
-        Some(c) if object::context_set(rt, c, i.0, v) => Flow::Next,
+        Some(c) if super::keepcall::context_set(rt, c, i.0, v) => Flow::Next,
         _ => Flow::Cold,
     }
 }

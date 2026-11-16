@@ -600,3 +600,6 @@ pub(crate) mod scaled {
 
 /// Out-of-line finishes of hot handlers on x86-64 (M8-P1 X86-SHAPE2): `tails.rs`.
 pub(crate) mod tails;
+
+/// Form D keep-calls of the barrier slow path on x86-64 (M9-P1 X86-KEEPCALL): `keepcall.rs`.
+pub(crate) mod keepcall;
