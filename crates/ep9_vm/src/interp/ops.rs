@@ -38,7 +38,7 @@ use crate::interp::dsl::{
     self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
-use crate::interp::{Done, Flow, St};
+use crate::interp::{Done, Flow, St, tails};
 use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
@@ -372,7 +372,7 @@ fn ctx_load(st: &mut St<'_>, c: u64, i: CSlot, depth: u32) -> Flow {
     match ctx_walk(c, depth).and_then(|c| object::context_get(c, i.0)) {
         Some(v) => {
             st.acc = v;
-            Flow::Next
+            tails::star_next(st)
         }
         None => Flow::Cold,
     }
@@ -1067,7 +1067,7 @@ op!(PopContext(st, context: R) {
 });
 op!(LdaCurrentContext(st) {
     st.acc = st.hdr(slot::CONTEXT);
-    Done::Next
+    tails::star_done(st)
 });
 op!(LdaContextSlot(st, context: R, i: CSlot, depth: Depth) {
     let c = st.reg(context);
@@ -1128,7 +1128,7 @@ op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
-            Flow::Next
+            tails::star_next(st)
         }
         None => {
             ic::ic_count!(miss, Load, st.info(), s.0);
