@@ -276,6 +276,7 @@ RK1-RK28 are plan v1 risks R1-R28, re-tagged. RK29-RK44 are new.
 - Amended 2026-10-21 ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), PERF-NOISE amended): a class S result names its CPU model and holds for that model only (§3 row S).
 - Amended 2026-10-21 ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0), CIG-5): Miri runs on every PR until the nightly trigger lands, on `ep9_value` and `ep9_heap` (§5 row Sanitizers).
 - Amended 2026-10-21 (M0 week 4, H36 change log): `xtask fp-check` is built; §5 row FP lint names its scan method (post-LTO object per target, `llvm-nm`, `llvm-objdump`, `cargo tree`, allow-site scan).
+- Amended 2026-11-16 (M9-P0 FRAME-GOLDEN; decisions-log §19.1 rows M9-PLAN-D28 and M9-PRE-FRAMEGOLDEN-KIND): build-plan rule 81 (no new entry register save on a hot x86 handler) has a CI gate. `cargo xtask disasm-check --frames <golden>` is its own check and its own step in the `disasm` job, with one golden per matrix entry (`crates/ep9_vm/tests/golden/handler-frames.<entry>.txt` for macos-arm64, linux-x64, linux-arm64 and windows-x64; the two aarch64 lists differ because Darwin reserves x18). The golden lists the hot handlers (name not ending in `_cold`) that build a frame on entry and the registers each one saves on entry. A new frame, a lost frame or a changed count fails, unless the golden changes in the same PR. The §5 row Tail-call disassembly and its results do not change.
 
 ---
 
