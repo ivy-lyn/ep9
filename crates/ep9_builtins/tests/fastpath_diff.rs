@@ -240,6 +240,18 @@ const INVENTORY: &[FastPath] = &[
                SetKeyedProperty the in-bounds store of an int32 (integer types) or a Number \
                (Float32, Float64)",
     },
+    // ---- M9-P0 STAR-FUSE, a guard form ----
+    FastPath {
+        id: "star-fuse",
+        site: "crates/ep9_vm/src/interp/tails.rs star_lookahead (from the success exits of the \
+               producer bodies in interp/ops.rs: the GetNamedProperty IC hit, the four \
+               context-slot loads, LdaCurrentContext)",
+        off: Off::Guard,
+        what: "the Star lookahead: a producer that is followed by a one-byte-scale Star stores \
+               the accumulator to the Star register and dispatches past the Star; the spec form \
+               writes each value as `T ? value : 0` (T is true), so a Jump comes between the \
+               producer and the Star, and the Star runs in its own handler",
+    },
 ];
 
 /// Prints `typeof this`, the count and the joined arguments (the forwarded callee).
@@ -1527,6 +1539,102 @@ const CASES: &[Case] = &[
              var s = __sab(8, 32), sf = __ta(3, s, 0, 4), sa = __ta(3, s, 0);\n\
              for (var k = 0; k < 3; k++) for (var i = 0; i < 6; i++) { st(sf, i, i * 1000 - 1); r.push(sh(ld(sa, i))); }\n\
              __grow(s, 16); st(sa, 7, -5); r.push(ld(sa, 7), ld(sf, 3), sh(ld(sf, 4)));\n\
+             print(r.join());",
+        ),
+    },
+    // ---- star-fuse (M9-P0 STAR-FUSE) ----
+    // Each spec form writes the value of each fused Star as `T ? value : 0` (T is true): the
+    // producer is followed by a Jump, so it does not fuse, and the Star after the join runs in
+    // its own handler. The breakpoint off-switch (a break byte at the Star pc of a debug copy)
+    // has no JS form in v0 (`debugger` is a no-op, ops.rs); the ep9_vm test
+    // `tests::star_fuse::a_breakpoint_at_the_star_pc_turns_the_lookahead_off` checks it.
+    Case {
+        path: "star-fuse",
+        // The constant loads (2.5, 0, -3, null, false) are no producer of the change; they
+        // stay as a check that their Stars keep the Star handler result.
+        name: "every producer kind of the change, each followed by a Star",
+        src: "var T = true;\n\
+              function mk() { var c1 = 11; const c2 = 's'; return function (o) {\n\
+              var a = o.x; var b = c1; var c = c2; var d = 2.5; var e = 0; var f = -3; var g = null; var h = false;\n\
+              var k = function () { var z = 1; var w = function () { return z; }; var p = c1; var q = c2; return p + q + w(); };\n\
+              return [a, b, c, d, e, f, g, h, k()].join(); }; }\n\
+              var fn = mk(), r = [];\n\
+              for (var i = 0; i < 20; i++) r.push(fn({ x: i }));\n\
+              print(r.join('|'));",
+        spec: Some(
+            "var T = true;\n\
+             function mk() { var c1 = 11; const c2 = 's'; return function (o) {\n\
+             var a = T ? o.x : 0; var b = T ? c1 : 0; var c = T ? c2 : 0; var d = T ? 2.5 : 0; var e = T ? 0 : 1; var f = T ? -3 : 0; var g = T ? null : 0; var h = T ? false : 0;\n\
+             var k = function () { var z = 1; var w = function () { return z; }; var p = T ? c1 : 0; var q = T ? c2 : 0; return p + q + w(); };\n\
+             return [a, b, c, d, e, f, g, h, k()].join(); }; }\n\
+             var fn = mk(), r = [];\n\
+             for (var i = 0; i < 20; i++) r.push(fn({ x: i }));\n\
+             print(r.join('|'));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        // The throw's stack has no columns: the spec form gives `o.x` an expression position of
+        // its own (the conditional arm), the fast form has the statement position there.
+        name: "a throw in the producer (the Star register keeps its value) and the positions of a throw and of an Error after a fused Star",
+        src: "var T = true;\n\
+              function f(o) { var t = 1;\n\
+                try { t =     o.x; } catch (e) { print(t, e.name, e.message, e.stack.replace(/:\\d+\\)/g, ')')); }\n\
+                var u =     o === undefined ? 0 : o.x; debugger;\n\
+                var e2 = new Error('p'); return t + ' ' + u + ' ' + e2.stack; }\n\
+              for (var i = 0; i < 10; i++) print(f({ x: i }));\n\
+              print(f(undefined));\n\
+              try { f(null); } catch (e) { print('no'); }",
+        spec: Some(
+            "var T = true;\n\
+             function f(o) { var t = 1;\n\
+               try { t = T ? o.x : 0; } catch (e) { print(t, e.name, e.message, e.stack.replace(/:\\d+\\)/g, ')')); }\n\
+               var u = T ? o === undefined ? 0 : o.x : 0; debugger;\n\
+               var e2 = new Error('p'); return t + ' ' + u + ' ' + e2.stack; }\n\
+             for (var i = 0; i < 10; i++) print(f({ x: i }));\n\
+             print(f(undefined));\n\
+             try { f(null); } catch (e) { print('no'); }",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "a GC in the producer: a getter that allocates",
+        src: "var T = true;\n\
+              var o = { get x() { var a = []; for (var i = 0; i < 50; i++) a.push({ i: i }); return a.length; } };\n\
+              function f(o) { var s = 0; for (var k = 0; k < 20; k++) { var t = o.x; s += t; } return s; }\n\
+              print(f(o), f({ x: 3 }), f(o));",
+        spec: Some(
+            "var T = true;\n\
+             var o = { get x() { var a = []; for (var i = 0; i < 50; i++) a.push({ i: i }); return a.length; } };\n\
+             function f(o) { var s = 0; for (var k = 0; k < 20; k++) { var t = T ? o.x : 0; s += t; } return s; }\n\
+             print(f(o), f({ x: 3 }), f(o));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "a Star whose register is the producer's input (a parameter and a local)",
+        src: "var T = true;\n\
+              function f(o, c) { o = o.x; c = c.y; var p = { x: c }; p = p.x; return o + c + p; }\n\
+              var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i }, { y: 2 * i }));\n\
+              print(r.join());",
+        spec: Some(
+            "var T = true;\n\
+             function f(o, c) { o = T ? o.x : 0; c = T ? c.y : 0; var p = { x: c }; p = T ? p.x : 0; return o + c + p; }\n\
+             var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i }, { y: 2 * i }));\n\
+             print(r.join());",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "a Star that is a jump target (a jump reaches it from one arm; the other arm falls through)",
+        src: "var T = true;\n\
+              function f(o, i) { var t = (i & 1) ? o.x : o.y; var u = i > 9 ? 0 : -1; return t + u; }\n\
+              var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i, y: -i }, i));\n\
+              print(r.join());",
+        spec: Some(
+            "var T = true;\n\
+             function f(o, i) { var t = (i & 1) ? (T ? o.x : 0) : (T ? o.y : 0); var u = i > 9 ? (T ? 0 : 1) : (T ? -1 : 0); return t + u; }\n\
+             var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i, y: -i }, i));\n\
              print(r.join());",
         ),
     },

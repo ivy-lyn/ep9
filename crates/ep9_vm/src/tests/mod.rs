@@ -89,6 +89,8 @@ mod layout9;
 // TypedArray TA-1 (TA-VM): the buffer and view core.
 mod array_buffer;
 mod typed_array;
+// M9-P0 STAR-FUSE: the Star lookahead of the producer handlers (`interp/tails.rs`).
+mod star_fuse;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;
