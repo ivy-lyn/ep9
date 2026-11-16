@@ -16,7 +16,8 @@
 //!        Ok -> valid; StackOverflow (the nesting cap) -> skip; other error -> invalid
 //!   1. front end (only if the text is a RegularExpressionBody: no line terminator, no
 //!      unescaped / outside a class, no trailing \, not empty, no * first; and not if the
-//!      text has a code point of U+3D000..U+3FC3F, the known front-end difference below)
+//!      text has a code point that the front end and RX1 take differently in a group name,
+//!      the known front-end difference below)
 //!        check_early_errors("/<text>/<flags>") as a sloppy script
 //!        Ok -> valid; Syntax -> invalid; Range (the depth caps) -> no check
 //!        valid != RX1 valid -> panic
@@ -186,15 +187,22 @@
 //! disagreement on them is a crash now.
 //!
 //! Known front-end difference (check 1; DL M9-PRE-FUZZRX-FORM, route FUZZ-RX-M8P5):
-//! - Validity: a code point in U+3D000..U+3FC3F, raw, as `\u{..}` or as a `\uHHHH\uHHHH`
-//!   surrogate-pair escape, for example `/(?<\u{3D000}>a)/u` (the seed
-//!   `named-groups-ucd18-u`). The front end (oxc_regular_expression with `unicode-id-start`
-//!   1.5.0, Unicode 18.0.0) marks these 11,328 code points ID_Start and ID_Continue, so it
-//!   takes such a group name; RX1 is at UCD 17 (DL M9-PRE-UNICODE) and refuses it (regress
-//!   0.12.0 too). Check 1 does not compare a text with such a code point (any `\` counts as an
-//!   escape start: skipping more is safe); checks 2 and 3 still run. The move of RX1 to
-//!   Unicode 18 is in the M2-exit G8 batch.
+//! - Validity: a code point that the front end and RX1 take differently in a group name, raw,
+//!   as `\u{..}`, as a `\uHHHH` escape or as a `\uHHHH\uHHHH` surrogate-pair escape, for
+//!   example `/(?<\u{3D000}>a)/u` (the seed `named-groups-ucd18-u`) and `/(?<\u0558>a)/u`. The
+//!   front end (oxc_regular_expression with `unicode-id-start` 1.5.0, Unicode 18.0.0) and RX1
+//!   (UCD 17, DL M9-PRE-UNICODE) have different ID_Start and ID_Continue tables: at the M9-P1
+//!   merge, 12,860 code points in 38 ranges are ID_Continue for the front end and not for
+//!   RX1 (12,823 in 27 ranges also ID_Start; U+3D000..U+3FC3F is 11,328 of them), and 0 the
+//!   other way. The target does not keep a list: it asks both parsers about each code point
+//!   (`id_differs`), so the skip follows a table change on either side. Check 1 does not
+//!   compare a text with such a code point (any `\` counts as an escape start: skipping more
+//!   is safe); checks 2 and 3 still run. The move of RX1 to Unicode 18 is in the M2-exit G8
+//!   batch.
 #![no_main]
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use ep9_frontend::{CompileError, SourceOpts, Strictness};
 use ep9_regexp::{Backend, ExecResult, Input, Rx0, Rx0Scratch};
@@ -220,10 +228,35 @@ const FIXED_PROBES: [u32; 26] = [
 /// input).
 const MAX_PROBE_SOURCES: usize = 48;
 
-/// The code points that `unicode-id-start` 1.5.0 (Unicode 18.0.0, the front end) marks
-/// ID_Start and ID_Continue and RX1 (UCD 17) does not: the known front-end difference (the
-/// module doc).
-const UCD18_ID: core::ops::RangeInclusive<u32> = 0x3_d000..=0x3_fc3f;
+/// True if the front end and RX1 take `c` differently in a group name: the known front-end
+/// difference (the module doc; their ID_Start and ID_Continue tables are of different
+/// Unicode versions). Each parser is asked about `c` as the first character of a name
+/// (`(?<c>a)`, ID_Start) and as a later one (`(?<ac>a)`, ID_Continue), with `u`. ASCII is
+/// not asked (the two tables agree on it, and `>`, `\` or `/` would break the probe), and a
+/// surrogate is no character. The answer of each code point is kept for the process.
+fn id_differs(c: u32) -> bool {
+    thread_local! {
+        static ANSWERS: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
+    }
+    let Some(ch) = char::from_u32(c).filter(|ch| !ch.is_ascii()) else {
+        return false;
+    };
+    if let Some(known) = ANSWERS.with_borrow(|a| a.get(&c).copied()) {
+        return known;
+    }
+    let differs = [format!("(?<{ch}>a)"), format!("(?<a{ch}>a)")]
+        .iter()
+        .any(|name| {
+            let front = ep9_frontend::check_early_errors(
+                &format!("/{name}/u"),
+                SourceOpts::script(Strictness::Sloppy),
+            )
+            .is_ok();
+            front != ep9_rx1::parse_str(name, Flags::UNICODE).is_ok()
+        });
+    ANSWERS.with_borrow_mut(|a| a.insert(c, differs));
+    differs
+}
 
 /// True if `text` is a RegularExpressionBody (ECMA-262 12.9.5): `/<text>/` lexes as one
 /// regexp literal.
@@ -252,10 +285,11 @@ fn is_literal_body(text: &str) -> bool {
     true
 }
 
-/// True if `text` has a code point of [`UCD18_ID`]: raw, as `\u{..}` or as a `\uHHHH\uHHHH`
-/// surrogate pair. Any `\u` counts, also after a `\\` (skipping more is safe).
-fn has_ucd18_id(text: &str) -> bool {
-    if text.chars().any(|c| UCD18_ID.contains(&u32::from(c))) {
+/// True if `text` has a code point that [`id_differs`]: raw, as `\u{..}`, as a `\uHHHH\uHHHH`
+/// surrogate pair or as one `\uHHHH`. Any `\u` counts, also after a `\\` (skipping more is
+/// safe).
+fn has_id_difference(text: &str) -> bool {
+    if text.chars().any(|c| id_differs(u32::from(c))) {
         return true;
     }
     let units: Vec<u16> = text.encode_utf16().collect();
@@ -268,7 +302,7 @@ fn has_ucd18_id(text: &str) -> bool {
             let value = close
                 .and_then(|j| String::from_utf16(&units[i + 3..j]).ok())
                 .and_then(|digits| u32::from_str_radix(&digits, 16).ok());
-            return value.is_some_and(|c| UCD18_ID.contains(&c));
+            return value.is_some_and(id_differs);
         }
         match (hex4(&units, i + 2), hex4(&units, i + 8)) {
             (Some(lead), Some(trail))
@@ -277,17 +311,18 @@ fn has_ucd18_id(text: &str) -> bool {
                     && surrogate_pair(Some(lead), Some(trail)) =>
             {
                 let c = 0x1_0000 + ((u32::from(lead) - 0xd800) << 10) + (u32::from(trail) - 0xdc00);
-                UCD18_ID.contains(&c)
+                id_differs(c)
             }
+            (Some(unit), _) => id_differs(u32::from(unit)),
             _ => false,
         }
     })
 }
 
-/// Check 1: the front end and RX1 agree on "valid or not". A text with a code point of
-/// [`UCD18_ID`] is not compared (the known front-end difference, the module doc).
+/// Check 1: the front end and RX1 agree on "valid or not". A text with a code point that
+/// [`id_differs`] is not compared (the known front-end difference, the module doc).
 fn check_front_end(text: &str, flags: Flags, rx1_valid: bool) {
-    if !is_literal_body(text) || has_ucd18_id(text) {
+    if !is_literal_body(text) || has_id_difference(text) {
         return;
     }
     let source = format!("/{text}/{}", flags.to_letters());
