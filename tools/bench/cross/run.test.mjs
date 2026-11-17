@@ -32,6 +32,7 @@ import {
   spawnRun,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
+import { readM2Gate } from "./m2gate.mjs";
 import { blockerOf, check as kernelsCheck, FRESH_PATHS, generateKernel, ICU4X_PATHS, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, REGRESS_PATHS, splitVersion, TREE_PATHS, treeState, TRIPLES, withProbe } from "./kernels.mjs";
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
@@ -429,6 +430,64 @@ test("CLI: rotated rounds as planned, 10 rounds, JSON with every sample", (t) =>
   // Neither canary workload ran: the table says so.
   assert.match(readFileSync(f.md, "utf8"), /\| richards \| not in this run \| - \| no reading \|\n\| deltablue \| not in this run/);
   assert.equal(r.stdout, readFileSync(f.md, "utf8"));
+});
+
+test("CLI: both builds in the same paired rounds, one result per build that m2gate.mjs reads (V14-D11)", (t) => {
+  const f = fakeSetup(t);
+  symlinkSync(path.join(DIR, "testdata/fake-engine.sh"), path.join(f.dir, "ep9-jitless"));
+  const log = path.join(f.dir, "calls.log");
+  const outJitless = path.join(f.dir, "out-jitless.json");
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const args = ["--host", f.host(1000), "--ep9-jitless", path.join(f.dir, "ep9-jitless"), "--out-jitless", outJitless];
+  const env = {
+    FAKE_LOG: log,
+    FAKE_ENGINE_BUILD_ep9: "features jit; preset jit",
+    FAKE_BUILD_ep9: `commit ${sha} clean`,
+    FAKE_BUILD_ep9_jitless: `commit ${sha} clean`,
+  };
+  const r = f.run(args, env);
+  assert.equal(r.status, 0, r.stderr);
+  const jit = JSON.parse(readFileSync(f.out, "utf8"));
+  const jitless = JSON.parse(readFileSync(outJitless, "utf8"));
+  // One schedule: the jitless build is a 4th engine of every round, in the rotation.
+  const engines = ["ep9", "ep9-jitless", "qjs", "node-jitless"];
+  const names = { ep9: "ep9", "ep9-jitless": "ep9-jitless", qjs: "qjs", "node-jitless": "node" };
+  const plan = schedule(engines, ["t0-loop", "t0-call", EMPTY], 11);
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  assert.deepEqual(calls.slice(4 * 4), plan.map((p) => `${names[p.engine]} ${p.workload}`));
+  // Each view: its build as ep9, the same comparator samples, rounds and load readings.
+  for (const [res, line, bin] of [[jit, "features jit; preset jit", "ep9"], [jitless, "features none; preset jitless", "ep9-jitless"]]) {
+    assert.equal(res.schema, "ep9-cross/v1");
+    assert.deepEqual(res.engines.map((e) => e.id), ["ep9", "qjs", "node-jitless"]);
+    assert.equal(res.engines[0].engine_build, line);
+    assert.equal(res.engines[0].bin, bin);
+    assert.equal(res.commit.ep9, sha);
+    assert.equal(res.M.rounds, 10);
+    assert.equal(res.M.ratios.length, 4);
+    assert.deepEqual(res.both_builds.round_engines, engines);
+    assert.equal(res.provisional, false, res.provisional_reasons.join("; "));
+  }
+  const others = (res) => res.M.samples.filter((s) => s.engine !== "ep9").map((s) => [s.seq, s.engine, s.ms]);
+  assert.deepEqual(others(jit), others(jitless));
+  assert.deepEqual(jit.load, jitless.load);
+  const ep9Seq = (res) => res.M.samples.filter((s) => s.engine === "ep9").map((s) => s.seq);
+  const want = (id) => plan.flatMap((p, seq) => (p.engine === id ? [seq] : []));
+  assert.deepEqual(ep9Seq(jit), want("ep9"));
+  assert.deepEqual(ep9Seq(jitless), want("ep9-jitless"));
+  // m2gate.mjs reads the two files as the two builds of one host.
+  const g = readM2Gate([{ res: jit, source: "jit" }, { res: jitless, source: "jitless" }]);
+  assert.deepEqual(g.builds.map((b) => b.build), ["jit", "jitless"]);
+  assert.deepEqual(g.missing_builds, []);
+  assert.match(readFileSync(f.md, "utf8"), /The jitless build, in the same paired rounds/);
+  // Two commits are no pair; the options need each other.
+  const other = { ...env, FAKE_BUILD_ep9_jitless: `commit ${"f".repeat(40)} clean` };
+  const r2 = f.run(args, other);
+  assert.equal(r2.status, 2, r2.stderr);
+  assert.match(r2.stderr, /the jitless binary names commit f{40}, the --ep9 binary 0123/);
+  assert.throws(() => parseArgs(["--ep9", "x", "--out-jitless", "y"]), /--out-jitless needs --ep9-jitless/);
+  assert.throws(() => parseArgs(["--ep9", "x", "--engines", "ep9,ep9-jitless,qjs"]), /ep9-jitless needs --ep9-jitless/);
+  assert.throws(() => parseArgs(["--ep9", "x", "--ep9-jitless", "y", "--engines", "ep9,ep9-jitless"]), /at least one other engine/);
+  assert.deepEqual(parseArgs(["--ep9", "x", "--ep9-jitless", "y"]).engines, ["ep9", "ep9-jitless", "qjs", "node-jitless", "d8-jitless", "brimstone"]);
 });
 
 test("splitVersion: the first line and the M5-P0 build line (MC-w17-5)", () => {

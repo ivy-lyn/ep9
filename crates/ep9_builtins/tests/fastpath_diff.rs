@@ -103,20 +103,20 @@ const INVENTORY: &[FastPath] = &[
     // ---- B0, the switch ----
     FastPath {
         id: "args-create",
-        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :247)",
+        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :252)",
         off: Off::Switch,
         what: "a new arguments object takes the realm's cached shape (V10-D11)",
     },
     FastPath {
         id: "clfal-length",
-        site: "crates/ep9_vm/src/arguments.rs:506 (list_length)",
+        site: "crates/ep9_vm/src/arguments.rs:578 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
                place",
     },
     FastPath {
         id: "clfal-elements",
-        site: "crates/ep9_vm/src/arguments.rs:526 (list_element; abi/mod.rs create_list_from_array_like)",
+        site: "crates/ep9_vm/src/arguments.rs:598 (list_element; abi/mod.rs create_list_from_array_like)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads a present Array or arguments element in place \
                (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
@@ -240,17 +240,13 @@ const INVENTORY: &[FastPath] = &[
                SetKeyedProperty the in-bounds store of an int32 (integer types) or a Number \
                (Float32, Float64)",
     },
-    // ---- M9-P0 STAR-FUSE, a guard form ----
+    // ---- OXC-PERF a CHARCODE-FAST, a guard form ----
     FastPath {
-        id: "star-fuse",
-        site: "crates/ep9_vm/src/interp/tails.rs star_lookahead (from the success exits of the \
-               producer bodies in interp/ops.rs: the GetNamedProperty IC hit, the four \
-               context-slot loads, LdaCurrentContext)",
+        id: "char-code-at",
+        site: "crates/ep9_builtins/src/string.rs char_code_at (the int32 fast path)",
         off: Off::Guard,
-        what: "the Star lookahead: a producer that is followed by a one-byte-scale Star stores \
-               the accumulator to the Star register and dispatches past the Star; the spec form \
-               writes each value as `T ? value : 0` (T is true), so a Jump comes between the \
-               producer and the Star, and the Star runs in its own handler",
+        what: "String.prototype.charCodeAt on a String value with an int32 pos: the code unit \
+               or NaN, with no ToString or ToIntegerOrInfinity call",
     },
 ];
 
@@ -478,6 +474,26 @@ const CASES: &[Case] = &[
                 try { y.callee; } catch (e) { print(e.name); }\n\
                 print(Object.prototype.toString.call(x), Object.getPrototypeOf(y) === Object.prototype);\n\
               }",
+        spec: None,
+    },
+    // M9-P2 LEVER-9 (V8 ARGS-CREATE): @@iterator is %Array.prototype.values% (the isolate-wide
+    // root, filled on the first object), on the spec path and the fast path, also after the
+    // `values` property of Array.prototype is replaced; then the elements and a mapped alias.
+    Case {
+        path: "args-create",
+        name: "@@iterator is %Array.prototype.values%",
+        src: "var V = Array.prototype.values;\n\
+              function m(a, b) { return arguments; }\n\
+              function u(a) { 'use strict'; return arguments; }\n\
+              function w(a) { a = 9; return [...arguments].join(); }\n\
+              for (var i = 0; i < 3; i++) {\n\
+                var x = m(1, 2, 3), y = u(4), z = m();\n\
+                print(x[Symbol.iterator] === V, y[Symbol.iterator] === V, z[Symbol.iterator] === x[Symbol.iterator]);\n\
+                print(Object.getOwnPropertySymbols(x).length, JSON.stringify(Object.getOwnPropertyDescriptor(y, Symbol.iterator).enumerable), [...x].join(), [...y].join(), w(5, 6));\n\
+              }\n\
+              Array.prototype.values = function () { return 'other'; };\n\
+              for (var j = 0; j < 2; j++) print(m(7)[Symbol.iterator] === V, u(8)[Symbol.iterator] === V, [...m(1, 2)].join(), w(3));\n\
+              Array.prototype.values = V;",
         spec: None,
     },
     // ---- clfal-length ----
@@ -1187,8 +1203,8 @@ const CASES: &[Case] = &[
     },
     // M7-P4 LEVER-2 (TSPASS2): the IC hit of a prefixed site. `f` loads 300 other names
     // first, so the name constant of `o.x` needs a `Wide` operand, and its loop body is longer
-    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): on aarch64 the
-    // `Wide` fast body runs them (`interp/ops.rs` `prefix_runs_fast`). Mono, falsy, a string
+    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): the `Wide` fast
+    // body (aarch64) or cold block (x86-64, `tails::wide`) runs them. Mono, falsy, a string
     // ToBoolean (cold), a getter (cold), 8 shapes (megamorphic), a prototype load and its change.
     Case {
         path: "ic-named",
@@ -1304,6 +1320,121 @@ const CASES: &[Case] = &[
              for (var j = 0; j < 8; j++) { var o = {}; o['p' + j] = j; o.x = j + 1; r.push(f(o, 3)); }\n\
              var P = { x: 100 }; var c = Object.create(P); r.push(f(c, 2)); P.x = 5; r.push(f(c, 2));\n\
              print(r.join(' '));",
+        ),
+    },
+    // M9-P1 X86-WIDE-FAST: forward jumps of `interp/ops.rs` `prefix_set` at `Wide` scale (each
+    // over 64 `i |= 0`): `||` (JumpIfToBooleanTrue), `&&` and `if` (JumpIfToBooleanFalse), `??`
+    // and `?.` (JumpIfUndefinedOrNull), a default parameter (JumpIfNotUndefined); aarch64 runs
+    // them in the `Wide` fast body, x86-64 in its cold block (`tails::wide`). The spec form passes
+    // strings: no fast ToBoolean case, so the cold body runs after the fast body.
+    Case {
+        path: "t0-operators",
+        name: "prefixed (Wide) forward jumps: ToBoolean, nullish, a default parameter",
+        src: "function g(a, b, c, k, d = (k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, 'D')) {\n\
+              var i = 0;\n\
+              var x = (a || (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 0)) ? 'T' : 'F';\n\
+              var y = (b && (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 1)) ? 'T' : 'F';\n\
+              if (a) { i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0; y += 'i'; }\n\
+              var z = c ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'N');\n\
+              var w = c?.p ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'Q');\n\
+              return [x, y, z, w, d, i, k].join(' ');\n\
+              }\n\
+              print(g(1, 0, null, 0), g(0, 1, 5, 0, 'e'), g(1, 1, undefined, 0), g(0, 0, { p: 'P' }, 0));",
+        spec: Some(
+            "function g(a, b, c, k, d = (k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, 'D')) {\n\
+             var i = 0;\n\
+             var x = (a || (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 0)) ? 'T' : 'F';\n\
+             var y = (b && (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 1)) ? 'T' : 'F';\n\
+             if (a) { i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0; y += 'i'; }\n\
+             var z = c ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'N');\n\
+             var w = c?.p ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'Q');\n\
+             return [x, y, z, w, d, i, k].join(' ');\n\
+             }\n\
+             print(g('1', '', null, 0), g('', '1', 5, 0, 'e'), g('1', '1', undefined, 0), g('', '', { p: 'P' }, 0));",
         ),
     },
     // M7-P5 LEVER-4 (ICWIDE): `keyed_ic::fast_set` stores a missing element of an Array in
@@ -1542,100 +1673,17 @@ const CASES: &[Case] = &[
              print(r.join());",
         ),
     },
-    // ---- star-fuse (M9-P0 STAR-FUSE) ----
-    // Each spec form writes the value of each fused Star as `T ? value : 0` (T is true): the
-    // producer is followed by a Jump, so it does not fuse, and the Star after the join runs in
-    // its own handler. The breakpoint off-switch (a break byte at the Star pc of a debug copy)
-    // has no JS form in v0 (`debugger` is a no-op, ops.rs); the ep9_vm test
-    // `tests::star_fuse::a_breakpoint_at_the_star_pc_turns_the_lookahead_off` checks it.
+    // ---- char-code-at: the spec form passes pos as a string, so ToNumber runs ----
     Case {
-        path: "star-fuse",
-        // The constant loads (2.5, 0, -3, null, false) are no producer of the change; they
-        // stay as a check that their Stars keep the Star handler result.
-        name: "every producer kind of the change, each followed by a Star",
-        src: "var T = true;\n\
-              function mk() { var c1 = 11; const c2 = 's'; return function (o) {\n\
-              var a = o.x; var b = c1; var c = c2; var d = 2.5; var e = 0; var f = -3; var g = null; var h = false;\n\
-              var k = function () { var z = 1; var w = function () { return z; }; var p = c1; var q = c2; return p + q + w(); };\n\
-              return [a, b, c, d, e, f, g, h, k()].join(); }; }\n\
-              var fn = mk(), r = [];\n\
-              for (var i = 0; i < 20; i++) r.push(fn({ x: i }));\n\
-              print(r.join('|'));",
+        path: "char-code-at",
+        name: "a rope, a slice, a two-byte string and the index edges",
+        src: "var x = 'cdefghijklmno', r = 'ab' + x + '\\u0100z', sl = (x + x + x).substring(2, 30), out = [];\n\
+              for (var i = -2; i <= 30; i++) out.push(r.charCodeAt(i), sl.charCodeAt(i), ('xy' + x).charCodeAt(i));\n\
+              print(out.join(), r.charCodeAt(-2147483648), r.charCodeAt(2147483647));",
         spec: Some(
-            "var T = true;\n\
-             function mk() { var c1 = 11; const c2 = 's'; return function (o) {\n\
-             var a = T ? o.x : 0; var b = T ? c1 : 0; var c = T ? c2 : 0; var d = T ? 2.5 : 0; var e = T ? 0 : 1; var f = T ? -3 : 0; var g = T ? null : 0; var h = T ? false : 0;\n\
-             var k = function () { var z = 1; var w = function () { return z; }; var p = T ? c1 : 0; var q = T ? c2 : 0; return p + q + w(); };\n\
-             return [a, b, c, d, e, f, g, h, k()].join(); }; }\n\
-             var fn = mk(), r = [];\n\
-             for (var i = 0; i < 20; i++) r.push(fn({ x: i }));\n\
-             print(r.join('|'));",
-        ),
-    },
-    Case {
-        path: "star-fuse",
-        // The throw's stack has no columns: the spec form gives `o.x` an expression position of
-        // its own (the conditional arm), the fast form has the statement position there.
-        name: "a throw in the producer (the Star register keeps its value) and the positions of a throw and of an Error after a fused Star",
-        src: "var T = true;\n\
-              function f(o) { var t = 1;\n\
-                try { t =     o.x; } catch (e) { print(t, e.name, e.message, e.stack.replace(/:\\d+\\)/g, ')')); }\n\
-                var u =     o === undefined ? 0 : o.x; debugger;\n\
-                var e2 = new Error('p'); return t + ' ' + u + ' ' + e2.stack; }\n\
-              for (var i = 0; i < 10; i++) print(f({ x: i }));\n\
-              print(f(undefined));\n\
-              try { f(null); } catch (e) { print('no'); }",
-        spec: Some(
-            "var T = true;\n\
-             function f(o) { var t = 1;\n\
-               try { t = T ? o.x : 0; } catch (e) { print(t, e.name, e.message, e.stack.replace(/:\\d+\\)/g, ')')); }\n\
-               var u = T ? o === undefined ? 0 : o.x : 0; debugger;\n\
-               var e2 = new Error('p'); return t + ' ' + u + ' ' + e2.stack; }\n\
-             for (var i = 0; i < 10; i++) print(f({ x: i }));\n\
-             print(f(undefined));\n\
-             try { f(null); } catch (e) { print('no'); }",
-        ),
-    },
-    Case {
-        path: "star-fuse",
-        name: "a GC in the producer: a getter that allocates",
-        src: "var T = true;\n\
-              var o = { get x() { var a = []; for (var i = 0; i < 50; i++) a.push({ i: i }); return a.length; } };\n\
-              function f(o) { var s = 0; for (var k = 0; k < 20; k++) { var t = o.x; s += t; } return s; }\n\
-              print(f(o), f({ x: 3 }), f(o));",
-        spec: Some(
-            "var T = true;\n\
-             var o = { get x() { var a = []; for (var i = 0; i < 50; i++) a.push({ i: i }); return a.length; } };\n\
-             function f(o) { var s = 0; for (var k = 0; k < 20; k++) { var t = T ? o.x : 0; s += t; } return s; }\n\
-             print(f(o), f({ x: 3 }), f(o));",
-        ),
-    },
-    Case {
-        path: "star-fuse",
-        name: "a Star whose register is the producer's input (a parameter and a local)",
-        src: "var T = true;\n\
-              function f(o, c) { o = o.x; c = c.y; var p = { x: c }; p = p.x; return o + c + p; }\n\
-              var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i }, { y: 2 * i }));\n\
-              print(r.join());",
-        spec: Some(
-            "var T = true;\n\
-             function f(o, c) { o = T ? o.x : 0; c = T ? c.y : 0; var p = { x: c }; p = T ? p.x : 0; return o + c + p; }\n\
-             var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i }, { y: 2 * i }));\n\
-             print(r.join());",
-        ),
-    },
-    Case {
-        path: "star-fuse",
-        name: "a Star that is a jump target (a jump reaches it from one arm; the other arm falls through)",
-        src: "var T = true;\n\
-              function f(o, i) { var t = (i & 1) ? o.x : o.y; var u = i > 9 ? 0 : -1; return t + u; }\n\
-              var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i, y: -i }, i));\n\
-              print(r.join());",
-        spec: Some(
-            "var T = true;\n\
-             function f(o, i) { var t = (i & 1) ? (T ? o.x : 0) : (T ? o.y : 0); var u = i > 9 ? (T ? 0 : 1) : (T ? -1 : 0); return t + u; }\n\
-             var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i, y: -i }, i));\n\
-             print(r.join());",
+            "var x = 'cdefghijklmno', r = 'ab' + x + '\\u0100z', sl = (x + x + x).substring(2, 30), out = [];\n\
+             for (var i = -2; i <= 30; i++) out.push(r.charCodeAt('' + i), sl.charCodeAt('' + i), ('xy' + x).charCodeAt('' + i));\n\
+             print(out.join(), r.charCodeAt('-2147483648'), r.charCodeAt('2147483647'));",
         ),
     },
 ];

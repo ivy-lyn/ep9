@@ -1,0 +1,36 @@
+frames.o:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000000000 <ep9h__sib__tail__StpFp>:
+       0:      	sub	sp, sp, #0x30
+       4:      	stp	x29, x30, [sp, #0x20]
+       8:      	add	x29, sp, #0x20
+       c:      	stur	x0, [x29, #-0x8]
+      10:      	stp	x20, x19, [x29, #-0x20]
+      14:      	ldrb	w16, [x1, #0x2]
+      18:      	ldp	x20, x19, [sp]
+      1c:      	ldp	x29, x30, [sp, #0x20]
+      20:      	add	sp, sp, #0x30
+      24:      	br	x16
+
+0000000000000000 <ep9h__sib__tail__Stur>:
+       0:      	stp	x29, x30, [sp, #-0x20]!
+       4:      	mov	x29, sp
+       8:      	str	x0, [sp, #0x10]
+       c:      	stur	x21, [x29, #0x18]
+      10:      	ldrb	w16, [x1, #0x2]
+      14:      	ldr	x21, [sp, #0x18]
+      18:      	ldp	x29, x30, [sp], #0x20
+      1c:      	br	x16
+
+0000000000000000 <ep9h__sib__tail__JmpSave>:
+       0:      	stp	x29, x30, [sp, #-0x20]!
+       4:      	mov	x29, sp
+       8:      	b	0x10 <ep9h__sib__tail__JmpSave+0x10>
+       c:      	brk	#0x1
+      10:      	str	x19, [sp, #0x10]
+      14:      	ldrb	w16, [x1, #0x2]
+      18:      	ldr	x19, [sp, #0x10]
+      1c:      	ldp	x29, x30, [sp], #0x20
+      20:      	br	x16

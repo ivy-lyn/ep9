@@ -17,6 +17,8 @@
 //!                -> its versions are Versions::current()
 //!                -> check(bytes, this host with the seed's target pair) == Load
 //!                -> the bytecode section decodes and verifies; the function table decodes
+//!                -> each table digest is this build's Cx::unit_function_digest of its
+//!                   function (in `stale`, Point has the digest of leaf)
 //! ```
 //!
 //! What each unit is for: `objects` three functions with jitless, jit and hybrid variants and
@@ -327,6 +329,8 @@ fn unit_loader_seeds_match_this_build() {
         "the seed files differ from the writer's list; {bless}"
     );
     let current = Versions::current();
+    let mut iso = Isolate::new_with(IsolateConfig::default(), ExecOptions::jitless())
+        .expect("the jitless preset runs");
     for (name, _) in &seeds {
         let seed = std::fs::read(dir.join(name)).unwrap();
         assert!(seed.len() <= MAX_LEN, "{name}: {} bytes", seed.len());
@@ -357,9 +361,41 @@ fn unit_loader_seeds_match_this_build() {
         );
         let code = unit_section(&bytes, SectionKind::Bytecode).expect("a bytecode section");
         let unit = ep9_bytecode::decode_unit(code).expect("the bytecode decodes");
-        ep9_bytecode::verify(unit).expect("the bytecode verifies");
+        let vu = ep9_bytecode::verify(unit).expect("the bytecode verifies");
         let text = unit_section(&bytes, SectionKind::Text).unwrap_or(&[]);
         let rodata = unit_section(&bytes, SectionKind::Rodata).unwrap_or(&[]);
-        functions::decode(rodata, text.len()).expect("the function table decodes");
+        let (entries, _) =
+            functions::decode(rodata, text.len()).expect("the function table decodes");
+        // Each entry's digest is this build's digest of its function (the stale unit: `Point`
+        // has the digest of `leaf`). A field added to `Function` with no version change moves
+        // every digest: the loader then runs only bytecode, and the seeds lose the variant
+        // paths.
+        let mut digest = |f: u32| {
+            iso.with_cx(|cx| Ok(cx.unit_function_digest(&vu, f)))
+                .expect("no throw")
+                .unwrap_or_else(|| panic!("{name}: no function {f}"))
+        };
+        // (Point, leaf) of a stale seed: the entry of Point has the digest of leaf.
+        let swap = name.starts_with("stale-").then(|| {
+            let (point, leaf) = (index(vu.unit(), "Point"), index(vu.unit(), "leaf"));
+            assert_ne!(
+                digest(point),
+                digest(leaf),
+                "{name}: Point and leaf have one digest, so the stale entry is not stale"
+            );
+            (point, leaf)
+        });
+        for e in &entries {
+            let from = match swap {
+                Some((point, leaf)) if e.function == point => leaf,
+                _ => e.function,
+            };
+            assert_eq!(
+                e.digest,
+                digest(from),
+                "{name}: the digest of function {} is not this build's digest; {bless}",
+                e.function
+            );
+        }
     }
 }

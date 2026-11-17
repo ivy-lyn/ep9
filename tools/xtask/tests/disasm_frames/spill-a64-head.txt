@@ -1,0 +1,12 @@
+frames.o:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000000000 <ep9h__sib__tail__StaSpill>:
+       0:      	sub	sp, sp, #0x20
+       4:      	stp	x0, x1, [sp]
+       8:      	stp	x20, x19, [sp, #0x10]
+       c:      	ldrb	w16, [x1, #0x2]
+      10:      	ldp	x20, x19, [sp, #0x10]
+      14:      	add	sp, sp, #0x20
+      18:      	br	x16

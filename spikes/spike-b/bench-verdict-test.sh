@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # The verdict logic of bench.sh (decision M2-P3-SPIKEB-VERDICT), without the bench: SB_BIN is a
 # fake spike-b that prints a given SPIKE-B-RESULT line, SB_SPD_BIN a fake sp-dispatch that
-# prints a given CPU, SB_TAU_JSON a written bench.json, and SB_HOST_FILE a host file of this
-# machine with a load guard that always passes (no wait). So each case changes one input and
-# checks the VERDICT line and the labels. gate.sh structural runs it (and gate.sh b, when
-# structural did not). The B cases (P4-PLACEMENT-B) run bench.sh with SB_PLACEMENT=b: the
-# same verdict rules, gate config B, and a result line for another gate config is invalid.
+# prints a given CPU, SB_TAU_JSON a written bench.json, SB_HOST_FILE a host file of this
+# machine with a load guard that always passes (no wait), and SB_LOAD_FAKE a fixed load
+# reading (no real load sample: on Windows each one is a 60-s typeperf run, 2 per case). So
+# each case changes one input and checks the VERDICT line and the labels. gate.sh structural
+# runs it (and gate.sh b, when structural did not). The B cases (P4-PLACEMENT-B) run bench.sh
+# with SB_PLACEMENT=b: the same verdict rules, gate config B, and a result line for another
+# gate config is invalid.
 #
 #   bench-verdict-test.sh [bench.sh]     (default: the bench.sh next to this file)
 #
@@ -65,7 +67,7 @@ failed=0
 run_bench() {
   FAKE_RESULT="$1" SB_BIN="$tmp/spike-b" SB_SPD_BIN="${spd_bin:-$tmp/sp-dispatch}" \
     SB_TAU_JSON="$tmp/bench.json" SB_HOST_FILE="$tmp/host.toml" SB_SETTLE_S=0 SB_WAIT_MIN=0 \
-    SB_AFTER_S=0 SB_GUARD=1 SB_COMMIT=test SB_PLACEMENT="${placement:-a}" bash "$bench" 2>&1
+    SB_AFTER_S=0 SB_GUARD=1 SB_LOAD_FAKE=0 SB_COMMIT=test SB_PLACEMENT="${placement:-a}" bash "$bench" 2>&1
 }
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; failed=1; }
@@ -153,6 +155,14 @@ pass_b="pass median=10.000 lo=9.000 hi=11.000 rounds=15 k=5 tau=0.300000 gate=B 
 check "B: every input is the protocol's" "$pass_b" "pass (bench verdict: pass)"
 out_b="$(run_bench "$pass_b")"
 if grep -qx "gate config: B" <<<"$out_b"; then ok "B: prints 'gate config: B'"; else bad "B: no 'gate config: B' line"; fi
+# Both guard lines read SB_LOAD_FAKE: a test that sampled the real load would take 2 min a
+# case on Windows.
+if [ "$(grep -cE '^load guard (before|after): PASS .* \(fake load: SB_LOAD_FAKE\)$' <<<"$out_b")" = 2 ]; then
+  ok "the load guard reads SB_LOAD_FAKE (no load sample)"
+else
+  bad "the load guard did not read SB_LOAD_FAKE"
+  grep '^load guard ' <<<"$out_b" | sed 's/^/     | /'
+fi
 check "B: a fail" "fail median=20.000 lo=19.000 hi=21.000 rounds=15 k=5 tau=0.300000 gate=B labels=-" \
   "fail (bench verdict: fail)"
 check "B: void before provisional" \

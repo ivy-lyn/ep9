@@ -1,11 +1,12 @@
-# The hot ep9_vm handlers (name not ending in `_cold`) that build a frame on entry, and the
-# registers each one saves on entry: one `<expansion> <handler> <saves>` row per handler.
+# The hot ep9_vm handlers (name not ending in `_cold`; on x86-64 also `Wide_cold` and
+# `ExtraWide_cold`, disasm.rs HOT_COLD) that build a frame or save a callee-saved register on
+# entry, and the callee-saved registers each one saves: one `<expansion> <handler> <saves>` row.
 # Checked by `cargo xtask disasm-check --frames <this file>` in the CI disasm job (plan rule 81:
 # no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). A new row,
 # a lost row or a changed count fails. A change that is meant updates this file in the same PR:
 # run the same command with `--bless`, or copy the rows that the CI log prints after `frame`.
 target x86_64-unknown-linux-gnu
-ics BadOpcode 1
+ics BadOpcode 0
 ics CallAnyReceiver 4
 ics CallProperty 4
 ics CallProperty0 1
@@ -22,11 +23,11 @@ ics CreateObjectLiteral 6
 ics DefineNamedOwnProperty 6
 ics SetKeyedProperty 6
 ics SetNamedProperty 6
-ics StaContextSlot 5
-ics StaCurrentContextSlot 5
+ics StaContextSlot 1
+ics StaCurrentContextSlot 0
 ics StaGlobal 5
-ics TestInstanceOf 5
-sib BadOpcode 1
+ics TestInstanceOf 4
+sib BadOpcode 0
 sib CallAnyReceiver 4
 sib CallProperty 4
 sib CallProperty0 1
@@ -41,9 +42,11 @@ sib CreateArrayLiteral 6
 sib CreateEmptyArrayLiteral 6
 sib CreateObjectLiteral 6
 sib DefineNamedOwnProperty 6
+sib ExtraWide_cold 1
 sib SetKeyedProperty 6
 sib SetNamedProperty 6
-sib StaContextSlot 5
-sib StaCurrentContextSlot 5
+sib StaContextSlot 1
+sib StaCurrentContextSlot 0
 sib StaGlobal 5
-sib TestInstanceOf 5
+sib TestInstanceOf 4
+sib Wide_cold 1

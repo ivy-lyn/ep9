@@ -7,6 +7,16 @@
 //
 // A host file gives the CPU, the cores, the OS and the idle baseline (median 1-minute load over 10
 // idle minutes; `node tools/bench/cross/idle.mjs` measures it).
+//
+// Load source (plan v14 section 4.1 (5)). On Linux and macOS the load is the 1-minute load of
+// os.loadavg() (source "loadavg"). On Windows os.loadavg() is always 0, so a guard on it always
+// passes: the Windows source is "typeperf", the counters "\System\Processor Queue Length" and
+// "\Processor(_Total)\% Processor Time" sampled once a second for 60 s; the load is the mean
+// queue length plus the mean busy share times the logical CPUs (the threads that run or wait to
+// run, the unit of the 1-minute load). The limit is the same: idle baseline + 0.5, with the idle
+// baseline measured from the same source. A host file may name its source (`load_source`); it
+// must be the source of this host. EP9_LOAD_SOURCE=loadavg on Windows keeps the old reading, and
+// then every check fails with "no load guard" (a run is provisional, m2-exit reads it as OPEN).
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -14,6 +24,47 @@ import os from "node:os";
 
 /** Load guard margin above the idle baseline (10-quality section 3). */
 export const LOAD_MARGIN = 0.5;
+
+/** The load sources (see "Load source" above). */
+export const LOAD_SOURCES = ["loadavg", "typeperf"];
+/** The typeperf counters of the Windows load source, and its sample length in seconds. */
+export const TYPEPERF_COUNTERS = ["\\System\\Processor Queue Length", "\\Processor(_Total)\\% Processor Time"];
+export const TYPEPERF_SECONDS = 60;
+
+/** The load source of a platform: "typeperf" on Windows, else "loadavg" (env EP9_LOAD_SOURCE wins). */
+export function loadSource(platform = process.platform, env = process.env) {
+  const forced = env.EP9_LOAD_SOURCE;
+  if (forced) {
+    if (!LOAD_SOURCES.includes(forced)) throw new Error(`EP9_LOAD_SOURCE=${forced}: not one of ${LOAD_SOURCES.join(", ")}`);
+    return forced;
+  }
+  return platform === "win32" ? "typeperf" : "loadavg";
+}
+
+/**
+ * The means of a typeperf CSV (`typeperf <queue> <busy> -si 1 -sc N`): a header line, then one
+ * `"<time>","<queue>","<busy %>"` line per sample. Lines with an empty or non-numeric value (the
+ * first busy sample can be blank) are skipped. null when no sample has both values.
+ */
+export function parseTypeperf(text) {
+  const rows = [];
+  for (const line of (text ?? "").split(/\r?\n/)) {
+    const cells = [...line.matchAll(/"([^"]*)"/g)].map((m) => m[1].trim());
+    if (cells.length !== 3) continue;
+    const q = Number(cells[1]);
+    const b = Number(cells[2]);
+    if (cells[1] === "" || cells[2] === "" || !Number.isFinite(q) || !Number.isFinite(b)) continue;
+    rows.push([q, b]);
+  }
+  if (!rows.length) return null;
+  const mean = (i) => rows.reduce((a, r) => a + r[i], 0) / rows.length;
+  return { samples: rows.length, queue: mean(0), busy_pct: mean(1) };
+}
+
+/** The Windows load of a typeperf reading: mean queue + mean busy share x logical CPUs. */
+export function typeperfLoad(reading, cpus) {
+  return Number((reading.queue + (reading.busy_pct / 100) * cpus).toFixed(2));
+}
 
 /** The CPU model: /proc/cpuinfo "model name" (x86-64 Linux), else lscpu "Model name" (arm64
  * Linux has no such line in /proc/cpuinfo), else what node reports (macOS, Windows). */
@@ -51,8 +102,21 @@ export function thpMode({ file = THP_FILE, platform = process.platform } = {}) {
   return m.length === 1 ? m[0][1] : null;
 }
 
-export function load1() {
-  return Number(os.loadavg()[0].toFixed(2));
+/**
+ * The load of this host by its load source (see "Load source" above): the 1-minute load, or on
+ * Windows a 60-s typeperf reading (this call then takes 60 s). null when typeperf gives no
+ * reading. `deps` (platform, env, run, cpus, seconds) are injectable for tests.
+ */
+export function load1(deps = {}) {
+  const { platform = process.platform, env = process.env, run = spawnSync, cpus = os.cpus().length, seconds = TYPEPERF_SECONDS } = deps;
+  if (loadSource(platform, env) !== "typeperf") return Number(os.loadavg()[0].toFixed(2));
+  const r = run("typeperf", [...TYPEPERF_COUNTERS, "-si", "1", "-sc", String(seconds)], {
+    encoding: "utf8",
+    timeout: (seconds + 60) * 1000,
+    windowsHide: true,
+  });
+  const p = parseTypeperf(r.stdout);
+  return p ? typeperfLoad(p, cpus) : null;
 }
 
 export function hostInfo() {
@@ -61,6 +125,7 @@ export function hostInfo() {
     cpus: os.cpus().length,
     platform: `${process.platform}-${process.arch}`,
     os: `${os.type()} ${os.release()}`,
+    load_source: loadSource(),
     loadavg: os.loadavg().map((x) => Number(x.toFixed(2))),
     node: process.version,
     date: new Date().toISOString(),
@@ -116,41 +181,58 @@ export function readHostFile(file) {
   }
   const idle = h.idle_baseline_load1;
   if (idle !== undefined && typeof idle !== "number") throw new Error(`${file}: idle_baseline_load1 must be a number`);
+  // The idle baseline is a reading of one load source: a host file that names another source
+  // than this host's cannot set its limit.
+  if (h.load_source !== undefined && !LOAD_SOURCES.includes(h.load_source)) {
+    throw new Error(`${file}: load_source must be one of ${LOAD_SOURCES.join(", ")}`);
+  }
   return h;
 }
 
-/** One load check: pass when the 1-minute load is at most the idle baseline + 0.5. */
-export function loadCheck(load, idleBaseline) {
+/**
+ * One load check: pass when the load (of `source`, this host's by default) is at most the idle
+ * baseline + 0.5. On Windows the source "loadavg" is no load guard (os.loadavg() is always 0
+ * there): the check fails. A load that is not a number (no typeperf reading) fails too.
+ */
+export function loadCheck(load, idleBaseline, source = loadSource(), platform = process.platform) {
   if (typeof idleBaseline !== "number") {
-    return { load1: load, limit: null, pass: false, why: "no idle baseline in the host file" };
+    return { load1: load, limit: null, pass: false, why: "no idle baseline in the host file", source };
   }
   const limit = Number((idleBaseline + LOAD_MARGIN).toFixed(2));
-  return { load1: load, limit, pass: load <= limit, why: load <= limit ? null : `load ${load} > ${limit}` };
+  if (platform === "win32" && source === "loadavg") {
+    return { load1: load, limit, pass: false, why: "no load guard: the load source loadavg is always 0 on Windows", source };
+  }
+  if (typeof load !== "number" || !Number.isFinite(load)) {
+    return { load1: null, limit, pass: false, why: `no load reading (${source})`, source };
+  }
+  return { load1: load, limit, pass: load <= limit, why: load <= limit ? null : `load ${load} > ${limit}`, source };
 }
 
 /**
  * The check before a run: wait `settleS` with no benchmark process, then poll every `pollS`
  * until the load passes or `waitS` has gone by. Returns the last check plus how long it waited.
- * `deps` (loadavg, sleep) are injectable for tests.
+ * `deps` (load, sleep) are injectable for tests; `source` and `platform` too (this host's by
+ * default).
  */
-export async function guardBefore({ idleBaseline, settleS, waitS, pollS = 30 }, deps) {
+export async function guardBefore({ idleBaseline, settleS, waitS, pollS = 30, source = loadSource(), platform = process.platform }, deps) {
   const { load = load1, sleep } = deps;
   await sleep(settleS);
   let waited = 0;
-  let c = loadCheck(load(), idleBaseline);
-  // Without a baseline no wait can make it pass.
-  while (!c.pass && c.limit !== null && waited < waitS) {
+  let c = loadCheck(load(), idleBaseline, source, platform);
+  // Without a baseline, or with no load guard (loadavg on Windows), no wait can make it pass.
+  const hopeless = (x) => x.limit === null || (platform === "win32" && source === "loadavg");
+  while (!c.pass && !hopeless(c) && waited < waitS) {
     const step = Math.min(pollS, waitS - waited);
     await sleep(step);
     waited += step;
-    c = loadCheck(load(), idleBaseline);
+    c = loadCheck(load(), idleBaseline, source, platform);
   }
   return { ...c, settle_s: settleS, waited_s: waited };
 }
 
 /** The check after a run: wait `afterS`, then one check. */
-export async function guardAfter({ idleBaseline, afterS }, deps) {
+export async function guardAfter({ idleBaseline, afterS, source = loadSource(), platform = process.platform }, deps) {
   const { load = load1, sleep } = deps;
   await sleep(afterS);
-  return { ...loadCheck(load(), idleBaseline), after_s: afterS };
+  return { ...loadCheck(load(), idleBaseline, source, platform), after_s: afterS };
 }

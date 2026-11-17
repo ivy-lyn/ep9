@@ -1316,8 +1316,8 @@ macro_rules! expand_scaled {
         /// The cold blocks of `step::<S>`, out of line, so that the rare cold paths (runtime
         /// calls, lookups, IC misses) do not shape the register use of the fast arms. Same
         /// contract as `step::<S>`; called only after the opcode's fast body returned
-        /// `Flow::Cold`: here, or in the `Wide`/`ExtraWide` fast body for the opcodes it runs
-        /// itself (`St::scaled_cold`, M7-P4 TSPASS2).
+        /// `Flow::Cold`: here, or for `ops::prefix_set` in the `Wide`/`ExtraWide` fast body on
+        /// aarch64 or its cold block on x86-64 (`tails::wide`) (`St::scaled_cold`, M7-P4 TSPASS2).
         ///
         /// # Safety
         /// As for `step::<S>`.

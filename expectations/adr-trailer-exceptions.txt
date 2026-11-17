@@ -48,3 +48,10 @@ c9277d2c47617393e20cf65903a41f055ad8b4a3 none M7-P0-MAIN-MERGE
 # (no tree change; main's tree is 500df6b6, already here).
 b30e76b0db4c8931467513fbc3148c71b68710fc none M8-P0-MAIN-MERGE
 164577239308cbc73c958c7788d8d94d717e7afd none M8-P0-MAIN-MERGE
+#
+# M9-P0: PR #10 (m2/m8) was squash-merged into main by GitHub (the async merge API, squash).
+# The squash commit 48a6bb2 copies the tree of m2/m8 3a4d2421, whose commits carry their own
+# trailers; the squash message has none. 4a7e3fb merges main into m2m9/p0-merge with `-s ours`
+# (no tree change; main's tree is 3a4d2421, already here).
+48a6bb26d0ae5c7ef6b9bc146dca9eef4e03097d none M9-P0-MAIN-MERGE
+4a7e3fb857ec9845a05bbbfe591c430283788464 none M9-P0-MAIN-MERGE

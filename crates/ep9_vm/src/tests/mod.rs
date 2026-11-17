@@ -89,8 +89,11 @@ mod layout9;
 // TypedArray TA-1 (TA-VM): the buffer and view core.
 mod array_buffer;
 mod typed_array;
-// M9-P0 STAR-FUSE: the Star lookahead of the producer handlers (`interp/tails.rs`).
-mod star_fuse;
+// Form D keep-calls (M9-P1 X86-KEEPCALL): after the list, so no cited line above moves.
+mod keepcall;
+// FORIN-DEDUPE (oxc-perf b): the for-in key list and its seen test; after the list, so no
+// cited line above moves.
+mod for_in;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;

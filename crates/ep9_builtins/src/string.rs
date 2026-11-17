@@ -599,6 +599,20 @@ fn char_code_at<'s>(
     args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    // Fast path (FASTDIFF row `char-code-at`): a String value `this` and an int32 `pos`.
+    // ToString(this) is `this` and ToIntegerOrInfinity(pos) is `pos`, so steps 1-3 run no
+    // user code and the result is the same. Every other shape takes the spec steps below.
+    if let (Some(s), Some(position)) = (this.as_string(), args.get(0).as_int32()) {
+        let size = cx.string_len(s);
+        if position < 0 || position as usize >= size {
+            return Ok(Local::number(f64::NAN));
+        }
+        let s = cx.flatten(s)?;
+        let unit = cx
+            .code_unit_at(s, position as usize)
+            .expect("position < size");
+        return Ok(Local::int32(i32::from(unit)));
+    }
     // 1. Let O be ? RequireObjectCoercible(this value).
     if this.is_undefined_or_null() {
         return Err(cx.throw_type_error("String.prototype.charCodeAt called on null or undefined"));

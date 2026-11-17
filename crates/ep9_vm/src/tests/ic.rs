@@ -1353,7 +1353,8 @@ fn scaled_runs() -> [u64; 2] {
 /// interrupt poll) run once each in `step_cold`, with the fast body not run again: a
 /// megamorphic load through the stub cache, a getter-free string value and a budget that runs
 /// out mid-loop all give the generic answer. Where `PREFIXED_FAST` is false (x86-64) all 4 run
-/// in `step`, as at the base: 4 runs per loop turn and 1 for the exit jump.
+/// in the `Wide` cold block through `interp::tails::wide` (M9-P1 X86-WIDE-FAST; before, in
+/// `step`): 4 runs of it per loop turn and 1 for the exit jump, and still none of `step`.
 #[test]
 fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
     each(|c| {
@@ -1376,9 +1377,12 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
             "the prefixed instructions of f0"
         );
         let f = iso.global_raw("f0").unwrap();
-        // The runs of `step` for `turns` loop turns: none, or (not in the fast body) the 4
-        // prefixed instructions of each turn and the JumpIfFalse that exits.
-        let whole = |turns: u64| {
+        // The runs of `step` for `turns` loop turns: none on every target (before M9-P1, on
+        // x86-64: the 4 prefixed instructions of each turn and the JumpIfFalse that exits).
+        let whole = |_turns: u64| 0;
+        // The runs of `interp::tails::wide` for `turns` loop turns: none, or (not in the fast
+        // body) the 4 prefixed instructions of each turn and the JumpIfFalse that exits.
+        let helper = |turns: u64| {
             if crate::interp::ops::PREFIXED_FAST {
                 0
             } else {
@@ -1387,11 +1391,14 @@ fn prefixed_loads_and_jumps_run_in_the_wide_fast_body() {
         };
         let run = |iso: &mut Isolate, a: u64, n: i32| -> (u64, [u64; 2]) {
             let before = scaled_runs();
+            let w = crate::interp::tails::WIDE_RUNS.with(|c| c.get());
             let v = iso
                 .call_raw(f, Value::UNDEFINED, &[val(a), val(int(n))])
                 .unwrap()
                 .to_bits();
             let after = scaled_runs();
+            let w = crate::interp::tails::WIDE_RUNS.with(|c| c.get()) - w;
+            assert_eq!(w, helper(n as u64), "the runs of tails::wide for {n} turns");
             (v, [after[0] - before[0], after[1] - before[1]])
         };
         // A new object with Object.prototype and the data properties `props`.
