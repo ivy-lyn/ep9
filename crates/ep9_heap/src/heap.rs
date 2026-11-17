@@ -674,7 +674,7 @@ impl Heap {
         if space == Space::Normal {
             let size = match kind.size {
                 CellSize::Fixed(n) => cell_size_for(n).expect("register checked the fixed size"),
-                CellSize::Dynamic(_) => DYNAMIC_SIZE,
+                CellSize::Dynamic(_) | CellSize::Field(_) => DYNAMIC_SIZE,
             };
             self.kind_sizes[id.get() as usize].set(size);
         }

@@ -3,7 +3,7 @@
 //! ```text
 //! word0.kind (byte 5) --> KindTable[kind] = CellKind { name, size, trace }
 //!                                             |       |      +-- fn(CellPtr, &mut Tracer): visit every slot
-//!                                             |       +--------- Fixed(bytes) | Dynamic(fn(CellPtr) -> bytes)
+//!                                             |       +--------- Fixed(bytes) | Dynamic(fn) | Field(form)
 //!                                             +----------------- for errors and the verifier
 //! ```
 //!
@@ -22,12 +22,13 @@
 
 use core::num::NonZeroU8;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use ep9_value::{Value, Word0};
 
 use crate::barrier::Slot;
 use crate::heap::Heap;
-use crate::layout::{GRANULE, MAX_SMALL_SIZE, cell_size_for};
+use crate::layout::{GRANULE, MAX_SMALL_SIZE, MIN_CELL_SIZE, cell_size_for};
 use crate::trace::Tracer;
 
 /// Kind byte of a cell (word0 byte 5). Never 0.
@@ -56,9 +57,13 @@ pub type TraceFn = fn(cell: CellPtr, tracer: &mut Tracer<'_>);
 pub type SizeFn = fn(cell: CellPtr) -> usize;
 
 #[derive(Clone, Copy, Debug)]
+#[repr(u8)]
 pub enum CellSize {
     Fixed(usize),
     Dynamic(SizeFn),
+    // A tag far from the others: with the `Option<CellKind>` niche next to them, the sweep's
+    // match on the tag stays two compare pairs, not a jump table (an indirect jump per cell).
+    Field(FieldSize) = 0x80,
 }
 
 /// What the heap knows about one cell kind.
@@ -177,7 +182,7 @@ pub trait HeapLayout: Sized {
     const NAME: &'static str;
     /// Where its cells are allocated.
     const SPACE: Space = Space::Normal;
-    /// The cell size: the type's size, or a [`SizeFn`] for a cell with a tail.
+    /// The cell size: the type's size, or for a cell with a tail a [`FieldSize`] or [`SizeFn`].
     const SIZE: CellSize = CellSize::Fixed(size_of::<Self>());
     /// Visits every GC reference of a live cell of this kind (a [`TraceFn`]).
     fn trace(cell: CellPtr, tracer: &mut Tracer<'_>);
@@ -277,6 +282,9 @@ impl KindTable {
         let raw = match k.size {
             CellSize::Fixed(n) => n,
             CellSize::Dynamic(f) => f(cell),
+            // SAFETY: as above: a live cell of this kind, so of the form it was registered with.
+            // The form's size needs no rounding (`FieldSize::new` checks base and scale).
+            CellSize::Field(s) => return Some(unsafe { s.size_of(cell) }),
         };
         cell_size_for(raw)
     }
@@ -385,6 +393,115 @@ impl CellPtr {
 impl std::fmt::Debug for CellPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "CellPtr({:#x})", self.addr())
+    }
+}
+
+/// A cell size from one field of the cell, with no call: `base + scale * n`, where `n` is the
+/// field that the form reads. The sweep computes it inline, so a kind of this form costs no
+/// indirect call per cell, as a [`SizeFn`] does (H8: "object size is computable from the
+/// header (plus a length field)"; H9 fill 2026-11-17).
+///
+/// | Form | `n` |
+/// |---|---|
+/// | [`FieldSize::flags`] | the word0 flags (bytes 6-7; a 16-bit atomic load) and a mask |
+/// | [`FieldSize::word32`] | the `u32` at an offset and a mask |
+/// | [`FieldSize::int32`] | the int32 `Value` in the slot at an offset, sign-extended |
+///
+/// The word32 and int32 forms read the `u32` at the offset (for a slot: the low half, its
+/// int32 payload on a little-endian target). The size field of a cell is written only
+/// before the first GC point after its allocation (the cell's size never changes after it),
+/// so no write races with that read in a sweep. The constructors are `const fn`s and check
+/// their numbers when the constant is built: `base` and `scale` fit in 16 bits, `base` is at
+/// least [`MIN_CELL_SIZE`] and both are multiples of [`GRANULE`] (so the size needs no
+/// rounding), the offset is below 256, a mask is a low-bit mask of at most 31 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldSize {
+    /// Sign-extended like the field, then applied: `u32::MAX` (all bits) for the int32 form.
+    mask: u32,
+    base: u16,
+    scale: u16,
+    /// 0 for the flags form (a load of word0's `shape_id` that the form does not use).
+    offset: u8,
+    /// 1 for the flags form, else 0.
+    flags: u8,
+}
+
+// The int32 form reads the low half of a slot: the int32 payload on a little-endian target.
+#[cfg(target_endian = "big")]
+compile_error!("FieldSize::int32 reads the low half of a Value slot: little-endian targets only");
+
+/// A low-bit mask of at most 31 bits. Fails at build time for any other mask.
+const fn low_mask(mask: u32) -> u32 {
+    assert!(
+        mask != 0 && mask <= i32::MAX as u32 && mask & (mask + 1) == 0,
+        "a size-field mask is a low-bit mask of at most 31 bits"
+    );
+    mask
+}
+
+impl FieldSize {
+    /// `n` = the word0 flags & `mask`.
+    pub const fn flags(base: usize, scale: usize, mask: u16) -> FieldSize {
+        let mask = low_mask(mask as u32);
+        FieldSize::new(1, Word0::SHAPE_ID_OFFSET, mask, base, scale)
+    }
+
+    /// `n` = the `u32` at `offset` & `mask` (a low-bit mask of at most 31 bits). `offset` is
+    /// 4-aligned and after word0.
+    pub const fn word32(offset: usize, mask: u32, base: usize, scale: usize) -> FieldSize {
+        assert!(
+            offset >= 8 && offset.is_multiple_of(4),
+            "a word32 size field is 4-aligned, after word0"
+        );
+        FieldSize::new(0, offset, low_mask(mask), base, scale)
+    }
+
+    /// `n` = the int32 `Value` in the slot at `offset`, sign-extended. `offset` is a `Value`
+    /// slot (8-aligned, after word0).
+    pub const fn int32(offset: usize, base: usize, scale: usize) -> FieldSize {
+        assert!(
+            offset >= 8 && offset.is_multiple_of(8),
+            "an int32 size field is a Value slot"
+        );
+        FieldSize::new(0, offset, u32::MAX, base, scale)
+    }
+
+    const fn new(flags: u8, offset: usize, mask: u32, base: usize, scale: usize) -> FieldSize {
+        assert!(
+            base <= u16::MAX as usize && scale <= u16::MAX as usize && offset <= u8::MAX as usize,
+            "a size field's base and scale fit in 16 bits, its offset in 8"
+        );
+        // So `base + scale * n` is a cell size as `cell_size_for` gives it, for every `n`.
+        assert!(
+            base >= MIN_CELL_SIZE && base.is_multiple_of(GRANULE) && scale.is_multiple_of(GRANULE),
+            "a size field's base is a cell size and its scale a multiple of the granule"
+        );
+        FieldSize {
+            mask,
+            base: base as u16,
+            scale: scale as u16,
+            offset: offset as u8,
+            flags,
+        }
+    }
+
+    /// The size in bytes of `cell`, before the allocator's rounding.
+    ///
+    /// # Safety
+    /// `cell` is a live cell of a kind of this form: its field is inside the cell, and the
+    /// slot of an int32 form holds an int32 `Value`.
+    #[inline(always)]
+    pub unsafe fn size_of(self, cell: CellPtr) -> usize {
+        // Both loads, then a select: no branch on the form.
+        // SAFETY: caller contract: the cell is live; word0 is read as its atomics.
+        let flags = u32::from(unsafe { cell.header() }.flags());
+        // SAFETY: caller contract: the 4-aligned u32 at the offset is inside the cell (offset
+        // 0 of the flags form: word0's `shape_id`, an AtomicU32 too). A size field is written
+        // only before the first GC point after the allocation, so no write races with it.
+        let word = unsafe { &*cell.field::<AtomicU32>(usize::from(self.offset)) }.load(Relaxed);
+        let raw = if self.flags != 0 { flags } else { word };
+        let n = raw as i32 as usize & self.mask as i32 as usize;
+        usize::from(self.base) + usize::from(self.scale) * n
     }
 }
 

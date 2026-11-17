@@ -523,12 +523,12 @@ fn trace_context(c: CellPtr, t: &mut Tracer<'_>) {
 
 fn object_kind(
     name: &'static str,
-    size: fn(CellPtr) -> usize,
+    size_form: CellSize,
     trace: fn(CellPtr, &mut Tracer<'_>),
 ) -> CellKind {
     CellKind {
         name,
-        size: CellSize::Dynamic(size),
+        size: size_form,
         trace,
     }
 }
@@ -548,17 +548,17 @@ pub(crate) fn register_kinds(heap: &Heap) {
     let kinds: [(KindId, CellKind); 17] = [
         (
             kind::OBJECT,
-            object_kind("object", object_size::<0>, trace_object::<0>),
+            object_kind("object", object_form::<0>(), trace_object::<0>),
         ),
         (
             kind::FUNCTION,
-            object_kind("function", object_size::<{ fun::FIXED }>, trace_function),
+            object_kind("function", object_form::<{ fun::FIXED }>(), trace_function),
         ),
         (
             kind::ARRAY,
             object_kind(
                 "array",
-                object_size::<{ arr::FIXED }>,
+                object_form::<{ arr::FIXED }>(),
                 trace_object::<{ arr::FIXED }>,
             ),
         ),
@@ -566,7 +566,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::ERROR,
             object_kind(
                 "error",
-                object_size::<{ err::FIXED }>,
+                object_form::<{ err::FIXED }>(),
                 trace_object::<{ err::FIXED }>,
             ),
         ),
@@ -574,7 +574,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::ITERATOR,
             object_kind(
                 "iterator",
-                object_size::<{ iter::FIXED }>,
+                object_form::<{ iter::FIXED }>(),
                 trace_object::<{ iter::FIXED }>,
             ),
         ),
@@ -582,7 +582,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::PRIMITIVE_WRAPPER,
             object_kind(
                 "primitive-wrapper",
-                object_size::<{ fixed::WRAPPER }>,
+                object_form::<{ fixed::WRAPPER }>(),
                 trace_object::<{ fixed::WRAPPER }>,
             ),
         ),
@@ -590,7 +590,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::BOUND_FUNCTION,
             object_kind(
                 "bound-function",
-                object_size::<{ fixed::BOUND }>,
+                object_form::<{ fixed::BOUND }>(),
                 trace_object::<{ fixed::BOUND }>,
             ),
         ),
@@ -598,7 +598,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::GENERATOR,
             object_kind(
                 "generator",
-                object_size::<{ genf::FIXED }>,
+                object_form::<{ genf::FIXED }>(),
                 trace_object::<{ genf::FIXED }>,
             ),
         ),
@@ -606,7 +606,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::SLOT_OBJECT,
             object_kind(
                 "slot-object",
-                object_size::<{ slot_obj::FIXED }>,
+                object_form::<{ slot_obj::FIXED }>(),
                 trace_object::<{ slot_obj::FIXED }>,
             ),
         ),
@@ -614,7 +614,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::ARGUMENTS,
             object_kind(
                 "arguments",
-                object_size::<{ argsf::FIXED }>,
+                object_form::<{ argsf::FIXED }>(),
                 trace_object::<{ argsf::FIXED }>,
             ),
         ),
@@ -622,7 +622,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::MODULE_NAMESPACE,
             object_kind(
                 "module-namespace",
-                object_size::<{ nsf::FIXED }>,
+                object_form::<{ nsf::FIXED }>(),
                 trace_object::<{ nsf::FIXED }>,
             ),
         ),
@@ -630,7 +630,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::PROXY,
             object_kind(
                 "proxy",
-                object_size::<{ fixed::PROXY }>,
+                object_form::<{ fixed::PROXY }>(),
                 trace_object::<{ fixed::PROXY }>,
             ),
         ),
@@ -638,7 +638,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::PROXY_CALLABLE,
             object_kind(
                 "proxy-callable",
-                object_size::<{ fixed::PROXY }>,
+                object_form::<{ fixed::PROXY }>(),
                 trace_object::<{ fixed::PROXY }>,
             ),
         ),
@@ -646,7 +646,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::ELEMENTS,
             CellKind {
                 name: "elements",
-                size: CellSize::Dynamic(elements_size),
+                size: ELEMENTS_SIZE,
                 trace: trace_elements,
             },
         ),
@@ -654,7 +654,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::CONTEXT,
             CellKind {
                 name: "context",
-                size: CellSize::Dynamic(context_size),
+                size: CONTEXT_SIZE,
                 trace: trace_context,
             },
         ),
@@ -699,7 +699,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
     const VF: usize = crate::typed_array::VIEW_FIXED;
     for (row, name) in VIEW_NAMES.into_iter().enumerate() {
         let id = KindId::new(kind::INT8_VIEW.get() + row as u8).expect("a view kind");
-        let k = object_kind(name, object_size::<VF>, trace_object::<VF>);
+        let k = object_kind(name, object_form::<VF>(), trace_object::<VF>);
         heap.register_kind(id, k).expect("register a view kind");
     }
     crate::array_buffer::register_kind(heap);
@@ -1853,4 +1853,100 @@ pub(crate) fn engine_slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
         crate::array_buffer::is_engine_object(rt, o),
         "engine_slot_set of an object that is not an engine buffer or DataView"
     );
+}
+
+// ---- size forms (V9 SWEEP-NOFNPTR) ---------------------------------------------------------
+
+/// The size form of a JS object cell with `F` fixed fields: [`object_size`] with no call
+/// (`obj::FIXED + 8 * (F + n)`, `n` = the word0 in-object count).
+const fn object_form<const F: usize>() -> CellSize {
+    CellSize::Field(ep9_heap::FieldSize::flags(
+        obj::FIXED + 8 * F,
+        8,
+        kind::FLAG_INOBJECT_MASK,
+    ))
+}
+
+/// [`elements_size`] with no call.
+const ELEMENTS_SIZE: CellSize =
+    CellSize::Field(ep9_heap::FieldSize::int32(elems::CAPACITY, elems::DATA, 8));
+
+/// [`context_size`] with no call.
+const CONTEXT_SIZE: CellSize =
+    CellSize::Field(ep9_heap::FieldSize::int32(ctxf::LENGTH, ctxf::SLOTS, 8));
+
+/// The size forms of this file's kinds and the size functions they replace (the size-form
+/// test, `tests/gc.rs`).
+#[cfg(test)]
+pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
+    vec![
+        ("object", object_form::<0>(), object_size::<0>),
+        (
+            "function",
+            object_form::<{ fun::FIXED }>(),
+            object_size::<{ fun::FIXED }>,
+        ),
+        (
+            "array",
+            object_form::<{ arr::FIXED }>(),
+            object_size::<{ arr::FIXED }>,
+        ),
+        (
+            "error",
+            object_form::<{ err::FIXED }>(),
+            object_size::<{ err::FIXED }>,
+        ),
+        (
+            "iterator",
+            object_form::<{ iter::FIXED }>(),
+            object_size::<{ iter::FIXED }>,
+        ),
+        (
+            "primitive-wrapper",
+            object_form::<{ fixed::WRAPPER }>(),
+            object_size::<{ fixed::WRAPPER }>,
+        ),
+        (
+            "bound-function",
+            object_form::<{ fixed::BOUND }>(),
+            object_size::<{ fixed::BOUND }>,
+        ),
+        (
+            "generator",
+            object_form::<{ genf::FIXED }>(),
+            object_size::<{ genf::FIXED }>,
+        ),
+        (
+            "slot-object",
+            object_form::<{ slot_obj::FIXED }>(),
+            object_size::<{ slot_obj::FIXED }>,
+        ),
+        (
+            "arguments",
+            object_form::<{ argsf::FIXED }>(),
+            object_size::<{ argsf::FIXED }>,
+        ),
+        (
+            "module-namespace",
+            object_form::<{ nsf::FIXED }>(),
+            object_size::<{ nsf::FIXED }>,
+        ),
+        (
+            "proxy",
+            object_form::<{ fixed::PROXY }>(),
+            object_size::<{ fixed::PROXY }>,
+        ),
+        (
+            "proxy-callable",
+            object_form::<{ fixed::PROXY }>(),
+            object_size::<{ fixed::PROXY }>,
+        ),
+        (
+            "typed-array views",
+            object_form::<{ crate::typed_array::VIEW_FIXED }>(),
+            object_size::<{ crate::typed_array::VIEW_FIXED }>,
+        ),
+        ("elements", ELEMENTS_SIZE, elements_size),
+        ("context", CONTEXT_SIZE, context_size),
+    ]
 }

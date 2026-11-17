@@ -345,14 +345,14 @@ fn descriptors_size(c: CellPtr) -> usize {
 fn trace_descriptors(c: CellPtr, t: &mut Tracer<'_>) {
     object::trace_from_8(c, t, descriptors_size(c));
 }
-
+#[cfg(test)]
 fn index_size(c: CellPtr) -> usize {
     dix::DATA + 8 * rd_i32(c, dix::BUCKETS) as usize
 }
 
 /// DESC_INDEX holds only int32s and undefined.
 fn trace_index(_: CellPtr, _: &mut Tracer<'_>) {}
-
+#[cfg(test)]
 fn transitions_size(c: CellPtr) -> usize {
     trf::ENTRIES + 8 * rd_i32(c, trf::CAPACITY) as usize
 }
@@ -387,7 +387,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::SLOTS,
             CellKind {
                 name: "slots",
-                size: CellSize::Dynamic(slots_size),
+                size: SLOTS_SIZE,
                 trace: trace_slots,
             },
         ),
@@ -395,7 +395,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::DESCRIPTORS,
             CellKind {
                 name: "descriptors",
-                size: CellSize::Dynamic(descriptors_size),
+                size: DESCRIPTORS_SIZE,
                 trace: trace_descriptors,
             },
         ),
@@ -403,7 +403,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::DESC_INDEX,
             CellKind {
                 name: "descriptor-index",
-                size: CellSize::Dynamic(index_size),
+                size: INDEX_SIZE,
                 trace: trace_index,
             },
         ),
@@ -411,7 +411,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
             kind::TRANSITIONS,
             CellKind {
                 name: "transitions",
-                size: CellSize::Dynamic(transitions_size),
+                size: TRANSITIONS_SIZE,
                 trace: trace_transitions,
             },
         ),
@@ -2201,4 +2201,37 @@ pub(crate) fn transition_table(shape: u64) -> (usize, usize) {
     }
     let t = cell(tab);
     (table_cap(t), table_live(t))
+}
+
+// ---- size forms (V9 SWEEP-NOFNPTR) ---------------------------------------------------------
+
+/// [`slots_size`] with no call.
+const SLOTS_SIZE: CellSize =
+    CellSize::Field(ep9_heap::FieldSize::int32(slf::CAPACITY, slf::DATA, 8));
+
+/// [`descriptors_size`] with no call.
+const DESCRIPTORS_SIZE: CellSize = CellSize::Field(ep9_heap::FieldSize::int32(
+    dsc::CAPACITY,
+    dsc::ENTRIES,
+    dsc::ENTRY,
+));
+
+/// `index_size` (the test reference) with no call.
+const INDEX_SIZE: CellSize =
+    CellSize::Field(ep9_heap::FieldSize::int32(dix::BUCKETS, dix::DATA, 8));
+
+/// `transitions_size` (the test reference) with no call.
+const TRANSITIONS_SIZE: CellSize =
+    CellSize::Field(ep9_heap::FieldSize::int32(trf::CAPACITY, trf::ENTRIES, 8));
+
+/// The size forms of this file's normal-space kinds and the size functions they replace
+/// (the size-form test, `tests/gc.rs`).
+#[cfg(test)]
+pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
+    vec![
+        ("slots", SLOTS_SIZE, slots_size),
+        ("descriptors", DESCRIPTORS_SIZE, descriptors_size),
+        ("descriptor-index", INDEX_SIZE, index_size),
+        ("transitions", TRANSITIONS_SIZE, transitions_size),
+    ]
 }
