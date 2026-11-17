@@ -1470,12 +1470,12 @@ jobs:
           || (inputs.exit_inputs == 'pathb' && '[{"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}]')
           || '[{"name":"off","os":"ubuntu-24.04","kind":"off","plat":"off"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: no measured time yet (est. per leg: 2 release builds 25-45 min on Windows, the idle
-    # baseline 10 min, MEMREAD 10-20 min, JetStream 20-40 min; a pathb leg runs 32 rounds of 15
-    # workloads on 3 engines, 60-120 min, plus about 32 min of 60-s typeperf load readings). The
-    # orchestrator reads the value again after the first dry dispatch and sets 1.5x the longest
-    # measured leg.
-    timeout-minutes: 300
+    # Rule 25: 1.5x the longest measured leg: 138.8 min (memjs-linux-x64, dry dispatch
+    # 43873371893 on fa2b687f), so 210 (was 300 before the first dispatch; M9-P2-WPRE-7). The
+    # other legs of that dispatch: memjs-windows-x64 125.7 min, memjs-linux-arm64 116.0 min,
+    # pathb-w1..w4 77.7-78.2 min. Read the value again when a leg gets longer (a new workload or
+    # engine) and set 1.5x the longest measured leg.
+    timeout-minutes: 210
     steps:
       - name: exit-inputs mode
         env:
