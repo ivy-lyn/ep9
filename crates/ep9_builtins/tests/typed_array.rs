@@ -921,3 +921,146 @@ try { other.Int8Array(1); } catch (e) { print(e.constructor === other.TypeError)
     assert_eq!(plain, want);
     assert_eq!(run_realms_eval(src, true), plain, "GC stress");
 }
+
+// ---- (f) M9-P4 SPEC-LISTS: toString identity and the spread fast path -------------------------
+
+/// `sec-%typedarray%.prototype.tostring`: the initial value of `%TypedArray.prototype%.toString`
+/// is `%Array.prototype.toString%`, the same function object (route TA-TOSTRING-IDENTITY), in
+/// each realm, with the attributes {w, c}. The group install takes the intrinsic, not the live
+/// `Array.prototype.toString`: a realm that replaces it before its first TypedArray use still
+/// gets the original. A call across realms runs the same steps.
+#[test]
+fn to_string_is_array_prototype_to_string_in_each_realm() {
+    let src = r#"
+const TA = Object.getPrototypeOf(Int8Array.prototype);
+const d = Object.getOwnPropertyDescriptor(TA, "toString");
+print(TA.toString === Array.prototype.toString, d.writable, d.enumerable, d.configurable,
+  TA.toString.name, TA.toString.length, String(new Int8Array([1, 2])));
+const other = createRealm();
+const OTA = Object.getPrototypeOf(other.Uint8Array.prototype);
+print(OTA.toString === other.Array.prototype.toString, OTA.toString === TA.toString);
+print(other.Array.prototype.toString.call(new Int8Array([3, 4])), TA.toString.call(new other.Uint8Array([5, 6])));
+const third = createRealm();
+evalIn(third, "var orig = Array.prototype.toString; Array.prototype.toString = function () { return 'x'; };" +
+  "var T = Object.getPrototypeOf(Float64Array.prototype);" +
+  "var r = [T.toString === orig, T.toString === Array.prototype.toString, String(new Float64Array([0.5]))].join();");
+print(third.r, third.orig === OTA.toString);
+"#;
+    let want = lines(&[
+        "true true false true toString 0 1,2",
+        "true false",
+        "3,4 5,6",
+        "true,false,0.5 false",
+    ]);
+    let plain = run_realms_eval(src, false);
+    assert_eq!(plain, want);
+    assert_eq!(run_realms_eval(src, true), plain, "GC stress");
+}
+
+/// `[...ta]`, `f(...ta)` and `Array.from(ta)` of each element type (route TA-SPREAD-FAST; the
+/// fast path of `interp/slow/iter.rs` copies the elements when `@@iterator` is this realm's
+/// `%TypedArray.prototype.values%`): the values of %ArrayIteratorPrototype%.next, -0 and NaN
+/// kept, BigInts for the 2 BigInt types; a length-tracking view reads the length of its
+/// resized buffer; an out-of-bounds view throws the TypeError of `values`; a subclass; a view of
+/// another realm (its `values` is not this realm's) and a spread inside the other realm.
+#[test]
+fn spread_copies_each_element_type_in_each_realm() {
+    let src = r#"
+const T = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array,
+  Uint32Array, Float16Array, Float32Array, Float64Array];
+for (const C of T) {
+  const a = [...new C([1.5, -2, 300, NaN, -0])];
+  print(C.name, Array.isArray(a), a.length, a.join(), 1 / a[4]);
+}
+for (const C of [BigInt64Array, BigUint64Array]) {
+  const a = [...new C([1n, -2n, 2n ** 63n])];
+  print(C.name, a.join(), typeof a[0]);
+}
+print([...new Int8Array(0)].length, Math.max(...new Uint8Array([3, 9, 4])),
+  Array.from(new Int16Array([7, 8])).join());
+const rab = new ArrayBuffer(4, { maxByteLength: 8 });
+const lt = new Uint8Array(rab);
+lt.set([1, 2, 3, 4]);
+rab.resize(6);
+print([...lt].join());
+rab.resize(1);
+const fx = new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 }), 1, 2);
+fx.buffer.resize(2);
+try { [...fx]; } catch (e) { print(e.name); }
+class X extends Int16Array {}
+print([...new X([5, 6])].join(), [...lt].join());
+const other = createRealm();
+evalIn(other, "var s = [...new Uint8Array([3, 4])].join();");
+print([...new other.Int8Array([1, 2])].join(), other.s,
+  Object.getPrototypeOf([...new other.Int8Array(1)]) === Array.prototype);
+"#;
+    let want = lines(&[
+        "Int8Array true 5 1,-2,44,0,0 Infinity",
+        "Uint8Array true 5 1,254,44,0,0 Infinity",
+        "Uint8ClampedArray true 5 2,0,255,0,0 Infinity",
+        "Int16Array true 5 1,-2,300,0,0 Infinity",
+        "Uint16Array true 5 1,65534,300,0,0 Infinity",
+        "Int32Array true 5 1,-2,300,0,0 Infinity",
+        "Uint32Array true 5 1,4294967294,300,0,0 Infinity",
+        "Float16Array true 5 1.5,-2,300,NaN,0 -Infinity",
+        "Float32Array true 5 1.5,-2,300,NaN,0 -Infinity",
+        "Float64Array true 5 1.5,-2,300,NaN,0 -Infinity",
+        "BigInt64Array 1,-2,-9223372036854775808 bigint",
+        "BigUint64Array 1,18446744073709551614,9223372036854775808 bigint",
+        "0 9 7,8",
+        "1,2,3,4,0,0",
+        "TypeError",
+        "5,6 1",
+        "1,2 3,4 true",
+    ]);
+    let plain = run_realms_eval(src, false);
+    assert_eq!(plain, want);
+    assert_eq!(run_realms_eval(src, true), plain, "GC stress");
+}
+
+/// The heap bytes that the sloppy script `src` allocates (`GcStats::allocated_bytes` after the
+/// run less before it; no GC stress, so the heap hands out whole allocation buffers).
+fn allocated_by(src: &'static str) -> u64 {
+    common::on_big_stack(move || {
+        let unit = ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("the script compiles");
+        let mut iso = common::isolate(false);
+        let before = iso.gc_stats().allocated_bytes;
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()))
+            .expect("no exception");
+        let bytes = iso.gc_stats().allocated_bytes - before;
+        iso.verify_heap().expect("a valid heap");
+        bytes
+    })
+}
+
+/// The spread fast path (route TA-SPREAD-FAST) makes no iterator and no iterator result: a
+/// spread of N int32 elements allocates the new Array (8 bytes per element) and not the N
+/// result objects of the generic IteratorStep loop (more than 24 bytes per element with the
+/// growing Array). With an own `@@iterator` (the guard fails) the loop runs, so the bound is
+/// shown to tell the two paths apart.
+#[test]
+fn spread_of_a_typed_array_makes_no_iterator_results() {
+    const N: u64 = 100_000;
+    let base = allocated_by("var t = new Int32Array(100000); t.fill(7);");
+    let fast = allocated_by("var t = new Int32Array(100000); t.fill(7); var a = [...t];");
+    let slow = allocated_by(
+        "var t = new Int32Array(100000); t.fill(7);\n\
+         t[Symbol.iterator] = function () { return Object.getPrototypeOf(Int8Array.prototype).values.call(this); };\n\
+         var a = [...t];",
+    );
+    let (fast, slow) = (fast.saturating_sub(base), slow.saturating_sub(base));
+    eprintln!("a spread of {N} int32 elements: {fast} bytes; the generic loop: {slow} bytes");
+    assert!(
+        slow > 24 * N,
+        "the generic loop allocates {slow} bytes for {N} elements: the bound tells nothing"
+    );
+    assert!(
+        fast < 24 * N,
+        "the spread allocates {fast} bytes for {N} elements (the generic loop: {slow})"
+    );
+}
