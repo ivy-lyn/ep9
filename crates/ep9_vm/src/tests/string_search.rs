@@ -11,8 +11,10 @@ use crate::string::search::{self, Cursor, Kernel, Path, Step};
 use crate::string::{self, Dir};
 use crate::{Dispatch, JsString, Local};
 
-/// A string Local from raw bits (the bits are live: the test holds them).
-type S<'s> = Local<'s, JsString>;
+/// A string Local from raw bits (the bits are live: the test holds them). Not `S`: gc-lint
+/// matches type names in all files, and `interp.rs` puts its own `S` (an operand scale) in a
+/// `Vec`.
+type StrLocal<'s> = Local<'s, JsString>;
 
 /// xorshift64*: reproducible test data.
 struct Rng(u64);
@@ -439,7 +441,7 @@ fn cx_searches_and_copies_read_every_string_kind_on_every_path() {
                 for (n, nb) in &needles {
                     let r = search::with_path(p, || {
                         iso.with_cx(|cx| {
-                            let (hl, nl) = (S::from_bits(h), S::from_bits(*nb));
+                            let (hl, nl) = (StrLocal::from_bits(h), StrLocal::from_bits(*nb));
                             let mut got = Vec::new();
                             for from in froms(t.len()) {
                                 got.push(cx.string_index_of(hl, nl, from)?);
@@ -497,7 +499,11 @@ fn a_cx_search_of_a_rope_flattens_it_under_gc_stress() {
     let n2 = string::concat(rt, a, c).unwrap(); // a CONS search string, not in `h`
     let r = iso
         .with_cx(|cx| {
-            let (hl, nl, n2l) = (S::from_bits(h), S::from_bits(n), S::from_bits(n2));
+            let (hl, nl, n2l) = (
+                StrLocal::from_bits(h),
+                StrLocal::from_bits(n),
+                StrLocal::from_bits(n2),
+            );
             let k = cx.new_string("j\u{263A}k")?;
             let frs = cx.new_string("frs")?;
             Ok((
