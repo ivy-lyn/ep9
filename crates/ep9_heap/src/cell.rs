@@ -499,6 +499,20 @@ impl FieldSize {
         // 0 of the flags form: word0's `shape_id`, an AtomicU32 too). A size field is written
         // only before the first GC point after the allocation, so no write races with it.
         let word = unsafe { &*cell.field::<AtomicU32>(usize::from(self.offset)) }.load(Relaxed);
+        // The int32 form: the slot's high half is the int32 tag (H06), as `object::rd_i32`
+        // checks in the size functions that it replaced (route FIELDSIZE-INT32-ASSERT).
+        // Debug builds only.
+        #[cfg(debug_assertions)]
+        if self.flags == 0 && self.mask == u32::MAX {
+            // SAFETY: caller contract: the int32 form's slot is inside the cell, so its high
+            // half at `offset + 4` is too.
+            let high = unsafe { &*cell.field::<AtomicU32>(usize::from(self.offset) + 4) };
+            debug_assert_eq!(
+                high.load(Relaxed),
+                (ep9_value::encoding::NUMBER_TAG >> 32) as u32,
+                "FieldSize int32 form: the slot is not an int32 Value"
+            );
+        }
         let raw = if self.flags != 0 { flags } else { word };
         let n = raw as i32 as usize & self.mask as i32 as usize;
         usize::from(self.base) + usize::from(self.scale) * n
