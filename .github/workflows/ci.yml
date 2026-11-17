@@ -316,7 +316,7 @@ jobs:
         with:
           node-version: '24.22.1'
       - run: cargo build --workspace --all-targets --locked
-      - run: cargo test --workspace --locked
+      - { name: Run cargo test --workspace --locked, run: cargo test --workspace --exclude ep9_builtins --locked } # the name m0-exit and m1-exit read; ep9_builtins: the builtins job (CI-BUILDTEST-SHARD)
       # Spike B's native entry (plan M0 month 2, D21): the ep9_vm `spike-native` tests run
       # native code on every target, Windows x64 included (crates/ep9_vm/src/tests/native.rs).
       # The feature is never in the ep9 graph (dep-guards check 11), so it gets its own build.
@@ -1591,3 +1591,36 @@ jobs:
           name: m2-exit-inputs-${{ matrix.name }}
           path: out/
           if-no-files-found: error
+
+  # CI-BUILDTEST-SHARD (route CI-BUILDTEST-SHARD; DL M9-P2-WPRE-6): the ep9_builtins debug tests,
+  # out of the build-test test step for wall time (they were 60-67% of that step; build + test
+  # (windows-x64) took 127 min and the next job 75 min in run 43884142543). The same debug profile
+  # (opt-level 0) and the same ep9 features as that step: `--features ep9_vm/jit` is the feature
+  # that ep9_cli turns on in the workspace build (cargo tree: no other ep9 crate feature differs).
+  # build-test keeps the step name that m0-exit and m1-exit read, with ep9_cli and ep9_frontend
+  # in it (the nesting tests). No xtask reads this job.
+  builtins:
+    name: builtins (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The 4 targets, or the 2 of the dispatch input `only` (header).
+        include: ${{ fromJSON(inputs.only == 'windows-x64,linux-x64'
+          && '[{"name":"linux-x64","os":"ubuntu-24.04"}, {"name":"windows-x64","os":"windows-2025"}]'
+          || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
+               {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
+    runs-on: ${{ matrix.os }}
+    # Rule 25: no measured time yet: est. 85 min (windows-x64: the build and the ep9_builtins part
+    # of the 64-120 min test step), so 130 (1.5x). Set 1.5x the longest measured time after the
+    # first full run.
+    timeout-minutes: 130
+    steps:
+      # Windows: keep LF in our files, allow long paths (as build-test).
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: ep9_builtins tests (debug)
+        run: cargo test -p ep9_builtins --features ep9_vm/jit --locked
