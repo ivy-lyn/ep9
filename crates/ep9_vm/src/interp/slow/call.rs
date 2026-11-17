@@ -1217,3 +1217,124 @@ fn construct_native_cold(
     cx.out_pc = s.next_pc;
     call::construct_result(cx, r?, this)
 }
+
+// ---- the host call of CallProperty0-2 (M9 OXC-W2-HOSTCALL) ---------------------------------
+//
+// The cold body of `CallProperty0`, `CallProperty1` and `CallProperty2` (`interp/ops.rs`
+// `call_property_cold`) calls [`call_property`] for `N` = 0, 1 and 2 in place of [`call`]. A
+// host callee (`s.charCodeAt(i)`, `a.push(x)`, `Math.max(a, b)`) is the common case there:
+// on x86-64 octane-typescript `call` ran about 15.1 M times, nearly always for a host callee
+// and mostly from these 3 opcodes, at about 193 instructions each before the builtin body
+// (cachegrind, m8-p5).
+//
+// ```text
+// <op>_cold --N known--> call_property::<N>
+//   unprefixed, budget > 0, host FUNCTION callee, receiver not a FUNCTION, fast paths on
+//     --> enter, call::call_host_from_bytecode (argc N, operands at fixed places), out_fp/out_pc
+//   anything else --> call (as before: the poll, the forward, decode_call, do_call)
+// ```
+//
+// The tests read only the instruction, the callee's FunctionInfo, the receiver and the
+// budget, so a refused call reaches `call` with no state changed. A taken call does the steps
+// of `call` with `host_entry` for the same call, in the same order: `enter`, then
+// `call_host_from_bytecode` with the receiver, the arguments, the return pc and the result of
+// `host_entry`, and `error::unwind` at the call on a throw. It differs only in what it does
+// not decode: the opcode and `N` are constants, so there is no opcode match, no `Fixed`, no
+// `Option` result, and the argument copy of the frame push is unrolled. The poll
+// (`budget <= 0`), the forward of `apply` and `call` (a FUNCTION receiver), a `Wide` or
+// `ExtraWide` call and the fast paths off take `call`.
+
+/// The call at `pc` of an unprefixed `CallProperty0`, `CallProperty1` or `CallProperty2`
+/// (`N` its argument count) from the cold body of its handler: a host callee runs as
+/// [`host_entry`] runs it; every other call takes [`call()`], with `acc` (the accumulator of the
+/// cold body, as before). `this` is the receiver, which the cold body read already (its
+/// register is operand 1). Gives the result and sets `cx.out_fp`/`cx.out_pc` as [`call()`]
+/// does.
+///
+/// # Safety
+/// `pc` is the `CallProperty<N>` instruction (or its `Wide`/`ExtraWide` prefix) of verified
+/// code in the live top frame `fp`, and no scratch Values lie above that frame (as [`call()`]);
+/// for an unprefixed `pc`, `this` is the value of the register of operand 1.
+#[inline(never)]
+pub(crate) unsafe fn call_property<const N: u32>(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    this: u64,
+    acc: u64,
+) -> u64 {
+    use crate::interp::dsl::R;
+    use ep9_bytecode::{Opcode as O, OperandScale};
+
+    const { assert!(N <= 2) };
+    // The opcode: CallProperty0 + N (checked below), operand `i` at `pc + 1 + i`.
+    let op = O::CallProperty0 as u8 + N as u8;
+    // SAFETY: caller contract: `pc` is a byte of verified code.
+    if unsafe { *pc } != op || cx.budget <= 0 {
+        return call(cx, fp, pc, acc);
+    }
+    // SAFETY: operand `i` of the unprefixed instruction (`i` < 3 + N); the verifier checked
+    // that the whole instruction lies in the code.
+    let reg = |i: usize| R::from_operand(i32::from(unsafe { *pc.add(1 + i) } as i8)).0;
+    // SAFETY: slots named by register operands of this verified instruction, which lie in the
+    // live frame `fp`.
+    let rd = move |s: isize| unsafe { *fp.offset(s) };
+    let callee = rd(reg(0));
+    if !object::is_function(callee) {
+        return call(cx, fp, pc, acc);
+    }
+    let fi = object::function_info(callee);
+    let Some(h) = fi.host else {
+        return call(cx, fp, pc, acc);
+    };
+    // A FUNCTION receiver: `forward` may push the frame of `this` (`apply`, `call`).
+    if object::is_function(this) || !call::human_fast_paths(cx.rt()) {
+        return call(cx, fp, pc, acc);
+    }
+    enter(cx, fp, pc);
+    #[cfg(test)]
+    call::HOST_ENTRY_HITS.with(|h| h.set(h.get() + 1));
+    #[cfg(test)]
+    call::HOST_PROPERTY_HITS.with(|h| h.set(h.get() + 1));
+    call::fast_hit!(6);
+    let (a, b) = (
+        if N > 0 { reg(2) } else { 0 },
+        if N > 1 { reg(3) } else { 0 },
+    );
+    let next = pc.wrapping_add(O::CallProperty0.info().size(OperandScale::Single) + N as usize);
+    let arg = move |i: u32| rd(if i == 0 { a } else { b });
+    match call::call_host_from_bytecode(cx, callee, fi, h, this, N, arg, UNDEFINED, fp, next) {
+        Ok(v) => {
+            cx.out_fp = fp;
+            cx.out_pc = next;
+            v
+        }
+        Err(Throw) => error::unwind(cx, fp, pc),
+    }
+}
+
+/// The opcodes and operands that [`call_property`] reads: `CallProperty<N>` is
+/// `CallProperty0 + N`, with the callee, the receiver, `N` argument registers and the Call
+/// slot, one byte each at single scale.
+const _: () = {
+    use ep9_bytecode::{OperandKind, OperandScale};
+    let ops = [
+        ep9_bytecode::Opcode::CallProperty0,
+        ep9_bytecode::Opcode::CallProperty1,
+        ep9_bytecode::Opcode::CallProperty2,
+    ];
+    let mut n = 0;
+    while n < ops.len() {
+        let info = ops[n].info();
+        assert!(ops[n] as u8 == ops[0] as u8 + n as u8);
+        assert!(info.operands.len() == 3 + n);
+        assert!(info.size(OperandScale::Single) == 1 + info.operands.len());
+        let mut i = 0;
+        while i < 2 + n {
+            assert!(info.operands[i].kind as u8 == OperandKind::Reg as u8);
+            i += 1;
+        }
+        assert!(info.operands[2 + n].kind as u8 == OperandKind::Slot as u8);
+        n += 1;
+    }
+};
