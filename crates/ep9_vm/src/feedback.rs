@@ -218,7 +218,7 @@ pub(crate) fn set_slot(rt: &Runtime, v: u64, i: u32, key: u64, value: u64) {
 }
 
 // ---- kind ----------------------------------------------------------------------------------
-
+#[cfg(test)]
 fn vector_size(c: CellPtr) -> usize {
     slot_offset(rd_i32(c, fv::COUNT) as usize)
 }
@@ -240,7 +240,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         kinds::FEEDBACK,
         CellKind {
             name: "feedback",
-            size: CellSize::Dynamic(vector_size),
+            size: VECTOR_SIZE,
             trace: trace_vector,
         },
     )
@@ -259,4 +259,21 @@ pub(crate) fn info_of<'a>(v: u64) -> &'a FunctionInfo {
 #[cfg(test)]
 pub(crate) fn is_vector(v: u64) -> bool {
     kinds::cell_kind(v) == kinds::FEEDBACK.get()
+}
+
+// ---- size forms (V9 SWEEP-NOFNPTR) ---------------------------------------------------------
+
+/// `vector_size` (the test reference) with no call: `slot_offset(n)`, `n` = the COUNT
+/// slot.
+const VECTOR_SIZE: CellSize = CellSize::Field(ep9_heap::FieldSize::int32(
+    fv::COUNT,
+    fv::SLOTS,
+    fv::SLOT_SIZE,
+));
+
+/// The size form of this file's kind and the size function it replaces (the size-form test,
+/// `tests/gc.rs`).
+#[cfg(test)]
+pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
+    vec![("feedback-vector", VECTOR_SIZE, vector_size)]
 }

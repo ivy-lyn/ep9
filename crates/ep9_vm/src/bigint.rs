@@ -58,7 +58,7 @@ fn len_word(c: CellPtr) -> u32 {
     // inside its 16-byte minimum size.
     unsafe { c.field::<u32>(bf::LEN).read() }
 }
-
+#[cfg(test)]
 fn cell_size(c: CellPtr) -> usize {
     bf::DATA + 8 * (len_word(c) & !bf::SIGN) as usize
 }
@@ -72,7 +72,7 @@ pub(crate) fn register_kind(heap: &Heap) {
         kinds::BIGINT,
         CellKind {
             name: "bigint",
-            size: CellSize::Dynamic(cell_size),
+            size: CELL_SIZE,
             trace,
         },
     )
@@ -403,4 +403,18 @@ pub(crate) fn from_i128(rt: &Runtime, n: i128) -> u64 {
 /// The BigInt `b` as an i128, if it fits. Not a GC point.
 pub(crate) fn to_i128(b: u64) -> Option<i128> {
     digits::to_i128(view(&b))
+}
+
+// ---- size forms (V9 SWEEP-NOFNPTR) ---------------------------------------------------------
+
+/// `cell_size` (the test reference) with no call: the digit count is the +8 word without
+/// the sign bit (H17).
+const CELL_SIZE: CellSize =
+    CellSize::Field(ep9_heap::FieldSize::word32(bf::LEN, !bf::SIGN, bf::DATA, 8));
+
+/// The size form of this file's kind and the size function it replaces (the size-form test,
+/// `tests/gc.rs`).
+#[cfg(test)]
+pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
+    vec![("bigint", CELL_SIZE, cell_size)]
 }

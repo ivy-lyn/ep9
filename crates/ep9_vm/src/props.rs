@@ -58,7 +58,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         kind::PROPS,
         CellKind {
             name: "property-table",
-            size: CellSize::Dynamic(props_size),
+            size: PROPS_SIZE,
             trace: trace_props,
         },
     )
@@ -574,4 +574,20 @@ pub(crate) fn own_entry(o: u64, i: usize) -> (u64, u64, i32) {
         field_get(o, s, usize::from(d.field())),
         d.attrs(),
     )
+}
+
+// ---- size forms (V9 SWEEP-NOFNPTR) ---------------------------------------------------------
+
+/// [`props_size`] with no call.
+const PROPS_SIZE: CellSize = CellSize::Field(ep9_heap::FieldSize::int32(
+    propf::CAPACITY,
+    propf::ENTRIES,
+    propf::ENTRY,
+));
+
+/// The size form of this file's kind and the size function it replaces (the size-form test,
+/// `tests/gc.rs`).
+#[cfg(test)]
+pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
+    vec![("property-table", PROPS_SIZE, props_size)]
 }

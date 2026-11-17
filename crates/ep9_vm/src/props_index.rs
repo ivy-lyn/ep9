@@ -81,7 +81,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         kind::PROPS_INDEXED,
         CellKind {
             name: "property-table-indexed",
-            size: CellSize::Dynamic(props_indexed_size),
+            size: PROPS_INDEXED_SIZE,
             trace: trace_props_indexed,
         },
     )
@@ -405,4 +405,24 @@ pub(crate) fn state(p: CellPtr) -> (usize, usize, usize, usize) {
         used(p),
         index_of(p).map_or(0, buckets),
     )
+}
+
+// ---- size forms (V9 SWEEP-NOFNPTR) ---------------------------------------------------------
+
+/// [`props_indexed_size`] with no call.
+const PROPS_INDEXED_SIZE: CellSize = CellSize::Field(ep9_heap::FieldSize::int32(
+    pif::CAPACITY,
+    pif::ENTRIES,
+    pif::ENTRY,
+));
+
+/// The size form of this file's kind and the size function it replaces (the size-form test,
+/// `tests/gc.rs`).
+#[cfg(test)]
+pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
+    vec![(
+        "property-table-indexed",
+        PROPS_INDEXED_SIZE,
+        props_indexed_size,
+    )]
 }

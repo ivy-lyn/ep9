@@ -299,3 +299,87 @@ fn contexts_map_back_to_their_unit_scope() {
         });
     }
 }
+
+/// V9 SWEEP-NOFNPTR: each `CellSize::Field` form of a VM kind gives the size that the size
+/// function it replaces gives, for every count the field can hold. The test cell has the
+/// count in one place and other int32 Values in every other word; the count goes in each
+/// place in turn (word0 flags, then each slot), so a form that reads another field than its
+/// function fails. Counts: 0..300, each 2^k - 1, 2^k and 2^k + 1, and `i32::MAX`; in the
+/// flags the bits above the in-object mask; for BigInt also bit 31, the sign, which the size
+/// masks (H17).
+#[test]
+fn every_size_form_gives_the_size_of_its_size_function() {
+    use core::ptr::NonNull;
+    use ep9_heap::{CellPtr, CellSize};
+    use ep9_value::{ShapeId, Word0};
+
+    const WORDS: usize = 32;
+    #[repr(C, align(8))]
+    struct TestCell([u64; WORDS]);
+
+    let forms: Vec<_> = [
+        crate::object::size_forms(),
+        crate::elements::size_forms(),
+        crate::props::size_forms(),
+        crate::props_index::size_forms(),
+        crate::feedback::size_forms(),
+        crate::bigint::size_forms(),
+        crate::shape::size_forms(),
+    ]
+    .concat();
+    // 14 object rows (the 13 kinds OBJECT .. PROXY_CALLABLE; the 12 view kinds share one),
+    // elements, context, 2 elements stores, 2 property tables, feedback, BigInt and the 4
+    // shape side tables.
+    assert_eq!(forms.len(), 26, "the size-form list");
+    let mut counts: Vec<u32> = (0..300).collect();
+    for k in 1..31 {
+        counts.extend([(1u32 << k) - 1, 1 << k, (1 << k) + 1]);
+    }
+    counts.push(i32::MAX as u32);
+    let filler = |i: usize| crate::frame::int32_bits(1000 + 7 * i as i32);
+    let mut checks = 0usize;
+    for (name, size, function) in forms {
+        let CellSize::Field(form) = size else {
+            panic!("{name}: not a field form");
+        };
+        // (place, count): place 0 is the word0 flags, place i > 0 the slot at 8 i.
+        let mut cases: Vec<(usize, u32)> = Vec::new();
+        for place in 0..WORDS {
+            cases.extend(counts.iter().map(|&n| (place, n)));
+        }
+        cases.extend([(0, 0xFF00), (0, 0xFF05), (0, 0xFFFF)]);
+        if name == "bigint" {
+            cases.extend(counts.iter().map(|&n| (1, n | 1 << 31)));
+        }
+        for (place, n) in cases {
+            let mut cell = TestCell([0; WORDS]);
+            let flags = if place == 0 { n as u16 } else { 0x0005 };
+            cell.0[0] = Word0::pack(ShapeId::new(0), 0, 0, flags);
+            for (i, w) in cell.0.iter_mut().enumerate().skip(1) {
+                *w = if i == place {
+                    crate::frame::int32_bits(n as i32)
+                } else {
+                    filler(i)
+                };
+            }
+            // SAFETY: the test cell is a live 8-aligned local of WORDS words; each size
+            // function and form reads one field below WORDS * 8 (each layout's count field).
+            let c = unsafe { CellPtr::from_raw(NonNull::from(&mut cell.0[0]).cast()) };
+            // SAFETY: as above: every slot holds an int32 Value, word0 a header.
+            let got = unsafe { form.size_of(c) };
+            assert_eq!(
+                got,
+                function(c),
+                "{name}: count {n:#x} in place {place}: the form {form:?}"
+            );
+            // The heap takes a form's size as it is (no rounding): it is a cell size.
+            assert_eq!(
+                ep9_heap::layout::cell_size_for(got),
+                Some(got),
+                "{name}: {got}"
+            );
+            checks += 1;
+        }
+    }
+    assert!(checks > 26 * WORDS * 300, "{checks} checks");
+}
