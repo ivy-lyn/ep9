@@ -2045,3 +2045,99 @@ fn a_frozen_dense_array_length_is_read_only_on_the_set_walk() {
         checked(rt, s);
     });
 }
+
+/// A script with one LoadKeyed slot `get`: it makes `[5]`, `[1.5]`, `["x"]` and the holey
+/// `[, 7]` with the StoreKeyed slot, then prints `a[0]`, `b[0]`, `c[0]`, `h[1]` (four Array
+/// hits, one per kind) and `h[0]` (the hole: cold) read at `get`.
+fn keyed_hits_program() -> (VerifiedUnit, ep9_bytecode::FeedbackSlot) {
+    let mut s = Asm::script(0);
+    let get = s.b.feedback_slot(FeedbackSlotKind::LoadKeyed);
+    let set = s.set_keyed;
+    let k = s.b.new_register();
+    let make = |s: &mut Asm, at: i32, value: &dyn Fn(&mut Asm)| -> Register {
+        let r = s.b.new_register();
+        let lit = s.lit;
+        s.b.create_empty_array_literal(lit).star(r);
+        s.b.lda_smi(at).star(k);
+        value(s);
+        s.b.set_keyed_property(r, k, set);
+        r
+    };
+    let a = make(&mut s, 0, &|s| {
+        s.b.lda_smi(5);
+    });
+    let b = make(&mut s, 0, &|s| {
+        s.lda_num(1.5);
+    });
+    let c = make(&mut s, 0, &|s| {
+        s.lda_str("x");
+    });
+    let h = make(&mut s, 1, &|s| {
+        s.b.lda_smi(7);
+    });
+    for (r, i) in [(a, 0), (b, 0), (c, 0), (h, 1), (h, 0)] {
+        s.b.lda_smi(i).get_keyed_property(r, get);
+        s.print_acc();
+    }
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), get)
+}
+
+/// M9-P4 LEVER-11 (V10 KEYED-NAVIER, the window part; DL M9-P4-WPRE-1): the `ics_only`
+/// handler tables run the `GetKeyedProperty` fast body with `RECORDS` false
+/// (`interp::dsl::fast_body`, `interp::ops::get_keyed`), so an Array hit runs no window test
+/// of `profile::keyed_hit_kind`. In every dispatch expansion and GC mode the hits read the same
+/// values under both feedback modes; under `full` the sampled hits (the script runs right after
+/// the budget reset) still set the kinds-set bits of their kinds, and under `ics_only` the
+/// slot's value half stays int32 0 (no record). A `full` table that ran the `ics_only` body
+/// (a mutation of `fast_body`) loses the 3 packed hit kinds and fails here.
+#[test]
+fn a_keyed_hit_reads_the_same_in_both_feedback_modes() {
+    use crate::{ExecOptions, Feedback, Isolate};
+    const OUT: [&str; 5] = ["5", "1.5", "x", "7", "undefined"];
+    let kset = |ks: &[u8]| ks.iter().map(|&k| elements::kinds_set_bit(k)).sum::<u32>();
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            for f in [Feedback::FULL, Feedback::ICS_ONLY] {
+                on_big_stack(move || {
+                    let config = IsolateConfig {
+                        feedback_threshold: 0,
+                        ..config(d, stress)
+                    };
+                    let mut iso =
+                        Isolate::new_with(config, ExecOptions::default().feedback(f)).unwrap();
+                    iso.register_host_function("print", 1, super::print);
+                    let (u, get) = keyed_hits_program();
+                    super::take_output();
+                    let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "hits.js").map(|_| ()));
+                    assert!(r.is_ok(), "{r:?}");
+                    let what = format!("{} stress={stress} {}", d.name(), f.name());
+                    assert_eq!(super::take_output(), OUT, "{what}");
+                    let units = iso.rt.units.borrow();
+                    let fi = &units.last().unwrap().infos[0];
+                    let v = feedback::vector(fi).unwrap();
+                    let g = feedback::value(v, get.index() as u32) as u32;
+                    if f == Feedback::FULL {
+                        let seen = [
+                            ek::PACKED_INT32,
+                            ek::PACKED_DOUBLE,
+                            ek::PACKED_ELEMENTS,
+                            ek::HOLEY_INT32,
+                        ];
+                        assert_eq!(g & elements::KINDS_SET_MASK, kset(&seen), "{what}: {g:#x}");
+                        assert_eq!(
+                            g & 0x3FF,
+                            keyed::INDEX | keyed::ARRAY | keyed::HOLE,
+                            "{what}"
+                        );
+                    } else {
+                        assert_eq!(g, 0, "{what}: no record");
+                    }
+                    drop(units);
+                    iso.collect_garbage();
+                    iso.verify_heap().unwrap();
+                });
+            }
+        }
+    }
+}

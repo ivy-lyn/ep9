@@ -881,7 +881,7 @@ pub(crate) use cold_handler;
 /// | `$mode` | Fast handlers | Cold handlers |
 /// |---|---|---|
 /// | `full` | `Flow::Record`, `RecordPair`, `JumpRecordCall` run the profile record ([`record_exit`]) | the cold bodies ([`cold_handler`]) |
-/// | `ics_only` | the same arms continue with no record (sibling: a tail call of [`skip_next`]): no `profile.rs` record code in a fast handler | one tail jump to the cold handler of the `full` table of the same `$tail` ([`cold_handler`]) |
+/// | `ics_only` | the same arms continue with no record (sibling: a tail call of [`skip_next`]): no `profile.rs` record code in a fast handler; `GetKeyedProperty` runs its fast body with the per-table const `RECORDS` false ([`fast_body`]), so its Array hit runs no window test | one tail jump to the cold handler of the `full` table of the same `$tail` ([`cold_handler`]) |
 ///
 /// The record hooks of the cold bodies are `ops.rs` code that both tables share, so they test
 /// the isolate's mode themselves (`profile::records`, on the cold path only). Every expansion
@@ -912,7 +912,7 @@ macro_rules! expand_threaded {
                 // SAFETY: as above; a verified function never falls off its end.
                 let mut st = unsafe { St::new(cx, pc, fp, acc, pc.add(len)) };
                 let next: *const u8 = $crate::interp::ops::if_cold!($name {
-                    match $crate::interp::ops::$name::fast(&mut st, $($oname),*) {
+                    match $crate::interp::dsl::fast_body!($mode, $name, st; $($oname),*) {
                         Flow::Next => st.next,
                         Flow::Jump(t) => t,
                         Flow::Cold => {
@@ -1550,6 +1550,28 @@ macro_rules! dispatch_pc_of {
     };
 }
 pub(crate) use dispatch_pc_of;
+
+/// The fast body that a threaded handler runs ([`expand_threaded`], the opcodes with a cold
+/// body): `interp::ops::$name::fast`, except `GetKeyedProperty` in an `ics_only` table (M9-P4
+/// LEVER-11, V10 KEYED-NAVIER; DL M9-P4-WPRE-1, -2). Its fast body `interp::ops::get_keyed`
+/// takes the per-table const `RECORDS`: true for `full` (`fast`, the match loop and the
+/// prefixed step too), false here. The only record of that body is the sampled kinds-set bit of
+/// an Array hit (`profile::keyed_hit_kind`), and an `ics_only` table drops every record
+/// ([`record_exit`]), so with `RECORDS` false the hit runs no window test (a load of
+/// `Cx::budget`, a compare and a branch; x86-64: 3 instructions per hit) and goes to the next
+/// instruction as `Flow::Next`. A record arm that ignores the bit is not enough: the kind read
+/// (a `Relaxed` atomic load of the header's shape id) stays, and with it the test. The handler
+/// type, its arguments, the pinned registers, the expansion count and the handler count do not
+/// change; the `full` tables run the same code as before.
+macro_rules! fast_body {
+    (ics_only, GetKeyedProperty, $st:ident; $object:ident, $s:ident) => {
+        $crate::interp::ops::get_keyed::<false>(&mut $st, $object, $s)
+    };
+    ($mode:ident, $name:ident, $st:ident; $($a:ident),*) => {
+        $crate::interp::ops::$name::fast(&mut $st, $($a),*)
+    };
+}
+pub(crate) use fast_body;
 
 #[cfg(test)]
 mod tests {
