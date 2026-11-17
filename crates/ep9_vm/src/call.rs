@@ -2035,13 +2035,15 @@ pub(crate) mod fast_hits {
     use core::cell::Cell;
 
     /// The Switch rows of the FASTDIFF inventory, in counter order.
-    pub const NAMES: [&str; 7] = [
+    pub const NAMES: [&str; 9] = [
         "host-entry",
         "forward-apply",
         "forward-call",
         "args-create",
         "clfal-length",
         "clfal-elements",
+        "host-call-property",
+        "unit-search",
         "json-quote",
     ];
 
@@ -2087,6 +2089,9 @@ thread_local! {
     pub(crate) static FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
     /// The calls of [`FORWARDED_CALLS`] that [`forward_frame`] (the T0 call path) pushed.
     pub(crate) static T0_FORWARDED_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    /// The calls of [`HOST_ENTRY_HITS`] that `interp/slow/call.rs` `call_property` (the host call
+    /// of `CallProperty0`-`2`) took on this thread.
+    pub(crate) static HOST_PROPERTY_HITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
 /// The non-bytecode arm of [`call_bytecode`] (M7-P5 A2-RW, route MC-w30-2): a call from Rust

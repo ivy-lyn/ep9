@@ -1322,6 +1322,60 @@ pub(crate) mod testing {
     }
 }
 
+// ---- search and bulk copy on the payload (OXC-PERF wave 2 STR-SEARCH-SIMD) -----------------
+
+pub(crate) mod search;
+
+/// The direction of a [`search_step`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Dir {
+    /// StringIndexOf: the first match at or after the cursor.
+    Forward,
+    /// The lastIndexOf scan: the last match at or before the cursor.
+    Backward,
+}
+
+/// One step of a search of the flat string `search` (not empty) in the flat string `s`, on
+/// their own code units (no copy). Not a GC point: it takes the views itself, and they end
+/// when it returns, so the caller may poll (a GC point) between two steps. The cursor must
+/// hold a valid start ([`search::index_of_step`], [`search::last_index_of_step`]).
+pub(crate) fn search_step(
+    k: search::Kernel,
+    dir: Dir,
+    s: u64,
+    search: u64,
+    c: &mut search::Cursor,
+) -> search::Step {
+    fn step<H: search::Unit, N: search::Unit>(
+        k: search::Kernel,
+        dir: Dir,
+        h: &[H],
+        n: &[N],
+        c: &mut search::Cursor,
+    ) -> search::Step {
+        match dir {
+            Dir::Forward => search::index_of_step(k, h, n, c),
+            Dir::Backward => search::last_index_of_step(h, n, c),
+        }
+    }
+    match (units(s), units(search)) {
+        (JsStr::Latin1(h), JsStr::Latin1(n)) => step(k, dir, h, n, c),
+        (JsStr::Latin1(h), JsStr::Utf16(n)) => step(k, dir, h, n, c),
+        (JsStr::Utf16(h), JsStr::Latin1(n)) => step(k, dir, h, n, c),
+        (JsStr::Utf16(h), JsStr::Utf16(n)) => step(k, dir, h, n, c),
+    }
+}
+
+/// Appends the code units `from..to` of the flat string `s` to `out` in one bulk copy (a
+/// UTF-16 payload is copied as is; a Latin-1 one is widened). Not a GC point. Panics on a
+/// range that is not inside `s`.
+pub(crate) fn push_units(s: u64, from: usize, to: usize, out: &mut Vec<u16>) {
+    match units(s) {
+        JsStr::Latin1(x) => out.extend(x[from..to].iter().map(|&b| u16::from(b))),
+        JsStr::Utf16(x) => out.extend_from_slice(&x[from..to]),
+    }
+}
+
 // ---- JSON.stringify text on the payload (OXC-PERF wave 3 W3-JSON-QUOTE) ---------------------
 
 pub(crate) mod json_quote;

@@ -805,6 +805,9 @@ embed (not core): impl Isolate :: pub fn set_can_block(&mut self, bool)
 embed (not core): impl Isolate :: pub fn async_waiter_count(&self) -> usize
 embed (not core): impl Isolate :: pub fn block_for_async_waiters(&self, std::time::Duration) -> bool
 abi: impl<'s> Cx<'s> :: pub fn array_prototype_to_string(&mut self, Local<'s>, Args<'s>, Local<'s>) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn string_index_of(&mut self, impl Into<Local<'s, JsString>>, impl Into<Local<'s, JsString>>, usize) -> JsResult<Option<usize>>
+abi: impl<'s> Cx<'s> :: pub fn string_last_index_of(&mut self, impl Into<Local<'s, JsString>>, impl Into<Local<'s, JsString>>, usize) -> JsResult<Option<usize>>
+abi: impl<'s> Cx<'s> :: pub fn push_code_units(&self, Local<'s, FlatStr>, usize, usize, &mut Vec<u16>)
 abi: impl<'s> Cx<'s> :: pub fn json_quote_into(&self, Local<'s, FlatStr>, &mut JsonText)
 abi: impl<'s> Cx<'s> :: pub fn json_push_flat(&self, Local<'s, FlatStr>, &mut JsonText)
 abi: impl<'s> Cx<'s> :: pub fn json_text_finish(&mut self, JsonText) -> JsResult<Local<'s, JsString>>

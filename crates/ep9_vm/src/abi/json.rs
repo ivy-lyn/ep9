@@ -46,7 +46,7 @@ impl<'s> Cx<'s> {
             Kernel::scalar()
         };
         if k != Kernel::scalar() {
-            crate::call::fast_hit!(6);
+            crate::call::fast_hit!(8);
         }
         string::json_quote(k, s.bits(), out);
     }

@@ -411,6 +411,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn promise_state(&mut self, impl core::convert:
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn prototype_walk_step(&mut self, impl core::convert::Into<Local<'s, JsObject>>, &mut u32) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn proxy_create(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn proxy_revoke(&mut self, impl core::convert::Into<Local<'s>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn push_code_units(&self, Local<'s, FlatStr>, usize, usize, &mut alloc::vec::Vec<u16>)
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_create(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_disable_legacy_features(&mut self, impl core::convert::Into<Local<'s>>)
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_exec(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, usize) -> ep9_value::JsResult<core::option::Option<MatchRecord>>
@@ -440,6 +441,8 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_with_receiver(&mut self, impl core::conv
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn shared_array_buffer_block(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<SharedBlockRef>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn shared_array_buffer_grow(&mut self, impl core::convert::Into<Local<'s>>, u64) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_index_of(&mut self, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>, usize) -> ep9_value::JsResult<core::option::Option<usize>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_last_index_of(&mut self, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>, usize) -> ep9_value::JsResult<core::option::Option<usize>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_len(&self, impl core::convert::Into<Local<'s, JsString>>) -> usize
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn substring(&mut self, impl core::convert::Into<Local<'s, JsString>>, usize, usize) -> ep9_value::JsResult<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn symbol_description(&self, Local<'s, JsSymbol>) -> Local<'s>

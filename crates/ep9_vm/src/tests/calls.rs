@@ -1892,3 +1892,310 @@ fn a_host_callee_of_another_realm_runs_in_its_realm_through_the_entry() {
         }
     }
 }
+
+// ---- the host call of CallProperty0-2 (M9 OXC-W2-HOSTCALL, `slow::call_property`) ---------
+
+/// Sets the budget of `iso` below the call record window of the isolate start
+/// (`profile::CALL_WINDOW`), as `tests/profile.rs`
+/// `calls_outside_the_window_are_not_recorded_until_a_poll` does. A host call spends no
+/// budget unit (H23), so each call of a short script runs in that window. On x86-64 (not
+/// spike-native) the cold body of `CallProperty0`-`2` (`interp/ops.rs` `call_property_cold`)
+/// sends a call in the window to the record and `slow::call`, not to `slow::call_property`.
+fn start_below_the_call_window(iso: &mut crate::Isolate) {
+    iso.cx.budget = crate::interp::BUDGET / 2;
+}
+
+/// The budget after a run that [`start_below_the_call_window`] started is still in
+/// `1..=BUDGET / 2`: no poll ran (a poll sets the budget to `BUDGET` or more), so the budget
+/// was below the call record window at each call of the run.
+fn assert_below_the_call_window(iso: &crate::Isolate, label: &str) {
+    use crate::interp::BUDGET;
+    use crate::profile::CALL_WINDOW;
+    const { assert!(BUDGET / 2 <= BUDGET - CALL_WINDOW) };
+    let b = iso.cx.budget;
+    assert!((1..=BUDGET / 2).contains(&b), "{label}: budget {b}");
+}
+
+/// The bytecode offset that the caller frame of this host call saved (H14 header slot 7),
+/// which `Runtime::enter` writes before a host call. An error made before the host frame
+/// exists (the RangeError of a full VM or native stack) takes the caller's position in its
+/// stack from this slot (`error::capture`: the top frame's `saved_offset`).
+fn caller_offset<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // The host frame is the top frame (`call_host_from_bytecode`, `call_host`).
+    let fp = cx.inner().rt().stack().fp();
+    let off = crate::error::FrameRef(fp).caller().saved_offset();
+    Ok(Local::int32(off as i32))
+}
+
+/// Runs `make` with `echo`, `hthrow`, `mine` and `at` ([`caller_offset`]) registered, the
+/// budget below the call record window ([`start_below_the_call_window`]) and the human fast
+/// paths `on` or off: (result, output, host entries, the host calls that
+/// `slow::call_property` took). Holds [`RUN_HOST`] until it returns.
+fn run_property(
+    make: fn() -> VerifiedUnit,
+    d: Dispatch,
+    stress: bool,
+    on: bool,
+) -> (Result<String, String>, Vec<String>, u64, u64) {
+    use crate::call::{HOST_ENTRY_HITS, HOST_PROPERTY_HITS};
+    let _one = RUN_HOST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    super::on_big_stack(move || {
+        let mut iso = isolate(super::config(d, stress));
+        iso.register_host_function("echo", 0, echo);
+        iso.register_host_function("hthrow", 0, hthrow);
+        iso.register_host_function("mine", 0, realm_of);
+        iso.register_host_function("at", 0, caller_offset);
+        take_output();
+        HOST_ENTRY_HITS.with(|h| h.set(0));
+        HOST_PROPERTY_HITS.with(|h| h.set(0));
+        start_below_the_call_window(&mut iso);
+        let r = iso.with_cx_checkpoint(|cx| {
+            cx.set_human_fast_paths(on);
+            cx.run_script(make(), "property.js").map(|v| cx.display(v))
+        });
+        assert_below_the_call_window(&iso, &format!("{} stress={stress} on={on}", d.name()));
+        let out = take_output();
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+        let _ = iso.with_cx(|cx| {
+            cx.set_human_fast_paths(true);
+            Ok(())
+        });
+        (
+            r.map_err(|e| e.message),
+            out,
+            HOST_ENTRY_HITS.with(|h| h.get()),
+            HOST_PROPERTY_HITS.with(|h| h.get()),
+        )
+    })
+}
+
+/// A host callee of `CallProperty0`, `CallProperty1` and `CallProperty2` with a receiver that
+/// is not a FUNCTION (a string, an int32, an object) takes `slow::call_property`: the same
+/// receiver, arguments and result as the general path (the fast paths off), and one hit per
+/// call. The calls it refuses take `slow::call` with the same result: a `Wide` call (an
+/// argument register above 127), a FUNCTION receiver (the forward test of `host_entry`, which
+/// counts it), and a bytecode callee (no host entry at all).
+#[test]
+fn a_host_method_call_takes_the_fixed_property_path_in_each_arity() {
+    fn make() -> VerifiedUnit {
+        // f1: function id(a) { return a; }, a bytecode callee
+        let mut id = Asm::new(meta("id", 1, 0, 0, 0));
+        let p = id.b.parameter(0);
+        id.b.ldar(p).return_();
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(4);
+        for shape in [
+            Shape::CallProperty0,
+            Shape::CallProperty1,
+            Shape::CallProperty2,
+        ] {
+            emit_shape(&mut s, shape, "echo", l);
+            s.print_acc();
+        }
+        let (f, slot) = (s.f, s.call);
+        // 7 .echo(1): an int32 receiver.
+        s.b.lda_smi(7).star(l.get(0)).lda_smi(1).star(l.get(1));
+        s.lda_global("echo");
+        s.b.star(f).call_property1(f, l.get(0), l.get(1), slot);
+        s.print_acc();
+        // globalThis.echo(2, 3): an object receiver.
+        s.lda_global("globalThis");
+        s.b.star(l.get(0))
+            .lda_smi(2)
+            .star(l.get(1))
+            .lda_smi(3)
+            .star(l.get(2));
+        s.lda_global("echo");
+        s.b.star(f)
+            .call_property2(f, l.get(0), l.get(1), l.get(2), slot);
+        s.print_acc();
+        // "R".echo(r150): a Wide call.
+        let big = s.b.new_register_list(160);
+        s.lda_str("R");
+        s.b.star(l.get(0)).lda_smi(5).star(big.get(150));
+        s.lda_global("echo");
+        s.b.star(f).call_property1(f, l.get(0), big.get(150), slot);
+        s.print_acc();
+        // id.echo(): a FUNCTION receiver; print the result's length (echo prints the source).
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(l.get(0));
+        s.lda_global("echo");
+        s.b.star(f).call_property0(f, l.get(0), slot);
+        s.b.star(l.get(1));
+        s.get_named(l.get(1), "length");
+        s.print_acc();
+        // "R".id(9): a bytecode callee.
+        s.lda_str("R");
+        s.b.star(l.get(0)).lda_smi(9).star(l.get(1));
+        s.b.create_closure(k, s.closure, 0).star(f);
+        s.b.call_property1(f, l.get(0), l.get(1), slot);
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), id.finish()])
+    }
+    let want = ["R:", "R:1", "R:1,2", "7:1", "[object Object]:2,3", "R:5"];
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let on = run_property(make, d, stress, true);
+            let off = run_property(make, d, stress, false);
+            assert!(on.0.is_ok(), "{label}: {:?}", on.0);
+            assert_eq!(on.1[..want.len()], want, "{label}");
+            assert_eq!(on.1.len(), want.len() + 2, "{label}");
+            assert_eq!(on.1[want.len() + 1], "9", "{label}");
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{label}");
+            // On: 5 property calls take the path; host entries: those 5, the FUNCTION
+            // receiver call and 8 prints. Off: none.
+            assert_eq!((on.3, off.3), (5, 0), "{label}");
+            assert_eq!((on.2, off.2), (5 + 1 + 8, 0), "{label}");
+        }
+    }
+}
+
+/// A host callee of the fixed property path that throws: the exception unwinds from the call
+/// (a handler in the same function catches it), with the same message and stack as the
+/// general path, and the script goes on after it. A host function of another realm runs in
+/// its realm on this path (H20 R5), and the caller's realm is current again after it.
+#[test]
+fn a_host_method_call_throws_and_switches_realms_as_the_general_path() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (ctx, t) = (s.b.new_register(), s.b.new_register());
+        let l = s.b.new_register_list(3);
+        let (f, slot) = (s.f, s.call);
+        // try { "R".hthrow(1) } catch (e) { print(e.message) }, then e.stack.
+        try_print_message(&mut s, ctx, t, |s| {
+            s.lda_str("R");
+            s.b.star(l.get(0)).lda_smi(1).star(l.get(1));
+            s.lda_global("hthrow");
+            s.b.star(f).call_property1(f, l.get(0), l.get(1), slot);
+        });
+        s.get_named(t, "stack");
+        s.print_acc();
+        // r1 = "R".f(), a host function of the second realm; r2 = "R".mine().
+        for (callee, out) in [("f", "r1"), ("mine", "r2")] {
+            s.lda_str("R");
+            s.b.star(l.get(0));
+            s.lda_global(callee);
+            s.b.star(f).call_property0(f, l.get(0), slot);
+            s.sta_global(out);
+        }
+        s.lda_str("after");
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    /// (output, [r1 is the second global, r2 the first, the first realm is current], hits).
+    fn run(d: Dispatch, stress: bool, on: bool) -> (Vec<String>, [bool; 3], u64) {
+        use crate::call::HOST_PROPERTY_HITS;
+        let _one = RUN_HOST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::on_big_stack(move || {
+            let mut iso = isolate(super::config(d, stress));
+            iso.register_host_function("hthrow", 0, hthrow);
+            iso.register_host_function("mine", 0, realm_of);
+            take_output();
+            HOST_PROPERTY_HITS.with(|h| h.set(0));
+            let first = iso.cx.realm;
+            start_below_the_call_window(&mut iso);
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.set_human_fast_paths(on);
+                let g1 = cx.global();
+                let g2 = cx.create_realm()?;
+                let f = cx.with_realm(g2, |cx| {
+                    Ok(cx.new_builtin_closure(realm_of, "f", 0, Local::undefined()))
+                })?;
+                cx.set(g1, "f", f, true)?;
+                cx.run_script(make(), "property-realm.js")?;
+                let g1 = cx.global();
+                let r1 = cx.get(g1, "r1")?;
+                let r2 = cx.get(g1, "r2")?;
+                Ok([
+                    r1.bits() == g2.bits(),
+                    r2.bits() == g1.bits(),
+                    cx.inner().realm == first,
+                ])
+            });
+            assert_below_the_call_window(&iso, &format!("{} stress={stress} on={on}", d.name()));
+            let out = take_output();
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            let _ = iso.with_cx(|cx| {
+                cx.set_human_fast_paths(true);
+                Ok(())
+            });
+            (out, r.unwrap(), HOST_PROPERTY_HITS.with(|h| h.get()))
+        })
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let on = run(d, stress, true);
+            let off = run(d, stress, false);
+            assert_eq!(on.0.len(), 3, "{label}: {:?}", on.0);
+            assert_eq!(
+                (on.0[0].as_str(), on.0[2].as_str()),
+                ("hthrow 1", "after"),
+                "{label}"
+            );
+            assert!(
+                on.0[1].starts_with("RangeError: hthrow 1"),
+                "{label}: {}",
+                on.0[1]
+            );
+            assert_eq!(on.0, off.0, "{label}");
+            assert_eq!(on.1, [true; 3], "{label}");
+            assert_eq!(on.1, off.1, "{label}");
+            // On: hthrow, f and mine take the path. Off: none.
+            assert_eq!((on.2, off.2), (3, 0), "{label}");
+        }
+    }
+}
+
+/// The fixed property path saves the caller's bytecode offset before the host call, as the
+/// general path does (`Runtime::enter`): `"R".at()`, `"R".at(1)` and `"R".at(1, 2)`
+/// ([`caller_offset`]) give the offsets of their 3 call instructions, the same with the fast
+/// paths on and off. The test fails when `call_property` does not call `enter`: then the slot
+/// holds the offset of an earlier slow path of the frame (the `LdaGlobal` of `at`) or 0.
+#[test]
+fn a_host_method_call_saves_the_caller_offset_as_the_general_path() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(3);
+        for shape in [
+            Shape::CallProperty0,
+            Shape::CallProperty1,
+            Shape::CallProperty2,
+        ] {
+            emit_shape(&mut s, shape, "at", l);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let on = run_property(make, d, stress, true);
+            let off = run_property(make, d, stress, false);
+            assert!(on.0.is_ok(), "{label}: {:?}", on.0);
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{label}");
+            let offs: Vec<u32> = on.1.iter().map(|o| o.parse().unwrap()).collect();
+            assert_eq!(offs.len(), 3, "{label}: {offs:?}");
+            assert!(
+                0 < offs[0] && offs[0] < offs[1] && offs[1] < offs[2],
+                "{label}: {offs:?}"
+            );
+            assert_eq!((on.3, off.3), (3, 0), "{label}");
+        }
+    }
+}
