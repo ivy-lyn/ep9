@@ -1612,10 +1612,10 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: no measured time yet: est. 85 min (windows-x64: the build and the ep9_builtins part
-    # of the 64-120 min test step), so 130 (1.5x). Set 1.5x the longest measured time after the
-    # first full run.
-    timeout-minutes: 130
+    # Rule 25: 1.5x the last measured max: 77 min (linux-arm64, runs 44025570495 and 44040606595;
+    # windows-x64 39/62, linux-x64 59/71, macos-arm64 60/65), so 116 (was 130, an estimate
+    # before any run; M6-ORCH-864, -890, route BUILTINS-TIMEOUT). Re-read after merge D.
+    timeout-minutes: 116
     steps:
       # Windows: keep LF in our files, allow long paths (as build-test).
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
