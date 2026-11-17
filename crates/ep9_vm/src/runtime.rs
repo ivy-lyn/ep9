@@ -815,7 +815,7 @@ const fn root_count() -> usize {
 }
 
 /// The slot of root `r` ([`SLOT_MAP`]). A root of A2 start is its own slot; the compare folds
-/// away while no root is appended (a `Root` value is below `ROOT_COUNT`).
+/// away for a constant `Root` (an appended root reads its slot from `APPENDED_ROOT_SLOTS`).
 #[inline(always)]
 fn root_slot(r: Root) -> usize {
     let v = r as usize;
