@@ -103,20 +103,20 @@ const INVENTORY: &[FastPath] = &[
     // ---- B0, the switch ----
     FastPath {
         id: "args-create",
-        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :247)",
+        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :252)",
         off: Off::Switch,
         what: "a new arguments object takes the realm's cached shape (V10-D11)",
     },
     FastPath {
         id: "clfal-length",
-        site: "crates/ep9_vm/src/arguments.rs:506 (list_length)",
+        site: "crates/ep9_vm/src/arguments.rs:578 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
                place",
     },
     FastPath {
         id: "clfal-elements",
-        site: "crates/ep9_vm/src/arguments.rs:526 (list_element; abi/mod.rs create_list_from_array_like)",
+        site: "crates/ep9_vm/src/arguments.rs:598 (list_element; abi/mod.rs create_list_from_array_like)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads a present Array or arguments element in place \
                (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
@@ -466,6 +466,26 @@ const CASES: &[Case] = &[
                 try { y.callee; } catch (e) { print(e.name); }\n\
                 print(Object.prototype.toString.call(x), Object.getPrototypeOf(y) === Object.prototype);\n\
               }",
+        spec: None,
+    },
+    // M9-P2 LEVER-9 (V8 ARGS-CREATE): @@iterator is %Array.prototype.values% (the isolate-wide
+    // root, filled on the first object), on the spec path and the fast path, also after the
+    // `values` property of Array.prototype is replaced; then the elements and a mapped alias.
+    Case {
+        path: "args-create",
+        name: "@@iterator is %Array.prototype.values%",
+        src: "var V = Array.prototype.values;\n\
+              function m(a, b) { return arguments; }\n\
+              function u(a) { 'use strict'; return arguments; }\n\
+              function w(a) { a = 9; return [...arguments].join(); }\n\
+              for (var i = 0; i < 3; i++) {\n\
+                var x = m(1, 2, 3), y = u(4), z = m();\n\
+                print(x[Symbol.iterator] === V, y[Symbol.iterator] === V, z[Symbol.iterator] === x[Symbol.iterator]);\n\
+                print(Object.getOwnPropertySymbols(x).length, JSON.stringify(Object.getOwnPropertyDescriptor(y, Symbol.iterator).enumerable), [...x].join(), [...y].join(), w(5, 6));\n\
+              }\n\
+              Array.prototype.values = function () { return 'other'; };\n\
+              for (var j = 0; j < 2; j++) print(m(7)[Symbol.iterator] === V, u(8)[Symbol.iterator] === V, [...m(1, 2)].join(), w(3));\n\
+              Array.prototype.values = V;",
         spec: None,
     },
     // ---- clfal-length ----

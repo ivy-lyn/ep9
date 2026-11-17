@@ -50,9 +50,9 @@ pub(crate) type InterruptQueue = Arc<Mutex<Vec<InterruptCallback>>>;
 /// go when the isolate does.
 pub(crate) type WeakInterruptQueue = Weak<Mutex<Vec<InterruptCallback>>>;
 
-/// Realm intrinsics and other runtime roots. The realm roots (all but [`Root::RealmKey`]) hold
-/// the values of the *current* realm: a cross-realm call writes the callee realm's values into
-/// them from its REALM record, and puts the caller's back on return (`realm::switch`, H22-Q3).
+/// Realm intrinsics and other runtime roots. The realm roots (all but the isolate-wide roots
+/// [`Root::RealmKey`] and [`Root::ArrayValues`]) hold the *current* realm's values: a cross-realm
+/// call writes them from the callee's REALM record, then the caller's (`realm::switch`, H22-Q3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Root {
@@ -107,11 +107,11 @@ pub(crate) enum Root {
     /// mirrors the realm's intrinsic `IntrinsicId::RealmFuses` (`builtins::IntrinsicId::root`),
     /// so `realm::switch` writes it with the other intrinsics.
     RealmFuses,
-    // ---- M3-P1 REALMS: isolate-wide, not switched with the realm ----
+    // ---- isolate-wide, not switched with the realm: M3-P1 REALMS; M9-P2 LEVER-9 (slot 327) ----
     /// The VM-internal private name under which the global object of each realm holds its
-    /// REALM record (`realm::of_global`; no JS code can name it). Made by the first
-    /// `realm::init`.
+    /// REALM record (`realm::of_global`; no JS code can name it). Made by the first `realm::init`.
     RealmKey,
+    ArrayValues,
 }
 
 pub(crate) const ROOT_COUNT: usize = root_count();
@@ -573,7 +573,7 @@ pub(crate) fn val(b: u64) -> Value {
 
 /// The number of `Root` values at A2 start (`GlobalObject` ..= `RealmKey`). Root `r` below it
 /// is in slot `r as usize`. Never change it.
-const A2_ROOT_COUNT: usize = 35;
+pub(crate) const A2_ROOT_COUNT: usize = 35;
 /// The realm roots at A2 start: the `Root` values below it (all but `RealmKey`).
 const A2_REALM_ROOT_COUNT: usize = 34;
 /// The number of `atoms!` atoms at A2 start (ids `0..A2_ATOM_COUNT`). Never change it.
@@ -582,7 +582,7 @@ const A2_ATOM_COUNT: usize = 36;
 /// A root or an atom added after A2 start (an item of [`APPENDED`]), by its `Root` value or
 /// atom id. Make one with [`Appended::realm_root`], [`Appended::root`] or [`Appended::atom`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // the list is empty until the first append
+#[cfg_attr(not(test), allow(dead_code))] // no realm root or atom is appended yet
 pub(crate) enum Appended {
     /// A root of the current realm: [`Runtime::clear_realm_roots`] clears it.
     RealmRoot(u8),
@@ -592,7 +592,7 @@ pub(crate) enum Appended {
     Atom(u16),
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // the list is empty until the first append
+#[cfg_attr(not(test), allow(dead_code))] // no realm root or atom is appended yet
 impl Appended {
     /// A realm root added after A2 start.
     pub(crate) const fn realm_root(r: Root) -> Appended {
@@ -614,7 +614,11 @@ impl Appended {
 /// `ROOT_SLOTS + i`. Append only: never reorder, remove or reuse an item; a retired root keeps
 /// its item (its slot then holds undefined). A new `Root` value goes after the last one in the
 /// enum (and `ROOT_COUNT` names it); a new atom goes at the end of `atoms!`.
-const APPENDED: &[Appended] = &[];
+const APPENDED: &[Appended] = &[
+    // Slot 327 (M9-P2 LEVER-9, V8 ARGS-CREATE): %Array.prototype.values% for the @@iterator of
+    // arguments objects, isolate-wide (`arguments::array_values` fills it on its first use).
+    Appended::root(Root::ArrayValues),
+];
 
 /// The slots of the whole table: the A2 ranges and [`APPENDED`].
 const TABLE_SLOTS: usize = ROOT_SLOTS + APPENDED.len();
@@ -804,6 +808,8 @@ const fn root_count() -> usize {
         | Root::Realm | Root::RealmFuses
         // M3-P1: isolate-wide
         | Root::RealmKey
+        // M9-P2 LEVER-9: isolate-wide, slot 327 (the first `APPENDED` item)
+        | Root::ArrayValues
         // A root appended after A2 start goes here, with its `APPENDED` item.
     }
 }
@@ -841,7 +847,10 @@ mod tests {
         for a in Atom::ALL {
             assert!(seen.insert(a.text()), "duplicate atom {:?}", a.text());
         }
-        assert_eq!(ROOT_COUNT, 35); // 34 before M6-P0 (Root::RealmFuses)
+        // The A2-start count (34 before M6-P0, Root::RealmFuses); each root after it is an
+        // `APPENDED` item (H13 "root slots": the golden is the count check from A2 on).
+        assert_eq!(A2_ROOT_COUNT, 35);
+        assert_eq!(Root::RealmKey as usize + 1, A2_ROOT_COUNT);
         assert_eq!(REALM_ROOT_COUNT, 34);
         assert_eq!(ROOT_SLOTS, 35 + A2_ATOM_COUNT + 256);
         assert_eq!(TABLE_SLOTS, ROOT_SLOTS + APPENDED.len());
@@ -889,6 +898,7 @@ mod tests {
         Root::Realm,
         Root::RealmFuses,
         Root::RealmKey,
+        Root::ArrayValues,
     ];
 
     /// The golden file. It is in `ep9_unit` (the unit container is the reader of root slots);
@@ -992,7 +1002,7 @@ mod tests {
         let realm: Vec<usize> = SLOT_MAP.realm_slots().collect();
         let want: Vec<usize> = ROOTS
             .iter()
-            .filter(|&&r| r != Root::RealmKey)
+            .filter(|&&r| !matches!(r, Root::RealmKey | Root::ArrayValues))
             .map(|&r| root_slot(r))
             .collect();
         assert_eq!(realm, want);
