@@ -30,6 +30,10 @@
 //!   the baseline x86-64 target, less the 8 GPRs that the wrapper saves. With `avx512f`,
 //!   zmm16-zmm31 and k0-k7 are caller-saved too, so such a build stops at a `compile_error!`
 //!   (X2 of DL M8-P3-D3).
+//!   The guard is crate-wide: it does not see a function-level `#[target_feature]`. Never call
+//!   a keep path from such a function: an `avx512f` one may keep values in zmm16-zmm31 or
+//!   k0-k7 across the call. Today `ep9_math/src/exact.rs:68` and `:522` are such functions
+//!   (fma), and they call no keep path (ep9_math does not depend on ep9_vm).
 //! - **Stack.** No `nostack` option: the `asm!` block starts with rsp 16-byte aligned and with
 //!   nothing live below rsp. The wrapper keeps that alignment for its own call (SysV: 8 pushes
 //!   and 8 bytes; Win64: 8 pushes, 32 bytes of shadow space and 8 bytes).
