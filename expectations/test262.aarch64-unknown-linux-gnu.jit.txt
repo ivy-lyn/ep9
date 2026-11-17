@@ -173,7 +173,6 @@ test/built-ins/TypedArray/prototype/reverse/immutable-buffer.js
 test/built-ins/TypedArray/prototype/set/immutable-buffer.js
 test/built-ins/TypedArray/prototype/slice/speciesctor-destination-backed-by-immutable-buffer.js
 test/built-ins/TypedArray/prototype/sort/immutable-buffer.js
-test/built-ins/TypedArray/prototype/toString.js
 test/built-ins/TypedArrayConstructors/from/custom-ctor-returns-immutable-arraybuffer.js
 test/built-ins/TypedArrayConstructors/of/custom-ctor-returns-immutable-arraybuffer.js
 test/built-ins/Uint8Array/prototype/setFromBase64/throws-when-target-is-backed-by-immutable-arraybuffer.js
@@ -525,7 +524,6 @@ test/staging/sm/Function/function-caller-restrictions.js
 test/staging/sm/Function/function-name-assignment.js
 test/staging/sm/RegExp/unicode-back-reference.js
 test/staging/sm/RegExp/unicode-ignoreCase-escape.js
-test/staging/sm/TypedArray/toString.js
 test/staging/sm/class/strictExecution.js
 test/staging/sm/class/superElemDelete.js
 test/staging/sm/class/superPropDelete.js
