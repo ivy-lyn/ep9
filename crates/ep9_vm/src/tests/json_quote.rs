@@ -166,7 +166,13 @@ fn detect_picks_the_best_body_or_the_named_one() {
         json_quote::with_path(Path::Swar, || Kernel::detect().path()),
         Some(Path::Swar)
     );
-    assert_ne!(Kernel::detect().path(), Path::Scalar);
+    // Off the forced thread, detect gives the `EP9_SIMD_JSON` pick (a test run can force any
+    // path, `scalar` too); with the variable unset, that is the best body, not the reference.
+    let env = std::env::var("EP9_SIMD_JSON").ok();
+    assert_eq!(Kernel::detect().path(), json_quote::pick(env.as_deref()));
+    if env.is_none() {
+        assert_ne!(Kernel::detect().path(), Path::Scalar);
+    }
     // Every path that this CPU has is a kernel, and the required ones are there.
     assert!(!kernels().is_empty());
 }
