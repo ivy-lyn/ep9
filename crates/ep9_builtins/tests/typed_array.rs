@@ -921,3 +921,38 @@ try { other.Int8Array(1); } catch (e) { print(e.constructor === other.TypeError)
     assert_eq!(plain, want);
     assert_eq!(run_realms_eval(src, true), plain, "GC stress");
 }
+
+// ---- (f) M9-P4 SPEC-LISTS: toString identity --------------------------------------------------
+
+/// `sec-%typedarray%.prototype.tostring`: the initial value of `%TypedArray.prototype%.toString`
+/// is `%Array.prototype.toString%`, the same function object (route TA-TOSTRING-IDENTITY), in
+/// each realm, with the attributes {w, c}. The group install takes the intrinsic, not the live
+/// `Array.prototype.toString`: a realm that replaces it before its first TypedArray use still
+/// gets the original. A call across realms runs the same steps.
+#[test]
+fn to_string_is_array_prototype_to_string_in_each_realm() {
+    let src = r#"
+const TA = Object.getPrototypeOf(Int8Array.prototype);
+const d = Object.getOwnPropertyDescriptor(TA, "toString");
+print(TA.toString === Array.prototype.toString, d.writable, d.enumerable, d.configurable,
+  TA.toString.name, TA.toString.length, String(new Int8Array([1, 2])));
+const other = createRealm();
+const OTA = Object.getPrototypeOf(other.Uint8Array.prototype);
+print(OTA.toString === other.Array.prototype.toString, OTA.toString === TA.toString);
+print(other.Array.prototype.toString.call(new Int8Array([3, 4])), TA.toString.call(new other.Uint8Array([5, 6])));
+const third = createRealm();
+evalIn(third, "var orig = Array.prototype.toString; Array.prototype.toString = function () { return 'x'; };" +
+  "var T = Object.getPrototypeOf(Float64Array.prototype);" +
+  "var r = [T.toString === orig, T.toString === Array.prototype.toString, String(new Float64Array([0.5]))].join();");
+print(third.r, third.orig === OTA.toString);
+"#;
+    let want = lines(&[
+        "true true false true toString 0 1,2",
+        "true false",
+        "3,4 5,6",
+        "true,false,0.5 false",
+    ]);
+    let plain = run_realms_eval(src, false);
+    assert_eq!(plain, want);
+    assert_eq!(run_realms_eval(src, true), plain, "GC stress");
+}

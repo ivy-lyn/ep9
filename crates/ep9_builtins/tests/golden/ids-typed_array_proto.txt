@@ -31,5 +31,5 @@
 0x541b   42.27        method       1       "toSorted"  (%TypedArray.prototype%.toSorted w-c)
 0x541c   42.28        method       2       "with"  (%TypedArray.prototype%.with w-c)
 0x541d   42.29        method       0       "toLocaleString"  (%TypedArray.prototype%.toLocaleString w-c)
-0x541e   42.30        method       0       "toString"  (%TypedArray.prototype%.toString w-c)
+0x541e   42.30        method       0       "toString"  (not installed)
 0x541f   42.31        getter       0       "[Symbol.toStringTag]"  (%TypedArray.prototype%.[Symbol.toStringTag] --c)
