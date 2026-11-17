@@ -1164,17 +1164,17 @@ op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
     st.result(r)
 });
 op!(GetKeyedProperty(st, object: R, s: FSlot) {
-    let (o, k) = (st.reg(object), st.acc);
-    profile::record_keyed(st, s, o, k);
-    if is_i32(k)
-        && i32_of(k) >= 0
-        && object::is_array(o)
-        && let Some(v) = object::array_get(o, i32_of(k) as u32)
-    {
-        st.acc = v;
-        return next_or_record(s, profile::keyed_hit_kind(st, o));
-    }
-    keyed_ic::fast_get(st, o, k, s)
+    // The fast body is `get_keyed` (after `for_in_prepare_cold`): a fn with the per-table const
+    // `RECORDS`, which an `op!` fast body cannot take (M9-P4 LEVER-11, V10 KEYED-NAVIER; DL
+    // M9-P4-WPRE-1, -2). `RECORDS` is true here: the `full` handler tables, the match loop and
+    // the prefixed step run this `fast`, so they keep the sampled kinds-set record of an Array
+    // hit (`profile::keyed_hit_kind`). The `ics_only` handler tables call `get_keyed::<false>`
+    // (`interp::dsl::fast_body`): they record nothing, so their hit runs no window test (a load
+    // of `Cx::budget`, a compare and a branch on every hit; x86-64 jitless navier-stokes makes
+    // about 40.9 M such hits). The body is not here, so that no line below moves: they are cited
+    // (`cargo xtask adr-lint`, path:line drift). Arrays of any elements kind take the same path;
+    // the other keys and receivers go to `keyed_ic::fast_get` and the cold body, as before.
+    get_keyed::<true>(st, object, s)
 } cold {
     let (o, k) = (st.reg(object), st.acc);
     profile::record_keyed_cold(st, s, o, k);
@@ -2714,6 +2714,26 @@ fn for_in_prepare_cold(st: &mut St<'_>, cache: R) -> Done {
         ErrorKind::Error,
         "ep9 internal error: ForInPrepare without a key array",
     )
+}
+
+/// The `GetKeyedProperty` fast body (see its `op!`). `RECORDS` is false only in the `ics_only`
+/// handler tables (`interp::dsl::fast_body`): their Array hit then runs no window test.
+#[inline(always)]
+pub(crate) fn get_keyed<const RECORDS: bool>(st: &mut St<'_>, object: R, s: FSlot) -> Flow {
+    let (o, k) = (st.reg(object), st.acc);
+    profile::record_keyed(st, s, o, k);
+    if is_i32(k)
+        && i32_of(k) >= 0
+        && object::is_array(o)
+        && let Some(v) = object::array_get(o, i32_of(k) as u32)
+    {
+        st.acc = v;
+        if !RECORDS {
+            return Flow::Next;
+        }
+        return next_or_record(s, profile::keyed_hit_kind(st, o));
+    }
+    keyed_ic::fast_get(st, o, k, s)
 }
 
 /// `number_bits` against `Value::number`: the int32 edges, -0, NaN payloads, infinities,
