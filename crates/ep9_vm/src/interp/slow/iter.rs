@@ -237,13 +237,20 @@ fn is_typed_array_values(rt: &Runtime, v: u64, method: u64) -> bool {
 /// The steps of %ArrayIteratorPrototype%.next (kind value) over the TypedArray `v`:
 /// TypedArrayLength at each step (a TypeError when out of bounds; the caller checked the first
 /// step), then element `i` through TypedArrayGetElement, the `[[Get]]` of an integer index. No
-/// user code runs. GC point (a BigInt element allocates): `v` and `a` live in Rust locals.
+/// user code runs. Each step takes one interrupt budget unit, as a step of the generic loop
+/// does, so a termination or an interrupt callback is not held back by a long view. GC point
+/// (a BigInt element allocates; the poll): `v` and `a` live in Rust locals.
 fn copy_typed_array(cx: &mut Cx, v: u64) -> Res<u64> {
     let rt = cx.rt();
     let n = typed_array::length(rt, v).unwrap_or(0);
     let a = object::new_array(rt, n as usize);
     let mut i = 0u32;
     loop {
+        // The unit of one `next` call of the generic loop; the length is read after the poll.
+        cx.budget -= 1;
+        if cx.budget <= 0 && interrupt(cx, core::ptr::null_mut()) == 0 {
+            return Err(Throw);
+        }
         let Some(len) = typed_array::length(rt, v) else {
             let msg = "Cannot perform this operation on a detached or out-of-bounds TypedArray";
             return Err(throw_error(cx, ErrorKind::TypeError, msg));

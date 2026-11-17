@@ -1064,3 +1064,81 @@ fn spread_of_a_typed_array_makes_no_iterator_results() {
         "the spread allocates {fast} bytes for {N} elements (the generic loop: {slow})"
     );
 }
+
+/// The `tests/iterator.rs` form: runs `setup`, then a loop that a termination stops at its
+/// first poll (a poll sets the interrupt budget to at least 10,000 units), then requests
+/// termination again and runs `call` in a third script, on a thread with a 60 s wait (it only
+/// stops a hung test). True if the call ended terminated and the isolate kept working.
+fn terminates_in(setup: &'static str, call: &'static str) -> bool {
+    fn compile(src: &str) -> ep9_bytecode::VerifiedUnit {
+        ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("compiles")
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let mut iso = common::isolate(false);
+            iso.with_cx_checkpoint(|cx| cx.run_script(compile(setup), "setup.js").map(|_| ()))
+                .expect("the setup runs");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile("for (;;) {}"), "fill.js").map(|_| ())
+            });
+            assert!(
+                r.is_err_and(|e| e.terminated),
+                "the budget fill loop ends terminated"
+            );
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached';"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
+            let terminated = r.is_err_and(|e| e.terminated);
+            let stage = common::global_text(&mut iso, "stage");
+            // The isolate keeps working.
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
+            let _ = tx.send((terminated, stage, again));
+        })
+        .expect("a thread");
+    let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+    got == Ok((true, Some("before".to_string()), Some("again".to_string())))
+}
+
+/// The spread fast path (route TA-SPREAD-FAST) takes one interrupt budget unit per step, as
+/// the generic IteratorStep loop does (Codex M9-P4 r1): an element read runs no JS, so without
+/// the poll a termination waits for the whole copy. Each view has 20,000 elements, more than
+/// the 10,128 units that the budget holds at most, so only a poll in the copy loop stops it.
+#[test]
+fn termination_stops_the_typed_array_spread() {
+    const INT8: &str = "var t = new Int8Array(20000);";
+    const BIG: &str = "var t = new BigInt64Array(20000);";
+    let not_stopped = [
+        (INT8, "[...t].length"),
+        (INT8, "Math.max(...t)"),
+        (BIG, "[...t].length"),
+    ]
+    .into_iter()
+    .filter(|&(setup, call)| !terminates_in(setup, call))
+    .map(|(_, call)| call)
+    .collect::<Vec<_>>();
+    assert_eq!(
+        not_stopped,
+        Vec::<&str>::new(),
+        "calls that a termination did not stop"
+    );
+}
