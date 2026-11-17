@@ -54,7 +54,7 @@
 # fuzz-smoke 1.
 # M6-P0 (plan v11 section 2.9) adds release-tests 4 and no-jit-units 1: 62 jobs.
 # M8-P0 (plan v13 section 3.2) adds bench-set 1 (its "off" leg on push and pull_request): 63 jobs.
-# M9-P1 (plan v14 section 4.1) adds exit-inputs 1 (its "off" leg on push and pull_request): 64 jobs.
+# M9-P1 (plan v14 4.1) adds exit-inputs 1 ("off" leg on push and PR): 64 jobs; M9-P2 builtins 4: 68.
 #
 # The dispatch input `only` (plan v10 rule 27, a CI probe of a merge head): windows-x64,linux-x64
 # keeps those two in every 4-target matrix (36 jobs); the one-runner jobs all run. Default `all`.
@@ -84,7 +84,7 @@
 # docs/measurements/ (code reads both); anything else fails closed to docs_only=false. A
 # docs-only change runs scope, lint, bench-set ("off") and exit-inputs ("off") only (lint stays: its adr-lint step, from M4-P3, must see
 # ADR commits). If scope fails, the other jobs still run (`!cancelled()`). GitHub counts a skipped job as green,
-# so on a code change CI is done only when every one of the 64 jobs ran and none is pending or
+# so on a code change CI is done only when every one of the 68 jobs ran and none is pending or
 # skipped. Timeouts follow the plan v10 section 9.2 budget table (rule 25: >= 1.5x the last
 # measured time).
 #
@@ -316,7 +316,7 @@ jobs:
         with:
           node-version: '24.22.1'
       - run: cargo build --workspace --all-targets --locked
-      - run: cargo test --workspace --locked
+      - { name: Run cargo test --workspace --locked, run: cargo test --workspace --exclude ep9_builtins --features ep9_vm/fastdiff-hits --locked } # the name m0-exit and m1-exit read; ep9_builtins: the builtins job (CI-BUILDTEST-SHARD); ep9_vm/fastdiff-hits: the feature set of the build step above
       # Spike B's native entry (plan M0 month 2, D21): the ep9_vm `spike-native` tests run
       # native code on every target, Windows x64 included (crates/ep9_vm/src/tests/native.rs).
       # The feature is never in the ep9 graph (dep-guards check 11), so it gets its own build.
@@ -1470,12 +1470,12 @@ jobs:
           || (inputs.exit_inputs == 'pathb' && '[{"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}]')
           || '[{"name":"off","os":"ubuntu-24.04","kind":"off","plat":"off"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: no measured time yet (est. per leg: 2 release builds 25-45 min on Windows, the idle
-    # baseline 10 min, MEMREAD 10-20 min, JetStream 20-40 min; a pathb leg runs 32 rounds of 15
-    # workloads on 3 engines, 60-120 min, plus about 32 min of 60-s typeperf load readings). The
-    # orchestrator reads the value again after the first dry dispatch and sets 1.5x the longest
-    # measured leg.
-    timeout-minutes: 300
+    # Rule 25: 1.5x the longest measured leg: 138.8 min (memjs-linux-x64, dry dispatch
+    # 43873371893 on fa2b687f), so 210 (was 300 before the first dispatch; M9-P2-WPRE-7). The
+    # other legs of that dispatch: memjs-windows-x64 125.7 min, memjs-linux-arm64 116.0 min,
+    # pathb-w1..w4 77.7-78.2 min. Read the value again when a leg gets longer (a new workload or
+    # engine) and set 1.5x the longest measured leg.
+    timeout-minutes: 210
     steps:
       - name: exit-inputs mode
         env:
@@ -1591,3 +1591,36 @@ jobs:
           name: m2-exit-inputs-${{ matrix.name }}
           path: out/
           if-no-files-found: error
+
+  # CI-BUILDTEST-SHARD (route CI-BUILDTEST-SHARD; DL M9-P2-WPRE-6): the ep9_builtins debug tests,
+  # out of the build-test test step for wall time (they were 60-67% of that step; build + test
+  # (windows-x64) took 127 min and the next job 75 min in run 43884142543). The same debug profile
+  # (opt-level 0) and the same ep9 features as that step: `--features ep9_vm/jit` is the feature
+  # that ep9_cli turns on in the workspace build (cargo tree: no other ep9 crate feature differs).
+  # build-test keeps the step name that m0-exit and m1-exit read, with ep9_cli and ep9_frontend
+  # in it (the nesting tests). No xtask reads this job.
+  builtins:
+    name: builtins (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The 4 targets, or the 2 of the dispatch input `only` (header).
+        include: ${{ fromJSON(inputs.only == 'windows-x64,linux-x64'
+          && '[{"name":"linux-x64","os":"ubuntu-24.04"}, {"name":"windows-x64","os":"windows-2025"}]'
+          || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
+               {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
+    runs-on: ${{ matrix.os }}
+    # Rule 25: no measured time yet: est. 85 min (windows-x64: the build and the ep9_builtins part
+    # of the 64-120 min test step), so 130 (1.5x). Set 1.5x the longest measured time after the
+    # first full run.
+    timeout-minutes: 130
+    steps:
+      # Windows: keep LF in our files, allow long paths (as build-test).
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: ep9_builtins tests (debug)
+        run: cargo test -p ep9_builtins --features ep9_vm/jit --locked

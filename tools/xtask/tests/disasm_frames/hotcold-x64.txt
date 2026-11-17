@@ -1,0 +1,28 @@
+frames.o:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000000000 <ep9h__ics__tail__Wide_cold>:
+       0:      	jmp	0x0 <ep9h__sib__tail__Wide_cold>
+
+0000000000000000 <ep9h__sib__tail__Add_cold>:
+       0:      	pushq	%rbx
+       1:      	movzbl	0x3(%rsi), %eax
+       5:      	popq	%rbx
+       6:      	jmpq	*(%rdi,%rax,8)
+
+0000000000000000 <ep9h__sib__tail__ExtraWide_cold>:
+       0:      	pushq	%rbx
+       1:      	movzbl	0x1(%rsi), %eax
+       5:      	movq	(%rdx,%rax,8), %rbx
+       9:      	movzbl	0x6(%rsi), %eax
+       d:      	popq	%rbx
+       e:      	jmpq	*(%rdi,%rax,8)
+
+0000000000000000 <ep9h__sib__tail__Wide_cold>:
+       0:      	pushq	%rbx
+       1:      	movzbl	0x1(%rsi), %eax
+       5:      	movq	(%rdx,%rax,8), %rbx
+       9:      	movzbl	0x4(%rsi), %eax
+       d:      	popq	%rbx
+       e:      	jmpq	*(%rdi,%rax,8)

@@ -1745,8 +1745,8 @@ impl<'s> Cx<'s> {
     }
 }
 
-/// `d.trunc()` (IEEE roundToIntegralTowardZero) with the same bits for every `d`, also -0,
-/// NaN and the infinities, and with no libm call on any target.
+/// `d.trunc()` (IEEE roundToIntegralTowardZero) with the same bits for every non-NaN `d`, also
+/// -0 and the infinities; a NaN stays a NaN. No libm call on any target.
 ///
 /// - On x86-64 without SSE4.1 (the baseline build), `f64::trunc` is a libm call, because
 ///   there is no `roundsd`. There, a `d` with `|d| < 2^52` may have a fraction, and it fits

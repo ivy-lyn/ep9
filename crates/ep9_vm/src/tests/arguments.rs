@@ -16,9 +16,9 @@ use crate::frame::{UNDEFINED, int32_bits};
 use crate::interp::Cx;
 use crate::key::{array_index_of, index_key};
 use crate::object::{self, attr};
-use crate::runtime::{Atom, Runtime};
+use crate::runtime::{Atom, Root, Runtime};
 use crate::symbol::{self, WellKnownSymbol};
-use crate::{Dispatch, kinds, natives, property};
+use crate::{Dispatch, Local, kinds, natives, property, realm};
 
 /// `function f(a, b) { ... }` (sloppy, simple parameters, function 1, scope 0): its context
 /// holds `a` and `b` (slots 0 and 1) and `slots` is its mapped-parameter list. The body
@@ -700,4 +700,88 @@ fn each_realm_caches_its_own_arguments_shape() {
         iso.collect_garbage();
         iso.verify_heap().unwrap();
     });
+}
+
+/// The value of the own @@iterator property of the arguments object `a`.
+fn iterator_of(cx: &mut Cx, a: u64) -> u64 {
+    let it = symbol::well_known(cx.rt(), WellKnownSymbol::Iterator);
+    let d = property::get_own_property(cx, a, it).unwrap().unwrap();
+    d.value.expect("a data property")
+}
+
+/// M9-P2 LEVER-9 (V8 ARGS-CREATE; DL M9-P2-WPRE-1, -2): the @@iterator of every arguments
+/// object is the value `builtins::function_object` gives for %Array.prototype.values%, read
+/// from the isolate-wide root `Root::ArrayValues` (slot 327). The first object fills the root;
+/// `realm::create` (which clears the realm roots) keeps it; the objects of a second realm and
+/// of a cross-realm call into it get the same value, and the root still holds it after that
+/// call returns (H22: a cross-realm call switches only the realm roots). With and without GC
+/// stress.
+#[test]
+fn the_iterator_comes_from_one_isolate_wide_root() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let values = BuiltinId::new(natives::VM_BLOCK, natives::vm::ARRAY_VALUES);
+            assert_eq!(
+                iso.rt.root(Root::ArrayValues),
+                UNDEFINED,
+                "filled on first use"
+            );
+            iso.with_cx_checkpoint(|cx| cx.run_script(mapped_four(), "one.js").map(|_| ()))
+                .unwrap();
+            let first = iso.cx.realm;
+            // The module-slot function, made by the first realm's install (a module slot
+            // holds it, so it stays live while this local holds its bits).
+            let fo = builtins::function_object(&iso.rt, values);
+            assert_eq!(object::function_realm(fo), first);
+            assert_eq!(iso.rt.root(Root::ArrayValues), fo);
+            for n in ["B", "A", "C", "D"] {
+                let a = iso.global_raw(n).expect(n).to_bits();
+                assert_eq!(iterator_of(&mut iso.cx, a), fo, "{n}");
+            }
+            let r = iso.with_cx(|cx| {
+                let g = cx.create_realm()?;
+                let rt: &Runtime = cx.inner().rt();
+                assert_eq!(rt.root(Root::ArrayValues), fo, "realm::create keeps it");
+                let second = realm::of_global(rt, g.bits()).expect("a realm's global");
+                let callee = cx.with_realm(g, |cx| {
+                    cx.run_script(mapped_four(), "two.js")?;
+                    let rt: &Runtime = cx.inner().rt();
+                    assert_eq!(builtins::function_object(rt, values), fo);
+                    let callee_key = crate::atoms::intern_str(rt, "callee");
+                    let mut callee = UNDEFINED;
+                    for n in ["B", "A", "C", "D"] {
+                        let k = crate::atoms::intern_str(cx.inner().rt(), n);
+                        let a = property::get(cx.inner(), g.bits(), k).unwrap();
+                        assert_eq!(iterator_of(cx.inner(), a), fo, "the second realm's {n}");
+                        callee = property::get(cx.inner(), a, callee_key).unwrap();
+                    }
+                    let callee: Local<'_> = Local::from_bits(callee);
+                    Ok(callee)
+                })?;
+                // `f` of the second realm, called from the first: a cross-realm call.
+                assert_eq!(cx.inner().realm, first);
+                assert_eq!(object::function_realm(callee.bits()), second);
+                let arg: Local<'_> = Local::from_bits(int32_bits(7));
+                let a = cx.call(callee, Local::undefined(), &[arg])?;
+                assert_eq!(kinds::cell_kind(a.bits()), kinds::ARGUMENTS.get());
+                assert_eq!(
+                    iterator_of(cx.inner(), a.bits()),
+                    fo,
+                    "the cross-realm call"
+                );
+                assert_eq!(cx.inner().realm, first);
+                assert_eq!(
+                    cx.inner().rt().root(Root::ArrayValues),
+                    fo,
+                    "after the call"
+                );
+                Ok(())
+            });
+            assert_eq!(r, Ok(()));
+            assert_eq!(iso.rt.root(Root::ArrayValues), fo);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
 }
