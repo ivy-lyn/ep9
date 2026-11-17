@@ -273,13 +273,24 @@ fn s4_compressed_u32_ref_is_not_a_root() {
     assert_eq!(f, 0, "the scan reads full 64-bit words only");
 }
 
+/// Two new objects `a` and `b` as one word: the u32 offset of `a` in the low half and of `b`
+/// in the high half. Each object comes from `make_compressed`, so no full pointer to it stays
+/// in this frame. The cage is 4 GiB and 4 GiB aligned, so the word is an in-cage address only
+/// if the cage base is `b << 32`; then the word is the full address of `a`, a real root and
+/// not two compressed refs (route SP-GC-S5-RESIDUE: CI 43859329311 got flags (5, 0)). In that
+/// case the pair is made again: the new `b` has another offset, so the second word is never an
+/// in-cage address.
 #[inline(never)]
 fn make_pair(m: &mut Mutator) -> u64 {
-    let a = m.new_obj(8, 0) as usize - m.heap.used().start;
-    let b = m.new_obj(8, 0) as usize - m.heap.used().start;
-    let pair = a as u64 | (b as u64) << 32;
-    scrub();
-    pair
+    loop {
+        let a = make_compressed(m);
+        let b = make_compressed(m);
+        let pair = a as u64 | (b as u64) << 32;
+        if !m.heap.cage().contains(pair as usize) {
+            scrub();
+            return pair;
+        }
+    }
 }
 
 #[inline(never)]
