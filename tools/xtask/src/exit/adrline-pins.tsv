@@ -498,3 +498,36 @@ history	H20-builtin-abi.md	crates/ep9_vm/src/tests/layout9.rs:185	| 4 Data (TA s
 history	H20-builtin-abi.md	crates/ep9_vm/src/tests/layout9.rs:189-190	| 4 Data (TA sync 3 amendment: the 2026-11-13 fill (API addition) row, ObjectClass 35-36, IntrinsicId 121-153 and blocks 38-43)	eb81c2a6	assert\_eq\!\(ObjectClass::from\_id\(36\)\, Some\(ObjectClass::DataView\)\)\;
 history	H25-sandbox-readiness.md	crates/ep9_vm/src/tests/layout9.rs:185	| 4 Data (TA sync 3 amendment: the 2026-11-13 clarify row, the DataView ObjectClass 36)	eb81c2a6	^        \(35\, 36\)$
 history	H25-sandbox-readiness.md	crates/ep9_vm/src/tests/layout9.rs:189-190	| 4 Data (TA sync 3 amendment: the 2026-11-13 clarify row, the DataView ObjectClass 36)	eb81c2a6	assert\_eq\!\(ObjectClass::from\_id\(36\)\, Some\(ObjectClass::DataView\)\)\;
+# M9-P4 A1H-TEXT (fffb4f03): the M6-P4 Frozen-step review rows (Row 1 of the 2026-11-05 clarify sets) cite the README
+# Counts line, whose head the H37 Draft step rewrote (W-pre check F6). The pattern names the line by its start.
+pin	H01-front-end-boundary.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H02-bytecode-abi.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H03-ts-runtime-semantics.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H04-lazy-compile-contract.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H05-always-linked-compiler.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H06-value-encoding.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H07-address-space-and-code-range.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H08-object-header-and-shapeid.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H09-pages-and-side-metadata.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H10-rooting.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H11-barrier-and-atomics.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H12-no-address-identity.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H13-snapshot-stable-indices.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H14-frames-and-dispatch.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H15-interpreter-dispatch.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H16-ics-and-feedback.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H21-shape-transitions.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H22-isolates-and-realms.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H23-limits-and-failure-policy.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H24-debug-and-profiling-hooks.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H25-sandbox-readiness.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H26-toolchain-and-unicode.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H27-compiler-features.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H28-platform-layer.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H29-deopt-contract.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H30-ir-fact-model.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H31-fuse-registry.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H32-guard-failure-policy.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H33-aot-feedback-rule.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H34-relocation-kinds.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
+pin	H36-fp-semantics.md	docs/adr/README.md:170	docs/adr/README.md	^Counts on 	0
