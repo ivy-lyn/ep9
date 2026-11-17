@@ -414,7 +414,7 @@ fn a_one_unit_search_is_found_at_every_position() {
 fn a_short_search_finds_a_miss_at_each_unit() {
     // Wave 3 SIMD-SHORT-CALL: a search of 2..=17 units, with a candidate that differs only
     // at unit `j` (unit 0, the last unit, each one between), then the real match or none.
-    // The short compare (fewer than 16 units after unit 0) is an inline loop.
+    // The short compare (fewer than 16 units) is an inline loop, except on x86-64 (bcmp).
     let ks = kernels();
     let alpha: [&[u16]; 2] = [
         &[

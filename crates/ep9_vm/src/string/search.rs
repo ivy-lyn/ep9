@@ -6,12 +6,13 @@
 //! a step (no GC point; the caller takes the views just before it)
 //!   scan   the next candidate positions (at most the budget left) for the first unit of the
 //!          search string: find_unit (forward) or rfind_unit (backward)
-//!   compare the candidate from unit 1 (the scan proved unit 0 equal; a one-unit search
-//!          is found at the scan hit), at most POLL_UNITS units per pass
+//!   compare the candidate (a one-unit search is found at the scan hit), at most POLL_UNITS
+//!          units per pass: forward from unit 1 (the scan proved unit 0 equal), backward
+//!          from unit 0 (last_index_of_step says why)
 //!   Poll   when POLL_UNITS units of work are done; the caller polls (a GC point), takes the
 //!          views again and calls the next step with the same Cursor
-//! work: 1 per position whose first unit differs, 1 for unit 0 of each candidate, plus the
-//! units of each compare pass (the count of the old per-position loop, so a long search
+//! work: 1 per position whose first unit differs, plus 1 per unit of each candidate that is
+//! compared or proved by the scan (the count of the old per-position loop, so a long search
 //! still polls)
 //! ```
 //!
@@ -108,12 +109,15 @@ impl Unit for u16 {
 }
 
 /// Whether two runs of code units of equal length hold the same units (either encoding). A
-/// run shorter than 16 units is compared in a loop here: a slice `==` of a length that is
-/// not a constant is a call to `bcmp`, which costs more than the units of a short search.
+/// slice `==` of a length that is not a constant is a call to `bcmp`. Except on x86-64, a run
+/// shorter than 16 units is compared in a loop here: the call costs more than the units of a
+/// short search. On x86-64 the loop costs 8 instructions per unit, and the glibc `bcmp` of
+/// fewer than 32 bytes is a short vector path (about 11 to 20 instructions), so the call
+/// stays (W3-SIMD x86 fix: with the loop, the micro-search row ran more instructions there).
 #[inline(always)]
 pub(crate) fn units_eq<A: Unit, B: Unit>(a: &[A], b: &[B]) -> bool {
     debug_assert_eq!(a.len(), b.len());
-    if a.len() < 16 {
+    if !cfg!(target_arch = "x86_64") && a.len() < 16 {
         return a.iter().zip(b).all(|(x, y)| x.widen() == y.widen());
     }
     if let (Some(x), Some(y)) = (A::bytes(a), B::bytes(b)) {
@@ -749,13 +753,16 @@ pub(crate) fn last_index_of_step<H: Unit, N: Unit>(
                     continue;
                 }
                 Some(d) => {
-                    // Unit 0 is equal, as in index_of_step.
-                    c.work += c.pos - (lo + d) + 1;
+                    // A one-unit search is found at the scan hit, as in index_of_step. A
+                    // longer one compares from unit 0 here: a compare from unit 1 needs
+                    // `lo + d + 1` after the scan, and LLVM then keeps a copy of the counter
+                    // and of the pointer in the backward scan loop (x86-64 asm: 2 more
+                    // instructions per scanned unit; W3-SIMD x86 fix).
+                    c.work += c.pos - (lo + d);
                     c.pos = lo + d;
                     if needle.len() == 1 {
                         return Step::Found(c.pos);
                     }
-                    c.matched = 1;
                 }
             }
         }
