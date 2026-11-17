@@ -8,7 +8,7 @@
 0x0004   0.4          method       0       "valueOf"  (%Object.prototype%.valueOf w-c)
 0x0005   0.5          constructor  1       "Array"  (%Array%)
 0x0006   0.6          method       1       "join"  (%Array.prototype%.join w-c)
-0x0007   0.7          method       0       "toString"  (%Array.prototype%.toString w-c)
+0x0007   0.7          method       0       "toString"  (%Array.prototype.toString%)
 0x0008   0.8          method       1       "push"  (%Array.prototype%.push w-c)
 0x0009   0.9          method       0       "next"  (%ArrayIteratorPrototype%.next w-c)
 0x000a   0.10         constructor  1       "Error"  (%Error%)
@@ -210,3 +210,5 @@ intrinsic 158  %Intl.DurationFormat%
 intrinsic 159  %Intl.DurationFormat.prototype%
 intrinsic 160  %IntlFallbackSymbolHolder%
 intrinsic 161  %IntlTemporalToLocaleString%
+intrinsic 162  %Array.prototype.toString%
+intrinsic 163  %TypedArray.prototype.values%

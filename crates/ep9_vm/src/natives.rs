@@ -342,6 +342,12 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
         id: IntrinsicId::ThrowTypeError,
         value: IntrinsicValue::Builtin(vm::THROW_TYPE_ERROR),
     },
+    // M9-P4 SPEC-LISTS: the function object of `Array.prototype.toString`, which
+    // `%TypedArray.prototype%.toString` also holds (`sec-%typedarray%.prototype.tostring`).
+    IntrinsicDef {
+        id: IntrinsicId::ArrayPrototypeToString,
+        value: IntrinsicValue::Builtin(vm::ARRAY_TO_STRING),
+    },
 ];
 
 const PROTOTYPE: PropKey = PropKey::Atom(Atom::Prototype);
