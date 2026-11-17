@@ -1142,3 +1142,105 @@ fn termination_stops_the_typed_array_spread() {
         "calls that a termination did not stop"
     );
 }
+
+/// The near-limit calls of the heap-limited isolates of
+/// `a_pending_termination_stops_the_spread_before_the_result_allocation`.
+static NEAR_LIMIT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts the call and raises the limit by 1 GiB, so a request past the limit does not end the
+/// process (a kept limit is the fatal "ep9: heap limit reached" panic).
+fn count_and_raise(_committed: usize, limit: usize) -> usize {
+    NEAR_LIMIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    limit.saturating_add(1 << 30)
+}
+
+/// A pending termination stops the spread fast path before it allocates the result (Codex
+/// M9-P4 r2): the first step's poll comes before `object::new_array` and also runs when the
+/// interrupt word is set, not only when the budget runs out. The view has 4,000,000 elements,
+/// so the result needs 32 MB (8 bytes per element); the heap limit is 8 MiB above what the
+/// isolate commits after the setup. An allocation of the result goes past the limit and calls
+/// the near-limit callback (it counts the call and raises the limit, so the test process goes
+/// on). The form of `terminates_in`: a loop that a termination stops at its first poll fills
+/// the budget, so a poll that only reads the budget comes too late.
+#[test]
+fn a_pending_termination_stops_the_spread_before_the_result_allocation() {
+    const SETUP: &str = "var t = new Uint8Array(4000000);";
+    const CALLS: [&str; 2] = ["[...t].length", "Math.max(...t)"];
+    fn compile(src: &str) -> ep9_bytecode::VerifiedUnit {
+        ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("compiles")
+    }
+    fn limited(max_heap_bytes: usize) -> Isolate {
+        Isolate::new(IsolateConfig {
+            heap: HeapConfig {
+                max_heap_bytes,
+                near_limit: Some(count_and_raise),
+                ..HeapConfig::default()
+            },
+            builtins: Some(&ep9_builtins::TABLE),
+            ..IsolateConfig::default()
+        })
+        .expect("an isolate")
+    }
+    /// The setup, then the termination of the budget fill loop. True if it ended terminated.
+    fn set_up(iso: &mut Isolate) -> bool {
+        iso.with_cx_checkpoint(|cx| cx.run_script(compile(SETUP), "setup.js").map(|_| ()))
+            .expect("the setup runs");
+        iso.terminate_handle().terminate();
+        let r = iso
+            .with_cx_checkpoint(|cx| cx.run_script(compile("for (;;) {}"), "fill.js").map(|_| ()));
+        r.is_err_and(|e| e.terminated)
+    }
+    let got = common::on_big_stack(|| {
+        // The bytes that an isolate with no limit commits after the same setup.
+        let committed = {
+            let mut iso = limited(usize::MAX);
+            assert!(set_up(&mut iso), "the budget fill loop ends terminated");
+            iso.gc_stats().committed_bytes
+        };
+        let mut got = Vec::new();
+        for call in CALLS {
+            let mut iso = limited(committed + (8 << 20));
+            let before = NEAR_LIMIT_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(set_up(&mut iso), "the budget fill loop ends terminated");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached';"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
+            let terminated = r.is_err_and(|e| e.terminated);
+            let near = NEAR_LIMIT_CALLS.load(std::sync::atomic::Ordering::SeqCst) - before;
+            let stage = common::global_text(&mut iso, "stage");
+            // The isolate keeps working.
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
+            iso.verify_heap().expect("a valid heap");
+            got.push((call, terminated, near, stage, again));
+        }
+        got
+    });
+    let want = CALLS
+        .iter()
+        .map(|&call| {
+            let (before, again) = (Some("before".to_string()), Some("again".to_string()));
+            (call, true, 0, before, again)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        got, want,
+        "(call, terminated, near-limit calls, stage, stage after): the result allocation ran"
+    );
+}

@@ -238,19 +238,26 @@ fn is_typed_array_values(rt: &Runtime, v: u64, method: u64) -> bool {
 /// TypedArrayLength at each step (a TypeError when out of bounds; the caller checked the first
 /// step), then element `i` through TypedArrayGetElement, the `[[Get]]` of an integer index. No
 /// user code runs. Each step takes one interrupt budget unit, as a step of the generic loop
-/// does, so a termination or an interrupt callback is not held back by a long view. GC point
-/// (a BigInt element allocates; the poll): `v` and `a` live in Rust locals.
+/// does, so a termination or an interrupt callback is not held back by a long view: n + 1
+/// units for n elements (the done step takes one). The unit of the first step comes before the
+/// result allocation, and that poll also runs when the interrupt word is set: a pending
+/// termination stops the spread before it allocates the result (Codex M9-P4 r2), not only
+/// when the budget runs out. GC point (the result allocation; a BigInt element allocates; the
+/// poll): `v` and `a` live in Rust locals.
 fn copy_typed_array(cx: &mut Cx, v: u64) -> Res<u64> {
     let rt = cx.rt();
+    // The unit of the first `next` call. A set interrupt word (a termination or a callback
+    // request) polls now, so a pending termination ends the spread before the allocation.
+    cx.budget -= 1;
+    let set = rt.terminate.load(core::sync::atomic::Ordering::Relaxed) != 0;
+    if (cx.budget <= 0 || set) && interrupt(cx, core::ptr::null_mut()) == 0 {
+        return Err(Throw);
+    }
     let n = typed_array::length(rt, v).unwrap_or(0);
     let a = object::new_array(rt, n as usize);
     let mut i = 0u32;
     loop {
-        // The unit of one `next` call of the generic loop; the length is read after the poll.
-        cx.budget -= 1;
-        if cx.budget <= 0 && interrupt(cx, core::ptr::null_mut()) == 0 {
-            return Err(Throw);
-        }
+        // The length is read after the poll of this step.
         let Some(len) = typed_array::length(rt, v) else {
             let msg = "Cannot perform this operation on a detached or out-of-bounds TypedArray";
             return Err(throw_error(cx, ErrorKind::TypeError, msg));
@@ -262,6 +269,11 @@ fn copy_typed_array(cx: &mut Cx, v: u64) -> Res<u64> {
         let x = typed_array::get_element(rt, v, f64::from(i));
         object::array_set(rt, a, i, x);
         i += 1;
+        // The unit of the next `next` call of the generic loop.
+        cx.budget -= 1;
+        if cx.budget <= 0 && interrupt(cx, core::ptr::null_mut()) == 0 {
+            return Err(Throw);
+        }
     }
     object::array_set_length(rt, a, i);
     Ok(a)
