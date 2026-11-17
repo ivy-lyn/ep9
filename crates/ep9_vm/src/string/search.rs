@@ -27,11 +27,11 @@
 //! | wasm32 | simd128 (16 bytes), scalar | at compile time: `cfg(target_feature = "simd128")` |
 //! | other | scalar | - |
 //!
-//! No AVX-512 body: the x86 keep-call code refuses an `avx512f` build, and a 64-byte vector
-//! helps no measured row. SSE4.2 (`pcmpestri`) has no gain over SSE2 `pcmpeqb` for a one-unit
-//! scan, so it has no body. `EP9_SIMD_SEARCH` (`scalar`, `sse2`, `avx2`, `neon`, `simd128`),
-//! read at the first detect, picks another body for a test run; a body that the CPU or the
-//! build does not have is never picked (the detected one is used).
+//! No AVX-512 body: a run-time-detected AVX-512 leaf is allowed (a compile-time `avx512f` build is
+//! not), but a 64-byte vector helps no measured row. SSE4.2 (`pcmpestri`) has no gain over SSE2
+//! `pcmpeqb` for a one-unit scan, so it has no body. `EP9_SIMD_SEARCH` (`scalar`, `sse2`, `avx2`,
+//! `neon`, `simd128`), read at the first detect, picks another body for a test run; a body that the
+//! CPU or the build does not have is never picked (the detected one is used).
 //!
 //! The NEON bodies build only where `neon` is a feature of the whole build (the aarch64 base)
 //! and the target is little-endian: the `shrn #4` mask puts unit `i` at bits `4i..4i+4` only
