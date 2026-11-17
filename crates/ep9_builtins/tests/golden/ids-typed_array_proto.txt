@@ -3,7 +3,7 @@
 # id     block.index  kind         length  name  (installed as)
 0x5400   42.0         method       0       "entries"  (%TypedArray.prototype%.entries w-c)
 0x5401   42.1         method       0       "keys"  (%TypedArray.prototype%.keys w-c)
-0x5402   42.2         method       0       "values"  (%TypedArray.prototype%.values w-c)
+0x5402   42.2         method       0       "values"  (%TypedArray.prototype.values%)
 0x5403   42.3         method       1       "at"  (%TypedArray.prototype%.at w-c)
 0x5404   42.4         method       2       "copyWithin"  (%TypedArray.prototype%.copyWithin w-c)
 0x5405   42.5         method       1       "every"  (%TypedArray.prototype%.every w-c)

@@ -192,6 +192,15 @@ const INVENTORY: &[FastPath] = &[
         what: "GetIterator of a string primitive: a code point split",
     },
     FastPath {
+        id: "iter-typed-array",
+        site: "crates/ep9_vm/src/interp/slow/iter.rs (Builtin::TypedArray, copy_typed_array; \
+               M9-P4 TA-SPREAD-FAST)",
+        off: Off::Guard,
+        what: "CreateArrayFromIterable of an in-bounds TypedArray whose method is this realm's \
+               %TypedArray.prototype.values%, with the intrinsic %ArrayIteratorPrototype%.next: \
+               an element copy",
+    },
+    FastPath {
         id: "array-tostring",
         site: "crates/ep9_vm/src/natives.rs:1546",
         off: Off::Guard,
@@ -1141,6 +1150,82 @@ const CASES: &[Case] = &[
         src: "var s = 'a\\u{1F600}b\\uD800c'; print([...s].length, [...s].map(function (c) { return c.length; }).join());",
         spec: Some(
             "var s = new String('a\\u{1F600}b\\uD800c'); print([...s].length, [...s].map(function (c) { return c.length; }).join());",
+        ),
+    },
+    Case {
+        path: "iter-typed-array",
+        name: "spread of each element type",
+        src: "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+              function own(t) { return t; }\n\
+              var T = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float16Array, Float32Array, Float64Array];\n\
+              for (var i = 0; i < T.length; i++) { var a = [...own(new T[i]([1.5, -2, 300, NaN, -0]))]; print(T[i].name, a.length, a.join(), 1 / a[4]); }\n\
+              var b = [own(new BigInt64Array([1n, -2n, 2n ** 63n])), own(new BigUint64Array([1n, -2n]))];\n\
+              for (var j = 0; j < b.length; j++) print([...b[j]].join(), typeof [...b[j]][0]);\n\
+              print([...own(new Int8Array(0))].length, Math.max(...own(new Uint8Array([3, 9, 4]))), Array.from(own(new Int16Array([7, 8]))).join());",
+        spec: Some(
+            "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+             function own(t) { var p = Object.getPrototypeOf(t); t[Symbol.iterator] = function () { return p[Symbol.iterator].call(this); }; return t; }\n\
+             var T = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float16Array, Float32Array, Float64Array];\n\
+             for (var i = 0; i < T.length; i++) { var a = [...own(new T[i]([1.5, -2, 300, NaN, -0]))]; print(T[i].name, a.length, a.join(), 1 / a[4]); }\n\
+             var b = [own(new BigInt64Array([1n, -2n, 2n ** 63n])), own(new BigUint64Array([1n, -2n]))];\n\
+             for (var j = 0; j < b.length; j++) print([...b[j]].join(), typeof [...b[j]][0]);\n\
+             print([...own(new Int8Array(0))].length, Math.max(...own(new Uint8Array([3, 9, 4]))), Array.from(own(new Int16Array([7, 8]))).join());",
+        ),
+    },
+    Case {
+        path: "iter-typed-array",
+        name: "a length-tracking, out-of-bounds, growable or subclass view",
+        src: "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+              function own(t) { return t; }\n\
+              var rab = new ArrayBuffer(4, { maxByteLength: 8 }), lt = own(new Uint8Array(rab)); lt.set([1, 2, 3, 4]);\n\
+              var fx = own(new Uint8Array(rab, 1, 2)); print([...lt].join(), [...fx].join());\n\
+              rab.resize(8); print([...lt].join(), [...fx].join());\n\
+              rab.resize(2); print([...lt].join());\n\
+              try { [...fx]; } catch (e) { print(e.name, e.message); }\n\
+              var off = own(new Uint16Array(rab, 2)); rab.resize(0);\n\
+              try { print([...off].length); } catch (e) { print(e.name, e.message); }\n\
+              var gsab = new SharedArrayBuffer(2, { maxByteLength: 4 }), g = own(new Int8Array(gsab)); gsab.grow(4); print([...g].join());\n\
+              class X extends Int16Array {} var x = own(new X([7, 8])); print([...x].join(), Object.getPrototypeOf([...x]) === Array.prototype);",
+        spec: Some(
+            "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+             function own(t) { var p = Object.getPrototypeOf(t); t[Symbol.iterator] = function () { return p[Symbol.iterator].call(this); }; return t; }\n\
+             var rab = new ArrayBuffer(4, { maxByteLength: 8 }), lt = own(new Uint8Array(rab)); lt.set([1, 2, 3, 4]);\n\
+             var fx = own(new Uint8Array(rab, 1, 2)); print([...lt].join(), [...fx].join());\n\
+             rab.resize(8); print([...lt].join(), [...fx].join());\n\
+             rab.resize(2); print([...lt].join());\n\
+             try { [...fx]; } catch (e) { print(e.name, e.message); }\n\
+             var off = own(new Uint16Array(rab, 2)); rab.resize(0);\n\
+             try { print([...off].length); } catch (e) { print(e.name, e.message); }\n\
+             var gsab = new SharedArrayBuffer(2, { maxByteLength: 4 }), g = own(new Int8Array(gsab)); gsab.grow(4); print([...g].join());\n\
+             class X extends Int16Array {} var x = own(new X([7, 8])); print([...x].join(), Object.getPrototypeOf([...x]) === Array.prototype);",
+        ),
+    },
+    Case {
+        path: "iter-typed-array",
+        name: "a patched values, next or @@iterator",
+        src: "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+              function own(t) { return t; }\n\
+              var t = own(new Int8Array([1, 2, 3])), v = TA.values;\n\
+              TA.values = function () { return [9][Symbol.iterator](); }; print([...t].join());\n\
+              TA.values = v;\n\
+              var AIP = Object.getPrototypeOf([][Symbol.iterator]()), n = AIP.next;\n\
+              AIP.next = function () { var r = n.call(this); if (!r.done) r.value = r.value * 10; return r; }; print([...t].join());\n\
+              AIP.next = n;\n\
+              TA[Symbol.iterator] = function* () { yield 5; }; print([...t].join());\n\
+              TA[Symbol.iterator] = v; Int8Array.prototype[Symbol.iterator] = function* () { yield 6; }; print([...t].join(), [...own(new Uint8Array([4]))].join());\n\
+              delete Int8Array.prototype[Symbol.iterator]; print([...t].join());",
+        spec: Some(
+            "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+             function own(t) { var p = Object.getPrototypeOf(t); t[Symbol.iterator] = function () { return p[Symbol.iterator].call(this); }; return t; }\n\
+             var t = own(new Int8Array([1, 2, 3])), v = TA.values;\n\
+             TA.values = function () { return [9][Symbol.iterator](); }; print([...t].join());\n\
+             TA.values = v;\n\
+             var AIP = Object.getPrototypeOf([][Symbol.iterator]()), n = AIP.next;\n\
+             AIP.next = function () { var r = n.call(this); if (!r.done) r.value = r.value * 10; return r; }; print([...t].join());\n\
+             AIP.next = n;\n\
+             TA[Symbol.iterator] = function* () { yield 5; }; print([...t].join());\n\
+             TA[Symbol.iterator] = v; Int8Array.prototype[Symbol.iterator] = function* () { yield 6; }; print([...t].join(), [...own(new Uint8Array([4]))].join());\n\
+             delete Int8Array.prototype[Symbol.iterator]; print([...t].join());",
         ),
     },
     Case {

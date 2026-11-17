@@ -19,15 +19,17 @@
 //! (`sec-%typedarray%.prototype-%symbol.iterator%`: the same object). `toString` is
 //! `%Array.prototype.toString%` itself, a `PropDef::intrinsic`
 //! (`sec-%typedarray%.prototype.tostring`: the same object; route TA-TOSTRING-IDENTITY, M9-P4);
-//! definition 30 stays for the id order, and no property names it.
+//! definition 30 stays for the id order, and no property names it. `values` makes
+//! `%TypedArray.prototype.values%`, the identity guard of the TypedArray spread fast path
+//! (route TA-SPREAD-FAST).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-typed_array_proto.txt`. The ids follow node v26's key order. A missing
 //! definition is appended at the end (42.32 and on), never inserted.
 
 use ep9_vm::{
-    BuiltinDef, BuiltinModule, IntrinsicId, ObjectProps, PropAttrs, PropDef, PropKey,
-    WellKnownSymbol,
+    BuiltinDef, BuiltinModule, IntrinsicDef, IntrinsicId, IntrinsicValue, ObjectProps, PropAttrs,
+    PropDef, PropKey, WellKnownSymbol,
 };
 
 use super::{proto_copy, proto_iter};
@@ -136,6 +138,9 @@ pub const MODULE: BuiltinModule = BuiltinModule {
     name: "typed_array_proto",
     block: BLOCK,
     defs: DEFS,
-    intrinsics: &[],
+    intrinsics: &[IntrinsicDef {
+        id: IntrinsicId::TypedArrayPrototypeValues,
+        value: IntrinsicValue::Builtin(2),
+    }],
     props: PROPS,
 };
