@@ -42,7 +42,7 @@ Copied from the plan row (02 §6): an ep9-owned binary schema in `ep9_hints` (ze
 | S4 | A JSDoc cast keys on the ParenthesizedExpression span, because the cast shares its span with the inner node (01 §10) |
 | S5 | A header mismatch (schema version, fact-schema version or TS flags) means ep9 ignores the file (05 §7; the same three flags as the unit header, H03) |
 | S6 | No type strings: the strings table holds paths only (05 §7) |
-| S7 | The joined records become a HINTED FactSnapshot (`ep9_facts` format, source `Hinted` = 2, `crates/ep9_facts/src/bits.rs:142`), keyed by (function id, feedback slot); the function id is the preorder index of H2 (01 §5) |
+| S7 | The joined records become a HINTED FactSnapshot (`ep9_facts` format, source `Hinted` = 2, `crates/ep9_facts/src/bits.rs:142-143`), keyed by (function id, feedback slot); the function id is the preorder index of H2 (01 §5) |
 | S8 | That snapshot travels beside the CompiledUnit, in the unit `facts` section (container section kind 6, `crates/ep9_unit/src/codes.rs:248-249`; H35). The CompiledUnit hint section stays empty (doc 13 F-R1; `docs/adr/H02-bytecode-abi.md:43`) |
 | S9 | Hints are optional in every mode. JIT mode needs none; plain JS uses PROVEN and PROFILED facts only. No codegen reads hints before A4 (`docs/plan/01-front-end.md:238`) |
 
