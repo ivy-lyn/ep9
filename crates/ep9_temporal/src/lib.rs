@@ -16,7 +16,8 @@
 //! support: tzdb (provider, no ep9_vm import), error (temporal_rs error -> JS error),
 //!          convert (ToIntegerWithTruncation ...), options (option bags), calendar
 //!          (AvailableCalendars, INTL-I1-D2; pub for ep9_intl), fields (property bags),
-//!          relative_to (Duration relativeTo)
+//!          relative_to (Duration relativeTo), intl_view (the std-type reader of Temporal
+//!          objects for ep9_intl; INTL W5, V14-D33)
 //! ```
 //!
 //! Rules of the glue (design §3.1): only the `*_with_provider` forms of temporal_rs; a
@@ -31,6 +32,7 @@ pub mod duration;
 pub(crate) mod error;
 pub(crate) mod fields;
 pub mod instant;
+pub mod intl_view;
 pub mod namespace;
 pub(crate) mod options;
 pub mod plain_date;

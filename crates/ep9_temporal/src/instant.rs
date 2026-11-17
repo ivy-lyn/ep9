@@ -546,14 +546,21 @@ fn to_json<'s>(
     default_text(cx, this)
 }
 
-/// Temporal.Instant.prototype.toLocaleString ( ) (§8.3.12): the toString() text (no
-/// ECMA-402, design SPEC-T-D18).
+/// Temporal.Instant.prototype.toLocaleString ( [ locales [ , options ] ] ) (§8.3.12; ECMA-402 with
+/// Temporal): after RequireInternalSlot, the ep9-internal `%IntlTemporalToLocaleString%`
+/// (`ep9_intl` intl_internal.rs, INTL W5: CreateDateTimeFormat and FormatDateTime) when the realm has it; else
+/// (an isolate with no Intl modules) the toString() text (design SPEC-T-D18).
 fn to_locale_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    let id = IntrinsicId::IntlTemporalToLocaleString;
+    if cx.object_class(this) == Some(CLASS) && cx.has_intrinsic(id) {
+        let f = cx.intrinsic(id);
+        return cx.call(f, this, &[args.get(0), args.get(1)]);
+    }
     default_text(cx, this)
 }
 

@@ -768,3 +768,42 @@ print(typeof Temporal, Reflect.ownKeys(globalThis).includes("Intl"));"#,
         ])
     );
 }
+
+/// INTL W5 (design INTL-I1 §1.4 and §4.6 case 1; the W5 briefs §4.2 step 6): the ep9-internal
+/// `%IntlTemporalToLocaleString%` (id 161, module `intl_internal`, block 47) is made at realm
+/// init and is in no lazy group: `ep9_intl::MODULES` (the group "Intl") does not list its
+/// module, `Cx::has_intrinsic` is true for it, and a use of it (`Cx::intrinsic`) installs no
+/// group (no more live cells than the realm without a script). It is a function.
+#[test]
+fn the_temporal_to_locale_string_function_is_made_at_realm_init() {
+    assert_eq!(ep9_intl::intl_internal::BLOCK, 47);
+    assert!(
+        ep9_builtins::MODULES
+            .iter()
+            .any(|m| m.name == "intl_internal" && m.block == 47)
+    );
+    assert!(!ep9_intl::MODULES.iter().any(|m| {
+        m.intrinsics
+            .iter()
+            .any(|d| d.id == IntrinsicId::IntlTemporalToLocaleString)
+    }));
+    let base = min_cells("");
+    let intl = min_cells("Intl;") - base;
+    let after = common::on_big_stack(|| {
+        let mut iso = isolate(false);
+        let r = iso.with_cx(|cx| {
+            assert!(cx.has_intrinsic(IntrinsicId::IntlTemporalToLocaleString));
+            let f = cx.intrinsic(IntrinsicId::IntlTemporalToLocaleString);
+            assert!(cx.is_callable(f));
+            Ok(())
+        });
+        assert_eq!(r, Ok(()));
+        common::scrub_and_collect(&mut iso);
+        live_cells(&iso)
+    });
+    assert_eq!(
+        installs(after, base, intl),
+        0,
+        "a use of %IntlTemporalToLocaleString% installs no group"
+    );
+}

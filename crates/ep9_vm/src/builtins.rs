@@ -446,11 +446,16 @@ pub enum IntrinsicId {
     /// `%Intl%.[[FallbackSymbol]]` (ECMA-402 §8) as a data property, one per realm (made by
     /// `ep9_intl` intl.rs, block 30; no property names it).
     IntlFallbackSymbolHolder,
+    // ---- INTL W5 (ECMA-402 Temporal; H20 part 2, H13 "index ids (append-only)") ----
+    /// ep9-internal, not a spec intrinsic: the function that the 8 Temporal `toLocaleString`
+    /// methods call (ECMA-402 with Temporal; made at realm init by `ep9_intl` intl_internal.rs,
+    /// block 47, outside the lazy group "Intl"; no property names it).
+    IntlTemporalToLocaleString,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 161] = [
+    pub const ALL: [IntrinsicId; 162] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -612,6 +617,7 @@ impl IntrinsicId {
         IntrinsicId::IntlDurationFormat,
         IntrinsicId::IntlDurationFormatPrototype,
         IntrinsicId::IntlFallbackSymbolHolder,
+        IntrinsicId::IntlTemporalToLocaleString,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object; `[[RealmFuses]]`
@@ -779,6 +785,7 @@ impl IntrinsicId {
             IntrinsicId::IntlDurationFormat => "%Intl.DurationFormat%",
             IntrinsicId::IntlDurationFormatPrototype => "%Intl.DurationFormat.prototype%",
             IntrinsicId::IntlFallbackSymbolHolder => "%IntlFallbackSymbolHolder%",
+            IntrinsicId::IntlTemporalToLocaleString => "%IntlTemporalToLocaleString%",
         }
     }
 
@@ -946,7 +953,8 @@ impl IntrinsicId {
             | IntrinsicId::IntlDateTimeFormatPrototype
             | IntrinsicId::IntlDurationFormat
             | IntrinsicId::IntlDurationFormatPrototype
-            | IntrinsicId::IntlFallbackSymbolHolder => return None,
+            | IntrinsicId::IntlFallbackSymbolHolder
+            | IntrinsicId::IntlTemporalToLocaleString => return None,
         })
     }
 
@@ -1082,6 +1090,7 @@ impl IntrinsicId {
             IntrinsicId::IntlDurationFormat => Some(125),
             IntrinsicId::IntlDurationFormatPrototype => Some(126),
             IntrinsicId::IntlFallbackSymbolHolder => Some(127),
+            IntrinsicId::IntlTemporalToLocaleString => Some(128),
             _ => None,
         }
     }
@@ -1763,7 +1772,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 128;
+const INTRINSIC_SLOTS: usize = 129;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

@@ -104,10 +104,32 @@ pub(super) fn field_count(p: &str, ch: char) -> Option<usize> {
         .find_map(|(f, _)| f.filter(|(x, _)| *x == ch).map(|(_, n)| n))
 }
 
+/// Whether the field (UTS 35 `letter`, `count`) is always written in digits: a year, a day,
+/// an hour, a minute, a second or a fraction. A month ('M', 'L') is not: it can be a name in
+/// every count (Hebrew, CLDR-15510).
+fn numeric_field(letter: char, count: usize) -> bool {
+    matches!(
+        letter,
+        'y' | 'u' | 'r' | 'd' | 'D' | 'g' | 'H' | 'h' | 'K' | 'k' | 'm' | 's' | 'S' | 'A'
+    ) && count > 0
+}
+
+/// Whether `s` starts as the text of a numeric field: a digit of any numbering system (the
+/// `hanidec` digits are letters in Unicode) or a minus sign.
+fn starts_numeric(s: &str) -> bool {
+    s.chars().next().is_some_and(|ch| {
+        ch.is_numeric()
+            || matches!(ch, '-' | '\u{2212}')
+            || crate::cldr::numbering_system_digits("hanidec").is_some_and(|ds| ds.contains(&ch))
+    })
+}
+
 /// The pieces of the formatted string `s` of the pattern `p`: each field takes the text up to
 /// the next literal of the pattern; two fields with no literal between them split at the
-/// digit boundary (the `super::parts` rule). Text that the pattern does not explain is a
-/// literal.
+/// digit boundary (the `super::parts` rule). When a numeric field follows that literal, the
+/// field takes the text up to the first copy of the literal that a digit follows (a name with
+/// the literal in it: "Adar I" before " 5809"; else the first copy). Text that the pattern
+/// does not explain is a literal.
 pub(super) fn pieces(s: &str, p: &str) -> Vec<Piece> {
     let items = items(p);
     let mut out: Vec<Piece> = Vec::new();
@@ -124,7 +146,17 @@ pub(super) fn pieces(s: &str, p: &str) -> Vec<Piece> {
                 let end = match items.get(i + 1) {
                     None => rest.len(),
                     Some((Some(_), _)) => super::run_len(rest),
-                    Some((None, l)) => rest.find(l.as_str()).unwrap_or(rest.len()),
+                    Some((None, l)) => {
+                        let first = rest.find(l.as_str()).unwrap_or(rest.len());
+                        match items.get(i + 2) {
+                            Some((Some((g, n)), _)) if numeric_field(*g, *n) => rest
+                                .match_indices(l.as_str())
+                                .map(|(at, _)| at)
+                                .find(|&at| starts_numeric(&rest[at + l.len()..]))
+                                .unwrap_or(first),
+                            _ => first,
+                        }
+                    }
                 };
                 if end > 0 {
                     out.push(Piece {
@@ -425,6 +457,31 @@ fn text_in_width(
         .map(|p| p.text)
 }
 
+/// The icu_calendar kind of the calendar `calendar` of a format (`None` for a calendar that
+/// ICU4X does not have).
+pub(super) fn calendar_kind(calendar: &str) -> Option<icu_calendar::AnyCalendarKind> {
+    use icu_calendar::AnyCalendarKind;
+    let kind = match calendar {
+        "buddhist" => AnyCalendarKind::Buddhist,
+        "chinese" => AnyCalendarKind::Chinese,
+        "coptic" => AnyCalendarKind::Coptic,
+        "dangi" => AnyCalendarKind::Dangi,
+        "ethioaa" => AnyCalendarKind::EthiopianAmeteAlem,
+        "ethiopic" => AnyCalendarKind::Ethiopian,
+        "gregory" | "iso8601" => AnyCalendarKind::Gregorian,
+        "hebrew" => AnyCalendarKind::Hebrew,
+        "indian" => AnyCalendarKind::Indian,
+        "islamic-civil" => AnyCalendarKind::HijriTabularTypeIIFriday,
+        "islamic-tbla" => AnyCalendarKind::HijriTabularTypeIIThursday,
+        "islamic-umalqura" => AnyCalendarKind::HijriUmmAlQura,
+        "japanese" => AnyCalendarKind::Japanese,
+        "persian" => AnyCalendarKind::Persian,
+        "roc" => AnyCalendarKind::Roc,
+        _ => return None,
+    };
+    Some(kind)
+}
+
 /// The narrow name (UTS 35 count 5) of the weekday or month field `ch` ('E' or 'c', 'M' or
 /// 'L': the format or the stand-alone names) of `input` in the locale and calendar of `r`,
 /// read from the ICU4X names data (the baked provider does the locale fallback). `None` when
@@ -465,24 +522,7 @@ fn narrow_text(
             .get(input.date.weekday())
             .map(str::to_string);
     }
-    let kind = match r.calendar.as_str() {
-        "buddhist" => AnyCalendarKind::Buddhist,
-        "chinese" => AnyCalendarKind::Chinese,
-        "coptic" => AnyCalendarKind::Coptic,
-        "dangi" => AnyCalendarKind::Dangi,
-        "ethioaa" => AnyCalendarKind::EthiopianAmeteAlem,
-        "ethiopic" => AnyCalendarKind::Ethiopian,
-        "gregory" | "iso8601" => AnyCalendarKind::Gregorian,
-        "hebrew" => AnyCalendarKind::Hebrew,
-        "indian" => AnyCalendarKind::Indian,
-        "islamic-civil" => AnyCalendarKind::HijriTabularTypeIIFriday,
-        "islamic-tbla" => AnyCalendarKind::HijriTabularTypeIIThursday,
-        "islamic-umalqura" => AnyCalendarKind::HijriUmmAlQura,
-        "japanese" => AnyCalendarKind::Japanese,
-        "persian" => AnyCalendarKind::Persian,
-        "roc" => AnyCalendarKind::Roc,
-        _ => return None,
-    };
+    let kind = calendar_kind(&r.calendar)?;
     let calendar = AnyCalendar::new(kind);
     let month = input.date.to_calendar(Ref(&calendar)).month();
     let nu = r.numbering_system.as_str();
@@ -823,6 +863,25 @@ mod tests {
         );
         let ps = pieces("Sa., 24. Dez.", "EEE, d. MMM");
         assert_eq!(texts(&ps), ["E3:Sa.", "', '", "d1:24", "'. '", "M3:Dez."]);
+    }
+
+    /// A month name with the literal in it (Hebrew "Adar I", "Adar II") stays one piece when a
+    /// numeric field follows (`formatToParts/compare-to-temporal-lunisolar.js`: the year part
+    /// was "I 5809").
+    #[test]
+    fn pieces_keep_a_name_with_a_space() {
+        let ps = pieces("30 Adar I 5809", "d MMM y");
+        assert_eq!(texts(&ps), ["d1:30", "' '", "M3:Adar I", "' '", "y1:5809"]);
+        let ps = pieces("5 Adar II 5784", "d MMMM y");
+        assert_eq!(texts(&ps), ["d1:5", "' '", "M4:Adar II", "' '", "y1:5784"]);
+        let ps = pieces("Adar II 一〇 二〇二四", "MMM d y");
+        assert_eq!(
+            texts(&ps),
+            ["M3:Adar II", "' '", "d1:一〇", "' '", "y1:二〇二四"]
+        );
+        // No numeric field after the literal: the first copy, as before.
+        let ps = pieces("Mo., Adar I", "EEE, MMM");
+        assert_eq!(texts(&ps), ["E3:Mo.", "', '", "M3:Adar I"]);
     }
 
     #[test]

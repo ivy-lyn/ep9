@@ -711,10 +711,12 @@ fn partition_numeric_as(
     }
 }
 
-/// FormatNumeric ( numberFormat, x ) (16.5.5). The passes over the digits poll the
-/// interrupt (`Cx::poll_interrupt`, one budget unit per 4,096 digits).
+/// FormatNumeric ( numberFormat, x ) (16.5.5), with a text-only [`Work::text_sink`]. The
+/// passes over the digits poll (`Cx::poll_interrupt`, one budget unit per 4,096 digits).
 pub fn format_numeric(cx: &mut Cx<'_>, r: &Resolved, x: &IntlMv) -> JsResult<String> {
-    polled(cx, |w| decimal::join(&partition_numeric(r, x, w)?, w))
+    polled(cx, |w| {
+        decimal::join(&partition_numeric(r, x, w.text_sink())?, w)
+    })
 }
 
 /// The resolved options of the NumberFormat that `toLocaleString` makes as

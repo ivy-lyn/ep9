@@ -11,13 +11,13 @@ fn constructor_getters_and_to_string() {
         run_both(
             r#"var d = new Temporal.Duration(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
             print(d.years, d.months, d.weeks, d.days, d.hours, d.minutes, d.seconds, d.milliseconds, d.microseconds, d.nanoseconds, d.sign, d.blank);
-            print(d.toString(), d.toJSON(), d.toLocaleString(), String(new Temporal.Duration()), new Temporal.Duration().blank);
+            print(d.toString(), d.toJSON(), d.toLocaleString("en-US"), String(new Temporal.Duration()), new Temporal.Duration().blank);
             print(Object.prototype.toString.call(d), typeof Temporal.Duration, Temporal.Duration.length, Temporal.Duration.prototype.constructor === Temporal.Duration);
             print(new Temporal.Duration(0, 0, 0, 0, -1).toString(), new Temporal.Duration(0, 0, 0, 0, 0, 0, 1, 500).toString({ fractionalSecondDigits: 1 }));"#
         ),
         lines(&[
             "1 2 3 4 5 6 7 8 9 10 1 false",
-            "P1Y2M3W4DT5H6M7.00800901S P1Y2M3W4DT5H6M7.00800901S P1Y2M3W4DT5H6M7.00800901S PT0S true",
+            "P1Y2M3W4DT5H6M7.00800901S P1Y2M3W4DT5H6M7.00800901S 1 yr, 2 mths, 3 wks, 4 days, 5 hr, 6 min, 7 sec, 8 ms, 9 μs, 10 ns PT0S true",
             "[object Temporal.Duration] function 0 true",
             "-PT1H PT1.5S",
         ])

@@ -6,6 +6,7 @@
 //! Intl.DateTimeFormat {w, c}     %Intl.DateTimeFormat%  prototype {}, supportedLocalesOf
 //! Intl.DateTimeFormat.prototype  %Intl.DateTimeFormat.prototype%  constructor {w, c},
 //!                    resolvedOptions, formatToParts {w, c}, get format {c},
+//!                    formatRange, formatRangeToParts {w, c} (range.rs; INTL W5),
 //!                    [@@toStringTag] "Intl.DateTimeFormat" {c}
 //! slots (ObjectClass::IntlDateTimeFormat, SLOTS = 7):
 //!   0 [[Locale]]           a String ("ca", "hc", "nu" are its Unicode extension keys)
@@ -15,17 +16,25 @@
 //!                          it, case-normalized)
 //!   4 styles               an int32: bits 0-2 [[HourCycle]] (0 none, 1 + index in
 //!                          HOUR_CYCLES), bits 3-5 [[DateStyle]], bits 6-8 [[TimeStyle]]
-//!                          (0 none, 1 + index in STYLES)
+//!                          (0 none, 1 + index in STYLES); INTL W5: bits 9-11 the hour cycle
+//!                          hc of steps 23-25 (1 + index; also when the format has no hour),
+//!                          bits 12-13 the defaults that step 42 added (bit 12 date, bit 13
+//!                          time), so that the Temporal formats read the request
 //!   5 components           an int32: the Table 16 values (Components)
 //!   6 [[BoundFormat]]      undefined or the bound format function
 //! new Intl.DateTimeFormat(locales, options) ─ initialize (CreateDateTimeFormat, 11.1.2)
 //!   ─> Resolved in the slots (no ICU4X object)
-//! format(date) ─ TimeClip ─ cache::get_or_make(Service::DateTimeFormat, prefs tag, field
+//! format(date) ─ a Temporal object: the Temporal format of its kind (temporal_format, the
+//!   per-kind GetDateTimeFormat or the style format without the fields that the kind does
+//!   not have) and its ISO fields (ep9_temporal::intl_view; no TimeClip); else TimeClip
+//!   ─ cache::get_or_make(Service::DateTimeFormat, prefs tag, field
 //!   set bits) ─> Rc<DateTimeFormatter<CompositeFieldSet>> ─ ICU4X format of the local time
 //!   (tzdb::offset_at for a named zone) ─> the string and its UTS 35 pattern ─ pieces by the
 //!   pattern ─ `pattern::adjust` (the ICU4C form) ─> the parts; format: their string
 //! formatToParts(date) ─ the same parts
 //! Date.prototype.toLocale{,Date,Time}String ─ to_locale_string (no globalThis.Intl read)
+//! Temporal <type>.prototype.toLocaleString ─ %IntlTemporalToLocaleString% (intl_internal.rs)
+//!   ─ temporal_to_locale_string
 //! ```
 //!
 //! The legacy constructor path (ChainDateTimeFormat and UnwrapDateTimeFormat, normative
@@ -39,6 +48,7 @@
 
 use std::rc::Rc;
 
+use ep9_temporal::intl_view::{self, Kind};
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
     IntrinsicValue, JsObject, JsResult, Local, ObjectClass, ObjectProps, PropAttrs, PropDef,
@@ -58,6 +68,7 @@ use icu_time::zone::{IanaParser, TimeZone, UtcOffset};
 use icu_time::{DateTime, TimeZoneInfo, ZonedDateTime};
 
 mod pattern;
+mod range;
 
 use crate::available;
 use crate::cache::{self, Service};
@@ -101,6 +112,8 @@ mod def {
     pub const GET_FORMAT: u16 = 2;
     pub const FORMAT_TO_PARTS: u16 = 3;
     pub const RESOLVED_OPTIONS: u16 = 4;
+    pub const FORMAT_RANGE: u16 = 5;
+    pub const FORMAT_RANGE_TO_PARTS: u16 = 6;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -110,6 +123,8 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::getter("format", get_format),                  // 2 (11.3.3)
     BuiltinDef::method("formatToParts", 1, format_to_parts),   // 3 (11.3.4)
     BuiltinDef::method("resolvedOptions", 0, resolved_options), // 4 (11.3.7)
+    BuiltinDef::method("formatRange", 2, range::format_range), // 5 (11.3.5)
+    BuiltinDef::method("formatRangeToParts", 2, range::format_range_to_parts), // 6 (11.3.6)
 ];
 
 /// The intrinsics this module makes.
@@ -150,10 +165,16 @@ pub const PROPS: &[ObjectProps] = &[
                 IntrinsicId::IntlDateTimeFormat,
                 PropAttrs::METHOD,
             ),
-            // The key order of V8 (node): resolvedOptions, formatToParts, format.
+            // The key order of V8 (node): resolvedOptions, formatToParts, format, formatRange,
+            // formatRangeToParts.
             PropDef::method(PropKey::Str("resolvedOptions"), def::RESOLVED_OPTIONS),
             PropDef::method(PropKey::Str("formatToParts"), def::FORMAT_TO_PARTS),
             PropDef::accessor(PropKey::Str("format"), Some(def::GET_FORMAT), None),
+            PropDef::method(PropKey::Str("formatRange"), def::FORMAT_RANGE),
+            PropDef::method(
+                PropKey::Str("formatRangeToParts"),
+                def::FORMAT_RANGE_TO_PARTS,
+            ),
             // Intl.DateTimeFormat.prototype [ @@toStringTag ] ({c}, 11.3.8).
             PropDef::constant(
                 PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
@@ -334,6 +355,34 @@ pub struct Resolved {
     pub styles: Styles,
     /// The components of `[[DateTimeFormat]]` (none if a style is set).
     pub components: Components,
+    /// The index in [`HOUR_CYCLES`] of hc (11.1.2 steps 23-25), also when the format has no
+    /// hour: the Temporal formats with an hour use it.
+    pub hc: usize,
+    /// The components that the options asked for (`formatOptions` before the step-42
+    /// defaults; none if a style is set): the input of the Temporal formats.
+    pub request: Components,
+    /// The fields that a Temporal kind keeps of a style format ([`StyleCut::None`] for the
+    /// format of a time value).
+    pub cut: StyleCut,
+}
+
+/// The fields of a style format that a Temporal value keeps (AdjustDateTimeStyleFormat,
+/// ECMA-402 with Temporal: the fields of the kind; no time zone name for a plain kind).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StyleCut {
+    /// All fields (a time value, an Instant, a ZonedDateTime).
+    #[default]
+    None,
+    /// The date fields (PlainDate).
+    Date,
+    /// Year and month (PlainYearMonth).
+    YearMonth,
+    /// Month and day (PlainMonthDay).
+    MonthDay,
+    /// The time fields, no time zone name (PlainTime).
+    Time,
+    /// The date and time fields, no time zone name (PlainDateTime).
+    DateTime,
 }
 
 /// The `required` argument of CreateDateTimeFormat (11.1.2).
@@ -461,9 +510,15 @@ fn system_time_zone(cx: &mut Cx<'_>) -> String {
 }
 
 /// The ICU4X zone and the offset in seconds at the epoch milliseconds `ms` of the
-/// `[[TimeZone]]` `tz` (an unknown zone: UTC).
+/// `[[TimeZone]]` `tz` (an unknown zone: UTC; an offset: no zone, but Etc/GMT for +00:00).
 fn zone_at(tz: &str, ms: i64) -> (TimeZone, i32) {
     if let Some(m) = parse_offset_minutes(tz) {
+        // The offset 0 is the zone Etc/GMT, as ICU4C has it: its names are the names of
+        // that zone ("GMT" in en, not "GMT+0"; test262 Temporal ZonedDateTime
+        // `toLocaleString/offset-time-zones.js`). Another offset has no names.
+        if m == 0 {
+            return (IanaParser::new().parse("Etc/GMT"), 0);
+        }
         return (TimeZone::UNKNOWN, m * 60);
     }
     let Some((_, primary)) = available::named_time_zone(tz) else {
@@ -477,6 +532,12 @@ fn zone_at(tz: &str, ms: i64) -> (TimeZone, i32) {
 /// The ICU4X input of the time value `ms` (an integer in the TimeClip range) in the zone `tz`.
 fn zoned(tz: &str, ms: i64) -> ZonedDateTime<Iso, TimeZoneInfo<AtTime>> {
     let (zone, secs) = zone_at(tz, ms);
+    zoned_at(zone, secs, ms)
+}
+
+/// The ICU4X input of the epoch milliseconds `ms` (any `i64`) in `zone` at the UTC offset
+/// `secs` (seconds).
+fn zoned_at(zone: TimeZone, secs: i32, ms: i64) -> ZonedDateTime<Iso, TimeZoneInfo<AtTime>> {
     let offset = UtcOffset::try_from_seconds(secs).unwrap_or(UtcOffset::zero());
     let local = ZonedDateTime::from_epoch_milliseconds_and_utc_offset(ms, offset);
     let info = zone.with_offset(Some(offset)).at_date_time(DateTime {
@@ -502,6 +563,20 @@ pub fn initialize<'s>(
     options: Local<'s>,
     required: Required,
     defaults: Defaults,
+) -> JsResult<Resolved> {
+    initialize_with_zone(cx, locales, options, required, defaults, None)
+}
+
+/// CreateDateTimeFormat with the optional argument toLocaleStringTimeZone (ECMA-402 with
+/// Temporal; Temporal.ZonedDateTime.prototype.toLocaleString passes the time zone of the
+/// ZonedDateTime): a timeZone option is then a TypeError, and `[[TimeZone]]` is that zone.
+pub fn initialize_with_zone<'s>(
+    cx: &mut Cx<'s>,
+    locales: Local<'s>,
+    options: Local<'s>,
+    required: Required,
+    defaults: Defaults,
+    to_locale_string_time_zone: Option<&str>,
 ) -> JsResult<Resolved> {
     // 2. Let hour12 be undefined (it is read below).
     // 3. Let requestedLocales be ? CanonicalizeLocaleList(locales).
@@ -584,11 +659,19 @@ pub fn initialize<'s>(
                 .unwrap_or_else(|| default_hour_cycle(&r.data_locale))
         }
     };
-    // 26-28. Let timeZone be ? Get(options, "timeZone"); undefined: SystemTimeZoneIdentifier(),
-    //        else ? ToString(timeZone).
+    // 26-28. Let timeZone be ? Get(options, "timeZone"); undefined: toLocaleStringTimeZone if
+    //        present, else SystemTimeZoneIdentifier(); else a TypeError if
+    //        toLocaleStringTimeZone is present, else ? ToString(timeZone).
     let tz = cx.get(options, "timeZone")?;
     let time_zone = if tz.is_undefined() {
-        system_time_zone(cx)
+        match to_locale_string_time_zone {
+            Some(zone) => time_zone_identifier(zone).unwrap_or_else(|| zone.to_string()),
+            None => system_time_zone(cx),
+        }
+    } else if to_locale_string_time_zone.is_some() {
+        return Err(cx.throw_type_error(
+            "Temporal.ZonedDateTime.prototype.toLocaleString: the timeZone option is not allowed",
+        ));
     } else {
         let tz = cx.to_rust_string(tz)?;
         // 29-30. The offset form, or GetAvailableNamedTimeZoneIdentifier (a RangeError if
@@ -611,6 +694,8 @@ pub fn initialize<'s>(
         }
     }
     let has_explicit_components = components.any();
+    // The request before the defaults (the Temporal formats read it).
+    let request = components;
     // 36. Let formatMatcher be ? GetOption(options, "formatMatcher", string, « "basic",
     //     "best fit" », "best fit").
     get_string_option(
@@ -688,7 +773,8 @@ pub fn initialize<'s>(
         has_hour = components.0[c::HOUR] != 0;
     }
     // 44. If bestFormat has a field [[hour]], set [[HourCycle]] to hc.
-    let hour_cycle = has_hour.then(|| index_of(&HOUR_CYCLES, &hc) as usize);
+    let hc = index_of(&HOUR_CYCLES, &hc) as usize;
+    let hour_cycle = has_hour.then_some(hc);
     Ok(Resolved {
         locale,
         calendar,
@@ -700,7 +786,41 @@ pub fn initialize<'s>(
             time_style,
         },
         components,
+        hc,
+        request,
+        cut: StyleCut::None,
     })
+}
+
+/// The bits of slot 4 after the 9 bits of [`Styles::pack`]: hc at bits 9-11 (1 + index), the
+/// defaults of step 42 at bits 12-13 (bit 12 year, month and day; bit 13 hour, minute and
+/// second).
+fn pack_extra(r: &Resolved) -> u32 {
+    let added = |i: usize| r.request.0[i] == 0 && r.components.0[i] != 0;
+    let date = added(c::YEAR) && added(c::MONTH) && added(c::DAY);
+    let time = added(c::HOUR) && added(c::MINUTE) && added(c::SECOND);
+    ((r.hc as u32 & 3) + 1) << 9 | u32::from(date) << 12 | u32::from(time) << 13
+}
+
+/// The hc and the request of the slot-4 bits `bits` and the components `components`
+/// ([`pack_extra`]).
+fn unpack_extra(bits: u32, components: Components) -> (usize, Components) {
+    let hc = match (bits >> 9) & 7 {
+        0 => 2,
+        v => ((v - 1) as usize).min(3),
+    };
+    let mut request = components;
+    if bits >> 12 & 1 == 1 {
+        for i in [c::YEAR, c::MONTH, c::DAY] {
+            request.0[i] = 0;
+        }
+    }
+    if bits >> 13 & 1 == 1 {
+        for i in [c::HOUR, c::MINUTE, c::SECOND] {
+            request.0[i] = 0;
+        }
+    }
+    (hc, request)
 }
 
 /// Stores `r` in the slots of the new Intl.DateTimeFormat `dtf`.
@@ -718,7 +838,7 @@ fn store<'s>(cx: &mut Cx<'s>, dtf: Local<'s, JsObject>, r: &Resolved) -> JsResul
         dtf,
         CLASS,
         SLOT_STYLES,
-        Local::int32(r.styles.pack() as i32),
+        Local::int32((r.styles.pack() | pack_extra(r)) as i32),
     )?;
     let comps = Local::int32(r.components.pack() as i32);
     cx.set_slot(dtf, CLASS, SLOT_COMPONENTS, comps)?;
@@ -744,13 +864,18 @@ fn read<'s>(cx: &mut Cx<'s>, o: Local<'s>) -> JsResult<Resolved> {
     let styles = cx.slot(o, CLASS, SLOT_STYLES)?.as_int32().unwrap_or(0) as u32;
     let comps = cx.slot(o, CLASS, SLOT_COMPONENTS)?.as_int32().unwrap_or(0) as u32;
     let [locale, calendar, numbering_system, time_zone] = text;
+    let components = Components::unpack(comps);
+    let (hc, request) = unpack_extra(styles, components);
     Ok(Resolved {
         locale,
         calendar,
         numbering_system,
         time_zone,
         styles: Styles::unpack(styles),
-        components: Components::unpack(comps),
+        components,
+        hc,
+        request,
+        cut: StyleCut::None,
     })
 }
 
@@ -832,8 +957,10 @@ fn field_bag(cs: Components) -> DateTimeFieldBag {
 /// The ICU4X builder of the styles `s` (DateTimeStyleFormat, 11.5.4): the date fields YMDE
 /// for "full", else YMD; the time precision minute for "short", else second; the zone name
 /// long for "full", short for "long". ICU4X has one length for all fields: the date style's
-/// wins.
-fn style_builder(s: Styles) -> FieldSetBuilder {
+/// wins. `cut` keeps the fields of a Temporal kind (AdjustDateTimeStyleFormat): a plain kind
+/// has no zone, a date kind no time, PlainTime no date, PlainYearMonth only year and month,
+/// PlainMonthDay only month and day.
+fn style_builder(s: Styles, cut: StyleCut) -> FieldSetBuilder {
     let length = |i: usize| match STYLES[i] {
         "full" | "long" => Length::Long,
         "medium" => Length::Medium,
@@ -860,6 +987,24 @@ fn style_builder(s: Styles) -> FieldSetBuilder {
         };
     }
     b.length = s.date_style.or(s.time_style).map(length);
+    match cut {
+        StyleCut::None => {}
+        StyleCut::Date | StyleCut::YearMonth | StyleCut::MonthDay => {
+            b.time_precision = None;
+            b.zone_style = None;
+            b.date_fields = match cut {
+                StyleCut::YearMonth => Some(DateFields::YM),
+                StyleCut::MonthDay => Some(DateFields::MD),
+                _ => b.date_fields,
+            };
+        }
+        StyleCut::Time => {
+            b.date_fields = None;
+            b.zone_style = None;
+            b.length = s.time_style.map(length);
+        }
+        StyleCut::DateTime => b.zone_style = None,
+    }
     b
 }
 
@@ -867,7 +1012,7 @@ fn style_builder(s: Styles) -> FieldSetBuilder {
 /// for the fields is dropped (alignment, year style, then length); YMD medium if none works.
 pub fn field_set(r: &Resolved) -> CompositeFieldSet {
     let mut b = if r.styles.date_style.is_some() || r.styles.time_style.is_some() {
-        style_builder(r.styles)
+        style_builder(r.styles, r.cut)
     } else {
         let mut bag = field_bag(r.components);
         // With an hour, the day period is the AM/PM field that `pattern::adjust` writes as
@@ -914,7 +1059,8 @@ fn prefs_tag(r: &Resolved) -> String {
 /// compiled data).
 fn formatter_for(r: &Resolved) -> Option<Rc<DateTimeFormatter<CompositeFieldSet>>> {
     let key = prefs_tag(r);
-    let bits = u64::from(r.components.pack()) | u64::from(r.styles.pack()) << 24;
+    let bits =
+        u64::from(r.components.pack()) | u64::from(r.styles.pack()) << 24 | (r.cut as u64) << 33;
     cache::get_or_make(Service::DateTimeFormat, &key, bits, || {
         let fs = field_set(r);
         let locale = Locale::try_from_str(&key).unwrap_or(Locale::UNKNOWN);
@@ -953,9 +1099,16 @@ pub fn format_ms(r: &Resolved, ms: i64) -> Option<Vec<(&'static str, String)>> {
 /// The pieces (field letter and count, text) of the formatted time value `ms` of `r`: the
 /// ICU4X output cut by its pattern, after `pattern::adjust`.
 fn format_pieces(r: &Resolved, ms: i64) -> Option<Vec<pattern::Piece>> {
+    format_pieces_at(r, &zoned(&r.time_zone, ms))
+}
+
+/// The pieces of the formatted ICU4X input `input` of `r` (the [`format_pieces`] steps).
+fn format_pieces_at(
+    r: &Resolved,
+    input: &ZonedDateTime<Iso, TimeZoneInfo<AtTime>>,
+) -> Option<Vec<pattern::Piece>> {
     let f = formatter_for(r)?;
-    let input = zoned(&r.time_zone, ms);
-    let formatted = f.format(&input);
+    let formatted = f.format(input);
     let p = formatted.pattern().to_string();
     let pieces = pattern::pieces(&formatted.to_string(), &p);
     // A date style writes the year with the width of the locale pattern ("M/d/yy" in en
@@ -971,7 +1124,7 @@ fn format_pieces(r: &Resolved, ms: i64) -> Option<Vec<pattern::Piece>> {
         minute: input.time.minute.number(),
         second: input.time.second.number(),
     };
-    Some(pattern::adjust(r, &input, &clock, two_digit_year, pieces))
+    Some(pattern::adjust(r, input, &clock, two_digit_year, pieces))
 }
 
 /// The components that resolvedOptions reports (11.3.7 step 5 reads `[[DateTimeFormat]]`, the
@@ -1098,6 +1251,288 @@ fn date_value<'s>(cx: &mut Cx<'s>, date: Local<'s>) -> JsResult<f64> {
     cx.to_number(date)
 }
 
+// ---- Temporal values (ECMA-402 with Temporal) ---------------------------------------------------
+
+/// The `required` (and `defaults`) argument of GetDateTimeFormat for a Temporal kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TemporalFields {
+    Date,
+    Time,
+    YearMonth,
+    MonthDay,
+    Any,
+}
+
+/// GetDateTimeFormat ( formats, matcher, options, required, defaults, inherit ) (ECMA-402
+/// with Temporal) of the request `request` (the components before the step-42 defaults):
+/// the components of the format, or `None` (null: the caller throws a TypeError).
+/// `inherit_all` is inherit = all (else relevant); `zoned` is defaults = zoned-date-time.
+/// `required` names the defaults too (date, time, year-month, month-day, any: all).
+fn get_date_time_format(
+    request: Components,
+    required: TemporalFields,
+    inherit_all: bool,
+    zoned: bool,
+) -> Option<Components> {
+    use TemporalFields as F;
+    // 1-5. requiredOptions.
+    let required_options: &[usize] = match required {
+        F::Date => &[c::WEEKDAY, c::YEAR, c::MONTH, c::DAY],
+        F::Time => &[
+            c::DAY_PERIOD,
+            c::HOUR,
+            c::MINUTE,
+            c::SECOND,
+            c::FRACTIONAL_SECOND_DIGITS,
+        ],
+        F::YearMonth => &[c::YEAR, c::MONTH],
+        F::MonthDay => &[c::MONTH, c::DAY],
+        F::Any => &[
+            c::WEEKDAY,
+            c::YEAR,
+            c::MONTH,
+            c::DAY,
+            c::DAY_PERIOD,
+            c::HOUR,
+            c::MINUTE,
+            c::SECOND,
+            c::FRACTIONAL_SECOND_DIGITS,
+        ],
+    };
+    // 6-10. defaultOptions.
+    let default_options: &[usize] = match required {
+        F::Date => &[c::YEAR, c::MONTH, c::DAY],
+        F::Time => &[c::HOUR, c::MINUTE, c::SECOND],
+        F::YearMonth => &[c::YEAR, c::MONTH],
+        F::MonthDay => &[c::MONTH, c::DAY],
+        F::Any => &[c::YEAR, c::MONTH, c::DAY, c::HOUR, c::MINUTE, c::SECOND],
+    };
+    // 11-12. formatOptions: all of options (inherit all), else only era (date, year-month,
+    //        any; hourCycle and hour12 are the hc of the format, Resolved::hc).
+    let mut format = if inherit_all {
+        request
+    } else {
+        let mut f = Components::default();
+        if matches!(required, F::Date | F::YearMonth | F::Any) {
+            f.0[c::ERA] = request.0[c::ERA];
+        }
+        f
+    };
+    // 13-14. anyPresent: options has a field of Table 16 other than era and timeZoneName.
+    let any_present = [
+        c::WEEKDAY,
+        c::YEAR,
+        c::MONTH,
+        c::DAY,
+        c::DAY_PERIOD,
+        c::HOUR,
+        c::MINUTE,
+        c::SECOND,
+        c::FRACTIONAL_SECOND_DIGITS,
+    ]
+    .iter()
+    .any(|i| request.0[*i] != 0);
+    // 15-16. needDefaults; the required fields of options.
+    let mut need_defaults = true;
+    for &i in required_options {
+        if request.0[i] != 0 {
+            format.0[i] = request.0[i];
+            need_defaults = false;
+        }
+    }
+    // 17. If needDefaults is true, then
+    if need_defaults {
+        // a. If anyPresent is true and inherit is relevant, return null.
+        if any_present && !inherit_all {
+            return None;
+        }
+        // b. Each field of defaultOptions: "numeric".
+        for &i in default_options {
+            format.set(i, "numeric");
+        }
+        // c. zoned-date-time: timeZoneName "short" if there is none.
+        if zoned && format.0[c::TIME_ZONE_NAME] == 0 {
+            format.set(c::TIME_ZONE_NAME, "short");
+        }
+    }
+    Some(format)
+}
+
+/// The format of `r` for a Temporal value of the kind `kind` (`[[TemporalPlainDateFormat]]`
+/// .. `[[TemporalInstantFormat]]`, CreateDateTimeFormat with Temporal): a style format keeps
+/// the fields of the kind (AdjustDateTimeStyleFormat; a date kind needs a date style and
+/// PlainTime a time style); else the per-kind GetDateTimeFormat of the request. `zoned`: the
+/// Instant format of Temporal.ZonedDateTime.prototype.toLocaleString (defaults
+/// zoned-date-time). `None`: the format is null (a TypeError).
+fn temporal_format(r: &Resolved, kind: Kind, zoned: bool) -> Option<Resolved> {
+    let mut t = r.clone();
+    if r.styles.date_style.is_some() || r.styles.time_style.is_some() {
+        t.cut = match kind {
+            Kind::PlainDate | Kind::PlainYearMonth | Kind::PlainMonthDay => {
+                r.styles.date_style?;
+                match kind {
+                    Kind::PlainDate => StyleCut::Date,
+                    Kind::PlainYearMonth => StyleCut::YearMonth,
+                    _ => StyleCut::MonthDay,
+                }
+            }
+            Kind::PlainTime => {
+                r.styles.time_style?;
+                StyleCut::Time
+            }
+            Kind::PlainDateTime => StyleCut::DateTime,
+            _ => StyleCut::None,
+        };
+        return Some(t);
+    }
+    let (required, inherit_all) = match kind {
+        Kind::PlainDate => (TemporalFields::Date, false),
+        Kind::PlainTime => (TemporalFields::Time, false),
+        Kind::PlainYearMonth => (TemporalFields::YearMonth, false),
+        Kind::PlainMonthDay => (TemporalFields::MonthDay, false),
+        Kind::PlainDateTime => (TemporalFields::Any, false),
+        _ => (TemporalFields::Any, true),
+    };
+    let cs = get_date_time_format(r.request, required, inherit_all, zoned)?;
+    t.components = cs;
+    // The hour cycle of a format with an hour (11.1.2 step 44): hc.
+    t.styles.hour_cycle = (cs.0[c::HOUR] != 0).then_some(r.hc);
+    Some(t)
+}
+
+/// The days from 1970-01-01 to the ISO date `year`-`month`-`day` (integers only; the
+/// proleptic Gregorian calendar, any year of the Temporal range).
+fn epoch_days(year: i32, month: u8, day: u8) -> i64 {
+    let (m, d) = (i64::from(month), i64::from(day));
+    let y = i64::from(year) - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The ICU4X input of a plain Temporal value: its ISO date (1970-01-01 for a PlainTime) and
+/// time (12:00 for a date kind) as a local date-time with no time zone (HandleDateTimeValue:
+/// the fields as UTC, formatted in UTC). No TimeClip: every date of the Temporal range fits.
+fn plain_input<'s>(
+    cx: &mut Cx<'s>,
+    v: Local<'s>,
+) -> JsResult<ZonedDateTime<Iso, TimeZoneInfo<AtTime>>> {
+    let date = intl_view::iso_date(cx, v)?;
+    let time = intl_view::iso_time(cx, v)?;
+    let days = date.map_or(0, |d| epoch_days(d.year, d.month, d.day));
+    let ms = match time {
+        Some(t) => {
+            i64::from(t.hour) * 3_600_000
+                + i64::from(t.minute) * 60_000
+                + i64::from(t.second) * 1_000
+                + i64::from(t.millisecond)
+        }
+        None => 12 * 3_600_000,
+    };
+    Ok(zoned_at(TimeZone::UNKNOWN, 0, days * 86_400_000 + ms))
+}
+
+/// The parts of the Temporal value `v` of the kind `kind` formatted by `r`
+/// (HandleDateTimeValue and FormatDateTimePattern, ECMA-402 with Temporal): a RangeError
+/// for a calendar that is not the calendar of `r` (or iso8601 for PlainDate, PlainDateTime
+/// and ZonedDateTime); a TypeError for a null format and for a ZonedDateTime outside its
+/// toLocaleString (`to_locale_string`).
+fn format_temporal<'s>(
+    cx: &mut Cx<'s>,
+    r: &Resolved,
+    kind: Kind,
+    v: Local<'s>,
+    to_locale_string: bool,
+) -> JsResult<Vec<(&'static str, String)>> {
+    if kind == Kind::ZonedDateTime && !to_locale_string {
+        return Err(cx.throw_type_error(
+            "Intl.DateTimeFormat cannot format a Temporal.ZonedDateTime: use its toLocaleString",
+        ));
+    }
+    // The calendar of the value: the calendar of the format, or iso8601 where allowed.
+    if let Some(cal) = intl_view::calendar_id(cx, v)? {
+        let iso_ok = matches!(
+            kind,
+            Kind::PlainDate | Kind::PlainDateTime | Kind::ZonedDateTime
+        );
+        if cal != r.calendar && !(iso_ok && cal == "iso8601") {
+            return Err(cx.throw_range_error(&format!(
+                "the calendar {cal} of the Temporal value is not the calendar {} of the format",
+                r.calendar
+            )));
+        }
+    }
+    let format_kind = if kind == Kind::ZonedDateTime {
+        Kind::Instant
+    } else {
+        kind
+    };
+    let Some(t) = temporal_format(r, format_kind, to_locale_string) else {
+        return Err(cx.throw_type_error(
+            "Intl.DateTimeFormat: the options have no field of this Temporal type",
+        ));
+    };
+    let input = match intl_view::epoch_ns(cx, v)? {
+        // Instant and ZonedDateTime: the epoch milliseconds (the floor) in the zone of the
+        // format (the ZonedDateTime's own zone in its toLocaleString).
+        Some(ns) => {
+            let ms = ns.div_euclid(1_000_000) as i64;
+            zoned(&t.time_zone, ms)
+        }
+        None => plain_input(cx, v)?,
+    };
+    match format_pieces_at(&t, &input) {
+        Some(pieces) => Ok(pattern::parts(&pieces)),
+        None => Err(cx.throw_type_error("Intl.DateTimeFormat: no date-time data")),
+    }
+}
+
+/// The parts of the `date` argument of a format function or of formatToParts (steps 3-5:
+/// Date.now() for undefined; a Temporal object other than a Duration by its fields
+/// (ToDateTimeFormattable); else ? ToNumber and TimeClip).
+fn format_value<'s>(
+    cx: &mut Cx<'s>,
+    r: &Resolved,
+    date: Local<'s>,
+) -> JsResult<Vec<(&'static str, String)>> {
+    if let Some(kind) = intl_view::kind(cx, date)
+        && kind != Kind::Duration
+    {
+        return format_temporal(cx, r, kind, date, false);
+    }
+    let x = date_value(cx, date)?;
+    format_date_time(cx, r, x)
+}
+
+/// Temporal.*Type*.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 with
+/// Temporal) of the Temporal value `v` of the kind `kind` (not a Duration):
+/// CreateDateTimeFormat(%Intl.DateTimeFormat%, locales, options, required, defaults) with
+/// date/date for PlainDate, PlainYearMonth and PlainMonthDay, time/time for PlainTime,
+/// any/all for the others, and the time zone of a ZonedDateTime; then FormatDateTime. No
+/// object is made and `globalThis.Intl` is not read.
+pub fn temporal_to_locale_string<'s>(
+    cx: &mut Cx<'s>,
+    kind: Kind,
+    v: Local<'s>,
+    locales: Local<'s>,
+    options: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let (required, defaults) = match kind {
+        Kind::PlainDate | Kind::PlainYearMonth | Kind::PlainMonthDay => {
+            (Required::Date, Defaults::Date)
+        }
+        Kind::PlainTime => (Required::Time, Defaults::Time),
+        _ => (Required::Any, Defaults::All),
+    };
+    let zone = intl_view::time_zone_id(cx, v)?;
+    let r = initialize_with_zone(cx, locales, options, required, defaults, zone.as_deref())?;
+    let parts = format_temporal(cx, &r, kind, v, kind == Kind::ZonedDateTime)?;
+    Ok(cx.new_string(&join(&parts))?.into())
+}
+
 // ---- the builtins -----------------------------------------------------------------------------
 
 /// Intl.DateTimeFormat ( [ locales [ , options ] ] ) (11.1.1).
@@ -1179,10 +1614,9 @@ fn date_time_format_function<'s>(
     // 1-2. Let dtf be F.[[DateTimeFormat]].
     let dtf = cx.closure_data(args.callee());
     let r = read(cx, dtf)?;
-    // 3-4. x: Date.now() for undefined, else ? ToNumber(date).
-    let x = date_value(cx, args.get(0))?;
+    // 3-4. x: Date.now() for undefined, else ? ToDateTimeFormattable(date).
     // 5. Return ? FormatDateTime(dtf, x).
-    let s = join(&format_date_time(cx, &r, x)?);
+    let s = join(&format_value(cx, &r, args.get(0))?);
     Ok(cx.new_string(&s)?.into())
 }
 
@@ -1195,10 +1629,9 @@ fn format_to_parts<'s>(
 ) -> JsResult<Local<'s>> {
     // 1-2. Let dtf be the this value; ? RequireInternalSlot(dtf, [[InitializedDateTimeFormat]]).
     let r = read(cx, this)?;
-    // 3-4. x: Date.now() for undefined, else ? ToNumber(date).
-    let x = date_value(cx, args.get(0))?;
+    // 3-4. x: Date.now() for undefined, else ? ToDateTimeFormattable(date).
     // 5. Return ? FormatDateTimeToParts(dtf, x) (11.5.7).
-    let parts = format_date_time(cx, &r, x)?;
+    let parts = format_value(cx, &r, args.get(0))?;
     let array = cx.new_array();
     for (i, (t, v)) in parts.iter().enumerate() {
         cx.poll_interrupt()?;

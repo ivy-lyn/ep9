@@ -209,3 +209,4 @@ intrinsic 157  %Intl.DateTimeFormat.prototype%
 intrinsic 158  %Intl.DurationFormat%
 intrinsic 159  %Intl.DurationFormat.prototype%
 intrinsic 160  %IntlFallbackSymbolHolder%
+intrinsic 161  %IntlTemporalToLocaleString%
