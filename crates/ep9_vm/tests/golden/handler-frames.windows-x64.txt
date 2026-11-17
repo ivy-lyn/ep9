@@ -1,10 +1,10 @@
-# The hot ep9_vm handlers (name not ending in `_cold`; on x86-64 also `Wide_cold` and
-# `ExtraWide_cold`, disasm.rs HOT_COLD) that build a frame or save a callee-saved register on
-# entry, and the callee-saved registers each one saves: one `<expansion> <handler> <saves>` row.
-# Checked by `cargo xtask disasm-check --frames <this file>` in the CI disasm job (plan rule 81:
-# no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). A new row,
-# a lost row or a changed count fails. A change that is meant updates this file in the same PR:
-# run the same command with `--bless`, or copy the rows that the CI log prints after `frame`.
+# The hot ep9_vm handlers (name not ending in `_cold`; on x86-64 also disasm.rs HOT_COLD:
+# `Wide_cold`, `ExtraWide_cold`, `CallProperty0_cold`..`CallProperty2_cold`) that build a frame
+# or save a callee-saved register on entry, and the callee-saved registers each one saves: one
+# `<expansion> <handler> <saves>` row. Checked by `cargo xtask disasm-check --frames <this file>`
+# in the CI disasm job (rule 81: no new entry save on a hot x86 handler; docs/plan/10-quality.md,
+# 2026-11-16 note). A new row, a lost row or a changed count fails. A change that is meant
+# updates this file in the same PR: run that command with `--bless`, or copy the CI `frame` rows.
 target x86_64-pc-windows-msvc
 ics BadOpcode 0
 ics CallAnyReceiver 6
@@ -34,8 +34,11 @@ sib BadOpcode 0
 sib CallAnyReceiver 6
 sib CallProperty 6
 sib CallProperty0 4
+sib CallProperty0_cold 0
 sib CallProperty1 4
+sib CallProperty1_cold 0
 sib CallProperty2 6
+sib CallProperty2_cold 0
 sib CallUndefinedReceiver 5
 sib CallUndefinedReceiver1 1
 sib CallUndefinedReceiver2 6
