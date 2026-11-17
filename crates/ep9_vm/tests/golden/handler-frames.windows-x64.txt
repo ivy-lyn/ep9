@@ -45,6 +45,7 @@ sib CreateArrayLiteral 6
 sib CreateEmptyArrayLiteral 6
 sib CreateObjectLiteral 6
 sib DefineNamedOwnProperty 6
+sib ExtraWide_cold 1
 sib GetKeyedProperty 0
 sib GetNamedPropertyFromSuper 0
 sib GetSuperConstructor 0
@@ -54,3 +55,4 @@ sib StaContextSlot 1
 sib StaCurrentContextSlot 0
 sib StaGlobal 4
 sib TestInstanceOf 4
+sib Wide_cold 1

@@ -10,7 +10,7 @@
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
 //! | match loop (`--match-loop`) | For SP-Dispatch, whose 20-opcode x86-64 match loop LLVM threads (`ep9loop__<expansion>__<fn>`). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only. T0 (`ep9_vm`) releases sibling calls on every target (H15 ADR, 2026-10-21), so for T0 the loop line is a report, not a gate. |
-//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. Every hot handler (every handler whose name does not end in `_cold`) is scanned. The ones that build a frame on entry (the first instruction saves a register or grows the stack) or save a callee-saved register on entry (a red-zone `mov` save too; M9-P1-WPRE-3), with the callee-saved registers each one saves on entry (the leading prologue, where a push of another register, a stack alignment push, counts 0, then each callee-saved register that the entry code saves before its first conditional branch, call, return or tail jump, with an unconditional jump inside the handler followed; a store of a callee-saved register in a form that the check does not know fails it; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). Report only: an `any-path` line per hot handler that stores a callee-saved register on any path of its block (a shrink-wrapped save too; `any_path_saves`). |
+//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. Every hot handler (every handler whose name does not end in `_cold`, and on x86-64 also the `HOT_COLD` list: `Wide_cold` and `ExtraWide_cold`, which run the `ops::prefix_set` fast bodies there through `interp::tails::wide`, M9-P1 X86-WIDE-FAST; MC-w43-2) is scanned. The ones that build a frame on entry (the first instruction saves a register or grows the stack) or save a callee-saved register on entry (a red-zone `mov` save too; M9-P1-WPRE-3), with the callee-saved registers each one saves on entry (the leading prologue, where a push of another register, a stack alignment push, counts 0, then each callee-saved register that the entry code saves before its first conditional branch, call, return or tail jump, with an unconditional jump inside the handler followed; a store of a callee-saved register in a form that the check does not know fails it; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). Report only: an `any-path` line per hot handler that stores a callee-saved register on any path of its block (a shrink-wrapped save too; `any_path_saves`). |
 //! | Mach-O data in code | x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE). The check drops what `llvm-objdump -d` decodes from those bytes, so table data never counts as jumps, calls, returns or stack accesses, and decodes the code after each table again from the table end, so a decode that ran across the table end cannot hide an instruction there. |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
@@ -1902,7 +1902,19 @@ fn entry_saves(arch: Arch, b: &Block) -> Result<usize, String> {
     Ok(saves)
 }
 
-/// The hot handlers (name not ending in `_cold`) that build a frame on entry or save a
+/// The cold handlers that the frame check scans as hot handlers on x86-64 (MC-w43-2): x86-64
+/// runs the `ops::prefix_set` fast bodies there through `interp::tails::wide` (M9-P1
+/// X86-WIDE-FAST; `ops::PREFIXED_FAST` is false). The ics forms are a tail jump to the sib
+/// handler with no save (`@forward`), so they make no row.
+const HOT_COLD: [&str; 2] = ["Wide_cold", "ExtraWide_cold"];
+
+/// True if handler `op` of `arch` is hot for the frame check: its name does not end in
+/// `_cold`, or it is in [`HOT_COLD`] on x86-64.
+fn is_hot(arch: Arch, op: &str) -> bool {
+    !op.ends_with("_cold") || (arch == Arch::X64 && HOT_COLD.contains(&op))
+}
+
+/// The hot handlers ([`is_hot`]) that build a frame on entry or save a
 /// callee-saved register on entry, with their entry saves, sorted. Every hot handler is scanned
 /// ([`entry_saves`]; an unknown save form in any of them is an error). A row is made when the
 /// first instruction builds a frame (the frame list of the default check, cold handlers left
@@ -1912,7 +1924,7 @@ fn frame_rows(arch: Arch, handlers: &[Handler], blocks: &[Block]) -> Result<Vec<
     let mut rows = BTreeMap::new();
     for h in handlers {
         let op = h.name.rsplit("__").next().unwrap_or(&h.name);
-        if op.ends_with("_cold") {
+        if !is_hot(arch, op) {
             continue;
         }
         let b = block_of(handlers, blocks, h)
@@ -2124,7 +2136,7 @@ fn print_any_path(
     let mut lines = BTreeMap::new();
     for h in handlers {
         let op = h.name.rsplit("__").next().unwrap_or(&h.name);
-        if op.ends_with("_cold") {
+        if !is_hot(arch, op) {
             continue;
         }
         let b = block_of(handlers, blocks, h)
@@ -3133,5 +3145,27 @@ Section
             ],
         );
         assert_eq!(any_path_saves(Arch::X64, &x), 2);
+    }
+
+    /// MC-w43-2: on x86-64 the `Wide_cold` and `ExtraWide_cold` handlers run the hot path of
+    /// the prefixed opcodes (`interp::tails::wide`, M9-P1 X86-WIDE-FAST), so the frame check
+    /// scans them: an entry save there makes a row, and a golden without that row fails. The ics
+    /// `Wide_cold` (a forward tail jump, no save) makes no row; the other `_cold` handlers stay
+    /// out, and on aarch64 the list does not apply.
+    #[test]
+    fn frames_x64_hot_cold_handlers_are_scanned() {
+        let (abi, handlers, rows) = dump_rows("hotcold-x64.txt");
+        assert_eq!((abi, handlers), ("x64-sysv", 4));
+        assert_eq!(rows, [row("ExtraWide_cold", 1), row("Wide_cold", 1)]);
+        let golden = frames_text(FRAMES_TARGET, &[]);
+        assert_eq!(
+            frames_verdict(FRAMES_TARGET, &golden, &rows).unwrap(),
+            [
+                "new frame: sib ExtraWide_cold (1 saves on entry)",
+                "new frame: sib Wide_cold (1 saves on entry)",
+            ]
+        );
+        assert!(is_hot(Arch::X64, "Wide_cold") && is_hot(Arch::X64, "Ldar"));
+        assert!(!is_hot(Arch::X64, "Add_cold") && !is_hot(Arch::A64, "ExtraWide_cold"));
     }
 }

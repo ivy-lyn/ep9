@@ -42,9 +42,11 @@ sib CreateArrayLiteral 6
 sib CreateEmptyArrayLiteral 6
 sib CreateObjectLiteral 6
 sib DefineNamedOwnProperty 6
+sib ExtraWide_cold 1
 sib SetKeyedProperty 6
 sib SetNamedProperty 6
 sib StaContextSlot 1
 sib StaCurrentContextSlot 0
 sib StaGlobal 5
 sib TestInstanceOf 4
+sib Wide_cold 1
