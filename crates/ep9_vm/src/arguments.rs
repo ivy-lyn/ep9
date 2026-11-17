@@ -322,13 +322,36 @@ fn new_elements(rt: &Runtime, f: FrameRef, map: &[Option<u32>]) -> u64 {
 }
 
 /// %Array.prototype.values% for the @@iterator property (§10.4.4.6 step 7, §10.4.4.7 step
-/// 20), made on its first use (a GC point then).
-#[inline]
+/// 20): the isolate-wide root [`Root::ArrayValues`] (slot 327; M9-P2 LEVER-9, V8 ARGS-CREATE),
+/// one load and a compare. [`fill_array_values`] fills it on the first use (a GC point then).
+#[inline(always)]
 fn array_values(rt: &Runtime) -> u64 {
-    builtins::function_object(
+    let v = rt.root(Root::ArrayValues);
+    if v != UNDEFINED {
+        return v;
+    }
+    fill_array_values(rt)
+}
+
+/// The first use of [`array_values`] in the isolate: the function object that
+/// [`builtins::function_object`] gives (made then: a GC point), kept in [`Root::ArrayValues`].
+///
+/// The root is isolate-wide (an `Appended::root` item, as `Root::RealmKey`), not a realm root:
+/// `realm::switch` writes only the `IntrinsicId` values into the realm roots, so a realm root
+/// with no `IntrinsicId` would keep the caller realm's value across a cross-realm call
+/// (H22 Rules: "a cross-realm call switches them"). Each realm gets the value it got before the
+/// root: outside a realm install, `builtins::function_object` gives the module-slot function
+/// in every realm, and no JS code runs (so no arguments object is made) inside an install.
+#[cold]
+#[inline(never)]
+fn fill_array_values(rt: &Runtime) -> u64 {
+    let v = builtins::function_object(
         rt,
         BuiltinId::new(natives::VM_BLOCK, natives::vm::ARRAY_VALUES),
-    )
+    );
+    // E3: a store into a root slot takes no barrier.
+    rt.set_root(Root::ArrayValues, v);
+    v
 }
 
 /// The current realm's %ThrowTypeError% (§10.2.4.1), or `None` before a table makes it. On
