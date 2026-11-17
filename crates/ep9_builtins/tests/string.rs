@@ -112,6 +112,25 @@ fn char_code_at_on_other_values() {
     );
 }
 
+/// The int32 fast path (a String value `this`, an int32 `pos`) on each string kind: a rope
+/// (CONS, flattened at the first read), a one-byte and a two-byte part, a slice (SLICED), an
+/// interned key (THIN or SEQ), the int32 extremes; and the shapes that take the spec steps
+/// (-0, 1.5, '1', an object, a number past int32, a throwing valueOf). node 24 gives the same
+/// lines.
+#[test]
+fn char_code_at_int32_fast_path_on_every_string_kind() {
+    assert_eq!(
+        common::run_both(
+            r#"var x = 'cdefghijklmno'; var r = 'ab' + x + 'Āz'; var long = 'abcdefghijklmnopqrstuvwxyz0123456789'; var sl = long.substring(3, 30); var o = {}; o[r] = 1; var k = Object.keys(o)[0]; var out = []; for (var i = -1; i <= r.length; i++) out.push(r.charCodeAt(i)); print(out.join()); print(('ab' + x).charCodeAt(14), r.charCodeAt(16), sl.charCodeAt(0), sl.charCodeAt(26), sl.charCodeAt(27), k.charCodeAt(15), r.charCodeAt(-2147483648), r.charCodeAt(2147483647), r.charCodeAt(-0), r.charCodeAt(1.5), r.charCodeAt('1'), r.charCodeAt({ valueOf: function () { return 2; } }), r.charCodeAt(4294967297), r.charCodeAt(-1e-9)); try { 'ab'.charCodeAt({ valueOf: function () { throw new Error('pos'); } }); } catch (e) { print(e.message); }"#
+        ),
+        lines(&[
+            "NaN,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,256,122,NaN",
+            "111 122 100 51 NaN 256 NaN NaN 97 98 98 99 NaN 97",
+            "pos"
+        ])
+    );
+}
+
 #[test]
 fn char_code_at_converts_this_before_pos() {
     assert_eq!(
