@@ -240,6 +240,14 @@ const INVENTORY: &[FastPath] = &[
                SetKeyedProperty the in-bounds store of an int32 (integer types) or a Number \
                (Float32, Float64)",
     },
+    // ---- OXC-PERF a CHARCODE-FAST, a guard form ----
+    FastPath {
+        id: "char-code-at",
+        site: "crates/ep9_builtins/src/string.rs char_code_at (the int32 fast path)",
+        off: Off::Guard,
+        what: "String.prototype.charCodeAt on a String value with an int32 pos: the code unit \
+               or NaN, with no ToString or ToIntegerOrInfinity call",
+    },
 ];
 
 /// Prints `typeof this`, the count and the joined arguments (the forwarded callee).
@@ -1643,6 +1651,19 @@ const CASES: &[Case] = &[
              for (var k = 0; k < 3; k++) for (var i = 0; i < 6; i++) { st(sf, i, i * 1000 - 1); r.push(sh(ld(sa, i))); }\n\
              __grow(s, 16); st(sa, 7, -5); r.push(ld(sa, 7), ld(sf, 3), sh(ld(sf, 4)));\n\
              print(r.join());",
+        ),
+    },
+    // ---- char-code-at: the spec form passes pos as a string, so ToNumber runs ----
+    Case {
+        path: "char-code-at",
+        name: "a rope, a slice, a two-byte string and the index edges",
+        src: "var x = 'cdefghijklmno', r = 'ab' + x + '\\u0100z', sl = (x + x + x).substring(2, 30), out = [];\n\
+              for (var i = -2; i <= 30; i++) out.push(r.charCodeAt(i), sl.charCodeAt(i), ('xy' + x).charCodeAt(i));\n\
+              print(out.join(), r.charCodeAt(-2147483648), r.charCodeAt(2147483647));",
+        spec: Some(
+            "var x = 'cdefghijklmno', r = 'ab' + x + '\\u0100z', sl = (x + x + x).substring(2, 30), out = [];\n\
+             for (var i = -2; i <= 30; i++) out.push(r.charCodeAt('' + i), sl.charCodeAt('' + i), ('xy' + x).charCodeAt('' + i));\n\
+             print(out.join(), r.charCodeAt('-2147483648'), r.charCodeAt('2147483647'));",
         ),
     },
 ];
