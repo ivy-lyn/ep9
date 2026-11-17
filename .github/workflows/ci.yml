@@ -54,7 +54,7 @@
 # fuzz-smoke 1.
 # M6-P0 (plan v11 section 2.9) adds release-tests 4 and no-jit-units 1: 62 jobs.
 # M8-P0 (plan v13 section 3.2) adds bench-set 1 (its "off" leg on push and pull_request): 63 jobs.
-# M9-P1 (plan v14 section 4.1) adds exit-inputs 1 (its "off" leg on push and pull_request): 64 jobs.
+# M9-P1 (plan v14 4.1) adds exit-inputs 1 ("off" leg on push and PR): 64 jobs; M9-P2 builtins 4: 68.
 #
 # The dispatch input `only` (plan v10 rule 27, a CI probe of a merge head): windows-x64,linux-x64
 # keeps those two in every 4-target matrix (36 jobs); the one-runner jobs all run. Default `all`.
@@ -316,7 +316,7 @@ jobs:
         with:
           node-version: '24.22.1'
       - run: cargo build --workspace --all-targets --locked
-      - { name: Run cargo test --workspace --locked, run: cargo test --workspace --exclude ep9_builtins --locked } # the name m0-exit and m1-exit read; ep9_builtins: the builtins job (CI-BUILDTEST-SHARD)
+      - { name: Run cargo test --workspace --locked, run: cargo test --workspace --exclude ep9_builtins --features ep9_vm/fastdiff-hits --locked } # the name m0-exit and m1-exit read; ep9_builtins: the builtins job (CI-BUILDTEST-SHARD); ep9_vm/fastdiff-hits: the feature set of the build step above
       # Spike B's native entry (plan M0 month 2, D21): the ep9_vm `spike-native` tests run
       # native code on every target, Windows x64 included (crates/ep9_vm/src/tests/native.rs).
       # The feature is never in the ep9 graph (dep-guards check 11), so it gets its own build.
