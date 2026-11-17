@@ -1526,9 +1526,9 @@ fn check_loops(
 
 /// The comment head of a frame golden file (`--frames GOLDEN --bless` writes it).
 const FRAMES_HEAD: &str = "\
-# The hot ep9_vm handlers (name not ending in `_cold`) that build a frame or save a callee-saved
-# register on entry, and the callee-saved registers each one saves on entry: one
-# `<expansion> <handler> <saves>` row per handler.
+# The hot ep9_vm handlers (name not ending in `_cold`; on x86-64 also `Wide_cold` and
+# `ExtraWide_cold`, disasm.rs HOT_COLD) that build a frame or save a callee-saved register on
+# entry, and the callee-saved registers each one saves: one `<expansion> <handler> <saves>` row.
 # Checked by `cargo xtask disasm-check --frames <this file>` in the CI disasm job (plan rule 81:
 # no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). A new row,
 # a lost row or a changed count fails. A change that is meant updates this file in the same PR:
