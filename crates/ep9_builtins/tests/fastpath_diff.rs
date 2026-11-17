@@ -248,6 +248,14 @@ const INVENTORY: &[FastPath] = &[
         what: "String.prototype.charCodeAt on a String value with an int32 pos: the code unit \
                or NaN, with no ToString or ToIntegerOrInfinity call",
     },
+    // ---- OXC-PERF wave 2 STR-SEARCH-SIMD (the switch) ----
+    FastPath {
+        id: "unit-search",
+        site: "crates/ep9_vm/src/abi/strings.rs search (string/search.rs Kernel::detect)",
+        off: Off::Switch,
+        what: "the first-unit scan of Cx::string_index_of (indexOf, includes) runs the SIMD \
+               body of the CPU (SSE2 or AVX2 on x86-64, NEON on aarch64); off: the scalar body",
+    },
 ];
 
 /// Prints `typeof this`, the count and the joined arguments (the forwarded callee).
@@ -1665,6 +1673,19 @@ const CASES: &[Case] = &[
              for (var i = -2; i <= 30; i++) out.push(r.charCodeAt('' + i), sl.charCodeAt('' + i), ('xy' + x).charCodeAt('' + i));\n\
              print(out.join(), r.charCodeAt('-2147483648'), r.charCodeAt('2147483647'));",
         ),
+    },
+    // ---- unit-search ----
+    Case {
+        path: "unit-search",
+        name: "Latin-1 and UTF-16 text, ropes and slices, each match position",
+        src: "var b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out = [];\n\
+              for (var i = 0; i < b64.length; i++) out.push(b64.indexOf(b64[i]), b64.indexOf(b64[i], i + 1));\n\
+              var x = 'cdefghijklmnopq', r = 'ab' + x + '\\u0100z' + x + x, sl = (x + x + x).substring(2, 40);\n\
+              var w = '\\ud83d\\ude00' + x + '\\u0101'.repeat(40) + '\\ude00' + x;\n\
+              for (var h of [r, sl, w, b64 + b64]) for (var n of ['q', 'pq', 'z', '\\u0100', '\\ude00', 'qc', 'nope', '/A', '\\u0101\\ude00'])\n\
+                for (var p of [0, 5, 16, 31, 33, 60]) out.push(h.indexOf(n, p), h.includes(n, p) ? 1 : 0);\n\
+              print(out.join());",
+        spec: None,
     },
 ];
 
