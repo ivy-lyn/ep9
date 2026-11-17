@@ -2035,13 +2035,14 @@ pub(crate) mod fast_hits {
     use core::cell::Cell;
 
     /// The Switch rows of the FASTDIFF inventory, in counter order.
-    pub const NAMES: [&str; 6] = [
+    pub const NAMES: [&str; 7] = [
         "host-entry",
         "forward-apply",
         "forward-call",
         "args-create",
         "clfal-length",
         "clfal-elements",
+        "json-quote",
     ];
 
     thread_local! {

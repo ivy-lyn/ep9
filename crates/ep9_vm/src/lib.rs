@@ -168,7 +168,7 @@ pub use isolate::{
     TerminateHandle,
 };
 pub use runtime::ErrorKind;
-pub use string::JsStr;
+pub use string::{JsStr, JsonText};
 // Spike B (feature `spike-native` only): the native-entry API of `native.rs`.
 #[cfg(feature = "spike-native")]
 pub use native::{

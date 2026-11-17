@@ -1321,3 +1321,41 @@ pub(crate) mod testing {
         new_seq_utf16(rt, units)
     }
 }
+
+// ---- JSON.stringify text on the payload (OXC-PERF wave 3 W3-JSON-QUOTE) ---------------------
+
+pub(crate) mod json_quote;
+pub use json_quote::JsonText;
+
+/// Appends QuoteJSONString of the flat string `s` to `out` by the body of `k`. Not a GC point:
+/// it takes the view itself, and the view ends when it returns.
+pub(crate) fn json_quote(k: json_quote::Kernel, s: u64, out: &mut JsonText) {
+    match units(s) {
+        JsStr::Latin1(b) => json_quote::quote_latin1(k, b, out),
+        JsStr::Utf16(u) => json_quote::quote_utf16(k, u, out),
+    }
+}
+
+/// Appends the code units of the flat string `s` to `out` as they are. Not a GC point.
+pub(crate) fn json_push(s: u64, out: &mut JsonText) {
+    match units(s) {
+        JsStr::Latin1(b) => out.push_ascii(b),
+        JsStr::Utf16(u) => out.push_units(u),
+    }
+}
+
+/// The string of a JSON text (`text.len() <= MAX_STRING_LENGTH`): a one-byte text is one
+/// copy into a SEQ_LATIN1 cell (no scan); a two-byte text holds a unit above 0xFF (only such a
+/// unit widens it), so it is a SEQ_UTF16 cell. GC point.
+pub(crate) fn json_text_string(rt: &Runtime, text: JsonText) -> u64 {
+    match text.repr {
+        json_quote::Repr::One(v) => new_string_latin1(rt, &v),
+        json_quote::Repr::Two(v) => {
+            debug_assert!(
+                v.iter().any(|&u| u > 0xFF),
+                "a two-byte text holds a unit > 0xFF"
+            );
+            new_seq_utf16(rt, &v)
+        }
+    }
+}

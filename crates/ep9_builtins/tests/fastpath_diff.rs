@@ -248,6 +248,16 @@ const INVENTORY: &[FastPath] = &[
         what: "String.prototype.charCodeAt on a String value with an int32 pos: the code unit \
                or NaN, with no ToString or ToIntegerOrInfinity call",
     },
+    // ---- OXC-PERF wave 3 W3-JSON-QUOTE (the switch) ----
+    FastPath {
+        id: "json-quote",
+        site: "crates/ep9_vm/src/abi/json.rs json_quote_into (string/json_quote.rs \
+               Kernel::detect)",
+        off: Off::Switch,
+        what: "QuoteJSONString of JSON.stringify (values and keys) runs the SIMD body of the \
+               CPU on the flat payload (SSE2 or AVX2 on x86-64, NEON on aarch64; SWAR \
+               elsewhere) into a one-byte text; off: the per-unit reference loop",
+    },
 ];
 
 /// Prints `typeof this`, the count and the joined arguments (the forwarded callee).
@@ -1685,6 +1695,31 @@ const CASES: &[Case] = &[
              for (var i = -2; i <= 30; i++) out.push(r.charCodeAt('' + i), sl.charCodeAt('' + i), ('xy' + x).charCodeAt('' + i));\n\
              print(out.join(), r.charCodeAt('-2147483648'), r.charCodeAt('2147483647'));",
         ),
+    },
+    // ---- json-quote ----
+    Case {
+        path: "json-quote",
+        name: "strings with escapes, Latin-1, lone surrogates and pairs, ropes and slices",
+        src: "var src = 'function f(a) {\\n\\t\\treturn \"x\\\\y\" + a; // \\u0001\\u001f\\u007f\\n}', out = [];\n\
+              out.push(JSON.stringify(src), JSON.stringify(src.repeat(9)), JSON.stringify(src.substring(3, 50)));\n\
+              var l1 = ''; for (var c = 0; c < 256; c++) l1 += String.fromCharCode(c);\n\
+              out.push(JSON.stringify(l1), JSON.stringify(l1 + l1 + 'tail'), JSON.stringify(['\\ud800x', '\\udc00', 'a\\udbff', '\\ud83d\\ude00', '\\ud83d\\ud83d\\ude00z']));\n\
+              var w = 'k'.repeat(29) + '\\ud83d\\ude00' + 'm'.repeat(40) + '\\ud800' + '\\u4e2d\\\"'.repeat(20);\n\
+              out.push(JSON.stringify(w), JSON.stringify({ a: w, b: l1 }));\n\
+              print(out.join('|'));",
+        spec: None,
+    },
+    Case {
+        path: "json-quote",
+        name: "short keys, a two-byte gap, rawJSON, numbers, a 70k string",
+        src: "var o = {}; for (var i = 0; i < 300; i++) o['k' + i] = i % 3 ? 'v' + i : { x: i, 'q\"': [i, 'e\\u00e9'] };\n\
+              var out = [JSON.stringify(o), JSON.stringify(o, null, ' '), JSON.stringify([o.k1, { s: 'x' }], null, '\\u2603\\u2603')];\n\
+              out.push(JSON.stringify([JSON.rawJSON('\"\\u4e2d\"'), 'after', JSON.rawJSON('12')]));\n\
+              out.push(JSON.stringify(['a', JSON.rawJSON('\"\\u00e9\"'), 'b\\n']));\n\
+              var big = 'abc\\\\def\"gh\\n'.repeat(7000); var t = JSON.stringify({ big: big, n: [1.5, -0, 1e21] });\n\
+              out.push(t.length, t.slice(0, 40), t.slice(-40));\n\
+              print(out.join('|'));",
+        spec: None,
     },
 ];
 
