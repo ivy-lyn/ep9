@@ -219,10 +219,16 @@ impl Heap {
     }
 }
 
+/// `#[repr(C)]` with `kinds` first, so the address of a kind's entry needs no field offset
+/// (rustc's own order put `spaces` first: one more `add` per entry address in the drain and the
+/// sweep; route DRAIN-X64-SIZE).
+#[repr(C)]
 pub(crate) struct KindTable {
     kinds: [Option<CellKind>; 256],
     spaces: [Space; 256],
 }
+
+const _: () = assert!(core::mem::offset_of!(KindTable, kinds) == 0);
 
 impl KindTable {
     pub(crate) fn new() -> KindTable {
@@ -287,6 +293,22 @@ impl KindTable {
             CellSize::Field(s) => return Some(unsafe { s.size_of(cell) }),
         };
         cell_size_for(raw)
+    }
+
+    /// [`KindTable::cell_size`] for the drain: the size of `cell` from its kind `k`, which the
+    /// caller has already read from the table; 0 where `cell_size` gives `None` (an overflow:
+    /// no cell size is 0). No second kind-byte and table read, and no `Option` to join. The
+    /// caller passes a live cell of the kind `k` (the drain: a marked cell and its word0 kind).
+    #[inline(always)]
+    pub(crate) fn size_of(k: &CellKind, cell: CellPtr) -> usize {
+        let raw = match k.size {
+            CellSize::Fixed(n) => n,
+            CellSize::Dynamic(f) => f(cell),
+            // SAFETY: a live cell of the kind `k`, so of the form it was registered with. The
+            // form's size needs no rounding (`FieldSize::new` checks base and scale).
+            CellSize::Field(s) => return unsafe { s.size_of(cell) },
+        };
+        cell_size_for(raw).unwrap_or(0)
     }
 }
 
@@ -499,6 +521,20 @@ impl FieldSize {
         // 0 of the flags form: word0's `shape_id`, an AtomicU32 too). A size field is written
         // only before the first GC point after the allocation, so no write races with it.
         let word = unsafe { &*cell.field::<AtomicU32>(usize::from(self.offset)) }.load(Relaxed);
+        // The int32 form: the slot's high half is the int32 tag (H06), as `object::rd_i32`
+        // checks in the size functions that it replaced (route FIELDSIZE-INT32-ASSERT).
+        // Debug builds only.
+        #[cfg(debug_assertions)]
+        if self.flags == 0 && self.mask == u32::MAX {
+            // SAFETY: caller contract: the int32 form's slot is inside the cell, so its high
+            // half at `offset + 4` is too.
+            let high = unsafe { &*cell.field::<AtomicU32>(usize::from(self.offset) + 4) };
+            debug_assert_eq!(
+                high.load(Relaxed),
+                (ep9_value::encoding::NUMBER_TAG >> 32) as u32,
+                "FieldSize int32 form: the slot is not an int32 Value"
+            );
+        }
         let raw = if self.flags != 0 { flags } else { word };
         let n = raw as i32 as usize & self.mask as i32 as usize;
         usize::from(self.base) + usize::from(self.scale) * n
