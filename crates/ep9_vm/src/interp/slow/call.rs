@@ -1242,7 +1242,8 @@ fn construct_native_cold(
 // not decode: the opcode and `N` are constants, so there is no opcode match, no `Fixed`, no
 // `Option` result, and the argument copy of the frame push is unrolled. The poll
 // (`budget <= 0`), the forward of `apply` and `call` (a FUNCTION receiver), a `Wide` or
-// `ExtraWide` call and the fast paths off take `call`.
+// `ExtraWide` call and the fast paths off take `call`. On x86-64 (not spike-native) a
+// FUNCTION receiver does not get here: the cold body tests the receiver first.
 
 /// The call at `pc` of an unprefixed `CallProperty0`, `CallProperty1` or `CallProperty2`
 /// (`N` its argument count) from the cold body of its handler: a host callee runs as
@@ -1254,7 +1255,8 @@ fn construct_native_cold(
 /// # Safety
 /// `pc` is the `CallProperty<N>` instruction (or its `Wide`/`ExtraWide` prefix) of verified
 /// code in the live top frame `fp`, and no scratch Values lie above that frame (as [`call()`]);
-/// for an unprefixed `pc`, `this` is the value of the register of operand 1.
+/// for an unprefixed `pc`, `this` is the value of the register of operand 1. On x86-64 (not
+/// spike-native), `this` is not a FUNCTION: the cold body tests it (a debug test here).
 #[inline(never)]
 pub(crate) unsafe fn call_property<const N: u32>(
     cx: &mut Cx,
@@ -1287,8 +1289,19 @@ pub(crate) unsafe fn call_property<const N: u32>(
     let Some(h) = fi.host else {
         return call(cx, fp, pc, acc);
     };
-    // A FUNCTION receiver: `forward` may push the frame of `this` (`apply`, `call`).
-    if object::is_function(this) || !call::human_fast_paths(cx.rt()) {
+    // A FUNCTION receiver: `forward` may push the frame of `this` (`apply`, `call`). On
+    // x86-64 (not spike-native) the cold body sent such a call to `call_receiver_cold`
+    // before this call (`interp/ops.rs` `call_property_cold`), so a debug test is enough.
+    #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+    debug_assert!(
+        !object::is_function(this),
+        "the cold body takes a FUNCTION receiver"
+    );
+    #[cfg(not(all(not(feature = "spike-native"), target_arch = "x86_64")))]
+    if object::is_function(this) {
+        return call(cx, fp, pc, acc);
+    }
+    if !call::human_fast_paths(cx.rt()) {
         return call(cx, fp, pc, acc);
     }
     enter(cx, fp, pc);

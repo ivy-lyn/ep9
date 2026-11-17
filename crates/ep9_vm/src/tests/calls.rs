@@ -1895,9 +1895,47 @@ fn a_host_callee_of_another_realm_runs_in_its_realm_through_the_entry() {
 
 // ---- the host call of CallProperty0-2 (M9 OXC-W2-HOSTCALL, `slow::call_property`) ---------
 
-/// Runs `make` with `echo`, `hthrow` and `mine` registered and the human fast paths `on` or
-/// off: (result, output, host entries, the host calls that `slow::call_property` took).
-/// Holds [`RUN_HOST`] until it returns.
+/// Sets the budget of `iso` below the call record window of the isolate start
+/// (`profile::CALL_WINDOW`), as `tests/profile.rs`
+/// `calls_outside_the_window_are_not_recorded_until_a_poll` does. A host call spends no
+/// budget unit (H23), so each call of a short script runs in that window. On x86-64 (not
+/// spike-native) the cold body of `CallProperty0`-`2` (`interp/ops.rs` `call_property_cold`)
+/// sends a call in the window to the record and `slow::call`, not to `slow::call_property`.
+fn start_below_the_call_window(iso: &mut crate::Isolate) {
+    iso.cx.budget = crate::interp::BUDGET / 2;
+}
+
+/// The budget after a run that [`start_below_the_call_window`] started is still in
+/// `1..=BUDGET / 2`: no poll ran (a poll sets the budget to `BUDGET` or more), so the budget
+/// was below the call record window at each call of the run.
+fn assert_below_the_call_window(iso: &crate::Isolate, label: &str) {
+    use crate::interp::BUDGET;
+    use crate::profile::CALL_WINDOW;
+    const { assert!(BUDGET / 2 <= BUDGET - CALL_WINDOW) };
+    let b = iso.cx.budget;
+    assert!((1..=BUDGET / 2).contains(&b), "{label}: budget {b}");
+}
+
+/// The bytecode offset that the caller frame of this host call saved (H14 header slot 7),
+/// which `Runtime::enter` writes before a host call. An error made before the host frame
+/// exists (the RangeError of a full VM or native stack) takes the caller's position in its
+/// stack from this slot (`error::capture`: the top frame's `saved_offset`).
+fn caller_offset<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // The host frame is the top frame (`call_host_from_bytecode`, `call_host`).
+    let fp = cx.inner().rt().stack().fp();
+    let off = crate::error::FrameRef(fp).caller().saved_offset();
+    Ok(Local::int32(off as i32))
+}
+
+/// Runs `make` with `echo`, `hthrow`, `mine` and `at` ([`caller_offset`]) registered, the
+/// budget below the call record window ([`start_below_the_call_window`]) and the human fast
+/// paths `on` or off: (result, output, host entries, the host calls that
+/// `slow::call_property` took). Holds [`RUN_HOST`] until it returns.
 fn run_property(
     make: fn() -> VerifiedUnit,
     d: Dispatch,
@@ -1913,13 +1951,16 @@ fn run_property(
         iso.register_host_function("echo", 0, echo);
         iso.register_host_function("hthrow", 0, hthrow);
         iso.register_host_function("mine", 0, realm_of);
+        iso.register_host_function("at", 0, caller_offset);
         take_output();
         HOST_ENTRY_HITS.with(|h| h.set(0));
         HOST_PROPERTY_HITS.with(|h| h.set(0));
+        start_below_the_call_window(&mut iso);
         let r = iso.with_cx_checkpoint(|cx| {
             cx.set_human_fast_paths(on);
             cx.run_script(make(), "property.js").map(|v| cx.display(v))
         });
+        assert_below_the_call_window(&iso, &format!("{} stress={stress} on={on}", d.name()));
         let out = take_output();
         iso.collect_garbage();
         iso.verify_heap().unwrap();
@@ -2065,6 +2106,7 @@ fn a_host_method_call_throws_and_switches_realms_as_the_general_path() {
             take_output();
             HOST_PROPERTY_HITS.with(|h| h.set(0));
             let first = iso.cx.realm;
+            start_below_the_call_window(&mut iso);
             let r = iso.with_cx_checkpoint(|cx| {
                 cx.set_human_fast_paths(on);
                 let g1 = cx.global();
@@ -2083,6 +2125,7 @@ fn a_host_method_call_throws_and_switches_realms_as_the_general_path() {
                     cx.inner().realm == first,
                 ])
             });
+            assert_below_the_call_window(&iso, &format!("{} stress={stress} on={on}", d.name()));
             let out = take_output();
             iso.collect_garbage();
             iso.verify_heap().unwrap();
@@ -2114,6 +2157,45 @@ fn a_host_method_call_throws_and_switches_realms_as_the_general_path() {
             assert_eq!(on.1, off.1, "{label}");
             // On: hthrow, f and mine take the path. Off: none.
             assert_eq!((on.2, off.2), (3, 0), "{label}");
+        }
+    }
+}
+
+/// The fixed property path saves the caller's bytecode offset before the host call, as the
+/// general path does (`Runtime::enter`): `"R".at()`, `"R".at(1)` and `"R".at(1, 2)`
+/// ([`caller_offset`]) give the offsets of their 3 call instructions, the same with the fast
+/// paths on and off. The test fails when `call_property` does not call `enter`: then the slot
+/// holds the offset of an earlier slow path of the frame (the `LdaGlobal` of `at`) or 0.
+#[test]
+fn a_host_method_call_saves_the_caller_offset_as_the_general_path() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(3);
+        for shape in [
+            Shape::CallProperty0,
+            Shape::CallProperty1,
+            Shape::CallProperty2,
+        ] {
+            emit_shape(&mut s, shape, "at", l);
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let on = run_property(make, d, stress, true);
+            let off = run_property(make, d, stress, false);
+            assert!(on.0.is_ok(), "{label}: {:?}", on.0);
+            assert_eq!((&on.0, &on.1), (&off.0, &off.1), "{label}");
+            let offs: Vec<u32> = on.1.iter().map(|o| o.parse().unwrap()).collect();
+            assert_eq!(offs.len(), 3, "{label}: {offs:?}");
+            assert!(
+                0 < offs[0] && offs[0] < offs[1] && offs[1] < offs[2],
+                "{label}: {offs:?}"
+            );
+            assert_eq!((on.3, off.3), (3, 0), "{label}");
         }
     }
 }
