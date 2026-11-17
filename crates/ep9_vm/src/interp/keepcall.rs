@@ -378,3 +378,75 @@ pub(crate) mod test_target {
         ep9_keep_test_clobber => clobber
     }
 }
+
+// ---- the T0 named store (M9-P4 X86-STORE-R1; route X86-STORE-ALLOC-SAVES R1) ----------------
+//
+// `ic::store` (the hit path of `SetNamedProperty` and `DefineNamedOwnProperty`) stores a field
+// through `object::wr_keep` and installs the add case's shape through `shape::install_keep`.
+// These are the opt-in keep forms of `object::wr` and `shape::install`: on x86-64 abort builds
+// their barrier slow calls are keep-calls (`slot_set_keep`, `set_shape_keep`); elsewhere they
+// are the plain stores. Every other caller keeps the plain store (`ic::store_global` too: the
+// keep form gave windows-x64 `StaGlobal` a new entry save, DL M9-P1-D3).
+
+#[cfg(target_arch = "x86_64")]
+keep_wrapper! {
+    /// The keep-call wrapper of `ep9_heap::barrier_slow_shape(host, id)`.
+    ep9_keep_barrier_slow_shape => ep9_heap::barrier_slow_shape
+}
+
+/// `Slot::set` for `object::wr_keep`: on x86-64 abort builds `slot_set_keep`; elsewhere
+/// `Slot::set`.
+#[inline(always)]
+pub(crate) fn slot_set(
+    slot: &ep9_heap::Slot,
+    host: &ep9_value::Word0,
+    v: ep9_value::Value,
+    state: &ep9_heap::BarrierState,
+) {
+    #[cfg(all(target_arch = "x86_64", panic = "abort"))]
+    slot_set_keep(slot, host, v, state);
+    #[cfg(not(all(target_arch = "x86_64", panic = "abort")))]
+    slot.set(host, v, state);
+}
+
+/// `ep9_heap::set_shape` for `shape::install_keep`: on x86-64 abort builds `set_shape_keep`;
+/// elsewhere `ep9_heap::set_shape`.
+#[inline(always)]
+pub(crate) fn set_shape(
+    host: &ep9_value::Word0,
+    id: ep9_value::ShapeId,
+    state: &ep9_heap::BarrierState,
+) {
+    #[cfg(all(target_arch = "x86_64", panic = "abort"))]
+    set_shape_keep(host, id, state);
+    #[cfg(not(all(target_arch = "x86_64", panic = "abort")))]
+    ep9_heap::set_shape(host, id, state);
+}
+
+/// `ep9_heap::set_shape` with the keep-call slow path: the same check (`gc_state <=
+/// threshold`; a shape is a cell, so there is no new-value filter), the same store on the fast
+/// path (`Word0::set_shape_id`) and the same slow-path entry (`barrier_slow_shape`, which does
+/// the store). Only the call instruction differs. Built on x86-64 abort builds, and in the
+/// unit tests so that `cargo test` runs it.
+#[cfg(all(target_arch = "x86_64", any(test, panic = "abort")))]
+#[inline(always)]
+pub(crate) fn set_shape_keep(host: &Word0, id: ep9_value::ShapeId, state: &BarrierState) {
+    if host.gc_state() <= state.threshold() {
+        // SAFETY: the wrapper calls `barrier_slow_shape(host, id)` with the 2 arguments in the
+        // C argument registers (it does not read the 3rd). `host` is a live reference, `id` is
+        // a u32 (`ShapeId` is `repr(transparent)`) zero-extended to 64 bits, and
+        // `barrier_slow_shape` does not unwind: it only stores and logs, and a panic in an
+        // abort build aborts.
+        unsafe {
+            keep_call!(
+                ep9_keep_barrier_slow_shape;
+                core::ptr::from_ref(host),
+                u64::from(id.get()),
+                0u64
+            );
+        }
+    } else {
+        // The `else` arm of `ep9_heap::set_shape`: the same store, with no barrier.
+        host.set_shape_id(id);
+    }
+}

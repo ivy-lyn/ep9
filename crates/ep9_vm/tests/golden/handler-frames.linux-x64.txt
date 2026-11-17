@@ -20,9 +20,9 @@ ics Construct 6
 ics CreateArrayLiteral 6
 ics CreateEmptyArrayLiteral 6
 ics CreateObjectLiteral 6
-ics DefineNamedOwnProperty 6
+ics DefineNamedOwnProperty 3
 ics SetKeyedProperty 6
-ics SetNamedProperty 6
+ics SetNamedProperty 3
 ics StaContextSlot 1
 ics StaCurrentContextSlot 0
 ics StaGlobal 5
@@ -44,10 +44,10 @@ sib Construct 6
 sib CreateArrayLiteral 6
 sib CreateEmptyArrayLiteral 6
 sib CreateObjectLiteral 6
-sib DefineNamedOwnProperty 6
+sib DefineNamedOwnProperty 3
 sib ExtraWide_cold 1
 sib SetKeyedProperty 6
-sib SetNamedProperty 6
+sib SetNamedProperty 3
 sib StaContextSlot 1
 sib StaCurrentContextSlot 0
 sib StaGlobal 5

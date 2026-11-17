@@ -2235,3 +2235,21 @@ pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
         ("transitions", TRANSITIONS_SIZE, transitions_size),
     ]
 }
+
+/// Installs `shape` in word0 of the JS object `o` with the shape barrier: the opt-in keep form
+/// of [`install`] for the add case of the T0 named store (`ic::store`; M9-P4 X86-STORE-R1).
+/// The same checks and stores, but on x86-64 abort builds the barrier slow call is a keep-call
+/// (`interp::keepcall::set_shape`), so the handler that inlines it needs no entry save for it.
+/// Elsewhere it is [`install`]. Every other caller keeps [`install`]. Not a GC point.
+#[inline(always)]
+pub(crate) fn install_keep(rt: &Runtime, o: u64, shape: u64) {
+    debug_assert!(is_shape(shape) && kind::is_object(o));
+    debug_assert_eq!(
+        object_kind(shape),
+        kind::cell_kind(o),
+        "shape of another kind"
+    );
+    let id = rt.heap.shape_id_of(cell(shape));
+    // SAFETY: `o` is live (crate invariant).
+    crate::interp::keepcall::set_shape(unsafe { cell(o).header() }, id, rt.heap.barrier());
+}
