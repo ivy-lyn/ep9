@@ -273,3 +273,191 @@ mod x64 {
         }
     }
 }
+
+// ---- the T0 named store (M9-P4 X86-STORE-R1): `object::wr_keep`, `shape::install_keep` ------
+//
+// - Every target: the store forms of `ic::store` (`object::wr_keep`, `shape::install_keep`)
+//   keep the barrier on an old (BLACK) host: the slot store and the shape install each log the
+//   host (GREY), and the heap verifier finds no store without the barrier.
+// - x86-64: the same through the keep-call forms (`keepcall::wr_keep`,
+//   `keepcall::set_shape_keep`; the unit tests unwind, so `wr_keep` and `install_keep` are the
+//   plain stores there), the decision table of `set_shape_keep` against `ep9_heap::set_shape`,
+//   and the GPR-fill test of the second naked wrapper `ep9_keep_barrier_slow_shape` (DL M8-P3-D3
+//   X3).
+
+/// A shape install (`install(rt, o, shape)`) and a barriered store (`wr(heap, c, off, v)`).
+type InstallFn = fn(&crate::runtime::Runtime, u64, u64);
+type WrFn = fn(&ep9_heap::Heap, ep9_heap::CellPtr, usize, u64);
+
+/// Runs `install` and `wr` (the store forms of `ic::store`) on old hosts: `install` puts the
+/// object's own shape again into an old object, and `wr` stores an int32, then a young cell,
+/// into an old context.
+fn named_store_keeps_the_barrier(install: InstallFn, wr: WrFn) {
+    on_big_stack(move || {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        let o = {
+            let rt = &iso.rt;
+            let o = object::new_plain_object(rt);
+            let k = atoms::intern_str(rt, "keepObj");
+            props::own_define(rt, rt.global(), k, o, attr::DEFAULT);
+            o
+        };
+        let c = old_context(&mut iso, "keepCtx", 2);
+        assert_eq!(
+            gc_state_of(o),
+            gc_state::BLACK,
+            "a full GC leaves a live cell old"
+        );
+        let rt = &iso.rt;
+        // The shape install: a shape is a cell, so an old host always takes the slow path,
+        // which installs the shape and logs the host (GREY).
+        let s = crate::shape::shape_of(o);
+        install(rt, o, s);
+        assert_eq!(crate::shape::shape_of(o), s);
+        assert_eq!(
+            gc_state_of(o),
+            gc_state::GREY,
+            "the shape barrier slow path ran"
+        );
+        // The slot store: not a cell, so no barrier and the host stays BLACK; then a young cell
+        // into the old host: the slow path stores and logs it (GREY).
+        let n = crate::frame::int32_bits(7);
+        wr(&rt.heap, object::cell(c), object::ctxf::SLOTS + 8, n);
+        assert_eq!(object::context_get(c, 1), Some(n));
+        assert_eq!(gc_state_of(c), gc_state::BLACK);
+        let young = object::new_plain_object(rt);
+        assert_eq!(gc_state_of(young), gc_state::WHITE);
+        wr(&rt.heap, object::cell(c), object::ctxf::SLOTS, young);
+        assert_eq!(object::context_get(c, 0), Some(young));
+        assert_eq!(gc_state_of(c), gc_state::GREY, "the barrier slow path ran");
+        iso.verify_heap().unwrap();
+        // A minor GC keeps the young cell (the context logged it).
+        iso.rt.heap.collect_minor();
+        assert_eq!(object::context_get(c, 0), Some(young));
+        assert_eq!(crate::shape::shape_of(o), s);
+        iso.verify_heap().unwrap();
+    });
+}
+
+/// The store forms that `ic::store` calls on this build.
+#[test]
+fn the_t0_named_store_keeps_the_barrier() {
+    named_store_keeps_the_barrier(crate::shape::install_keep, object::wr_keep);
+}
+
+/// The keep-call forms of the named store (x86-64 release builds), run by `cargo test`.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn the_keep_call_named_store_keeps_the_barrier() {
+    named_store_keeps_the_barrier(
+        |rt, o, s| {
+            let id = rt.heap.shape_id_of(object::cell(s));
+            // SAFETY: `o` is live: a global property holds it.
+            let h = unsafe { object::cell(o).header() };
+            keepcall::set_shape_keep(h, id, rt.heap.barrier());
+        },
+        keepcall::wr_keep,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+mod x64_shape {
+    use ep9_heap::{BarrierState, gc_state, threshold};
+    use ep9_value::{ShapeId, Word0};
+
+    use crate::interp::keepcall;
+
+    /// The values that the fill helper puts in the registers that the wrapper must keep.
+    const RCX: u64 = 0x6969_0000_0000_0C0C;
+    const RDX: u64 = 0x6969_0000_0000_0D0D;
+    const RSI: u64 = 0x6969_0000_0000_050E;
+    const RDI: u64 = 0x6969_0000_0000_0D1D;
+    const R11: u64 = 0x6969_0000_0000_1111;
+
+    /// Puts `a`, `b`, `c` in r8, r9, r10 and the values above in rcx, rdx, rsi, rdi and r11,
+    /// calls `ep9_keep_barrier_slow_shape`, then writes rcx, rdx, rsi, rdi and r8-r11 to
+    /// `out[0..8]` (the `fill_and_call!` form of the `x64` module). SysV ABI on every OS (rbx
+    /// keeps `out`).
+    #[unsafe(naked)]
+    unsafe extern "sysv64" fn fill_and_call_barrier_shape(
+        out: *mut [u64; 8],
+        a: u64,
+        b: u64,
+        c: u64,
+    ) {
+        core::arch::naked_asm!(
+            "push rbx",
+            "mov rbx, rdi",
+            "mov r8, rsi",
+            "mov r9, rdx",
+            "mov r10, rcx",
+            "mov rcx, {rcx}",
+            "mov rdx, {rdx}",
+            "mov rsi, {rsi}",
+            "mov rdi, {rdi}",
+            "mov r11, {r11}",
+            // Entry rsp is 8 mod 16; the push makes it 16-aligned, as an `asm!` call.
+            "call {w}",
+            "mov qword ptr [rbx], rcx",
+            "mov qword ptr [rbx + 8], rdx",
+            "mov qword ptr [rbx + 16], rsi",
+            "mov qword ptr [rbx + 24], rdi",
+            "mov qword ptr [rbx + 32], r8",
+            "mov qword ptr [rbx + 40], r9",
+            "mov qword ptr [rbx + 48], r10",
+            "mov qword ptr [rbx + 56], r11",
+            "pop rbx",
+            "ret",
+            w = sym keepcall::ep9_keep_barrier_slow_shape,
+            rcx = const RCX,
+            rdx = const RDX,
+            rsi = const RSI,
+            rdi = const RDI,
+            r11 = const R11,
+        )
+    }
+
+    /// The production wrapper of `barrier_slow_shape`: the shape lands, and the 8 registers are
+    /// kept (r10, which `barrier_slow_shape` does not read, too). The host is a header on this
+    /// stack, outside every heap, so the slow path only stores (H11-Q6).
+    #[test]
+    fn the_shape_barrier_wrapper_stores_and_keeps_every_register_it_saves() {
+        let host = Word0::new(ShapeId::new(8), gc_state::BLACK, 0, 0);
+        let id = ShapeId::new(24);
+        let (a, b, c) = (
+            (&raw const host).addr() as u64,
+            u64::from(id.get()),
+            0x5555_AAAA_5555_AAAA,
+        );
+        let mut out = [0u64; 8];
+        // SAFETY: the wrapper calls `barrier_slow_shape(&host, id)`: a live reference and a
+        // ShapeId in the low 32 bits of the 2nd argument.
+        unsafe { fill_and_call_barrier_shape(&raw mut out, a, b, c) };
+        assert_eq!(out, [RCX, RDX, RSI, RDI, a, b, c, R11]);
+        assert_eq!(host.shape_id(), id, "the slow path installs the shape");
+    }
+
+    /// `set_shape_keep` against `ep9_heap::set_shape`, on hosts outside every heap: every
+    /// gc_state x the stage thresholds. The installed ShapeId and the host header agree. This
+    /// test cannot see which path ran: on a host outside every heap the slow path only stores,
+    /// as the fast path does. `the_keep_call_named_store_keeps_the_barrier` proves that the
+    /// slow path runs (the old host becomes GREY).
+    #[test]
+    fn the_keep_shape_store_matches_set_shape() {
+        let id = ShapeId::new(24);
+        for th in [threshold::OFF, threshold::GEN, 2, threshold::MARKING] {
+            let state = BarrierState::new(th);
+            for g in 0..=u8::MAX {
+                let (h1, h2) = (
+                    Word0::new(ShapeId::new(8), g, 0, 0),
+                    Word0::new(ShapeId::new(8), g, 0, 0),
+                );
+                ep9_heap::set_shape(&h1, id, &state);
+                keepcall::set_shape_keep(&h2, id, &state);
+                assert_eq!(h1.shape_id(), h2.shape_id(), "threshold {th} gc_state {g}");
+                assert_eq!(h2.shape_id(), id);
+                assert_eq!(h1.gc_state(), h2.gc_state());
+            }
+        }
+    }
+}

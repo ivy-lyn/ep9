@@ -596,9 +596,9 @@ fn store_with<const CHECK_EPOCH: bool>(
         // (Before, a `match` on `k`: 6 aarch64 instructions for kinds 1-2, 9-12 for 9-14.)
         let in_object = k & 1 != 0;
         if in_object {
-            object::wr(&rt.heap, c, off, v);
+            object::wr_keep(&rt.heap, c, off, v);
         } else {
-            object::wr(&rt.heap, cell(rd(c, obj::SLOTS)), off, v);
+            object::wr_keep(&rt.heap, cell(rd(c, obj::SLOTS)), off, v);
         }
         return true;
     }
@@ -624,19 +624,19 @@ fn store_with<const CHECK_EPOCH: bool>(
     let loc = rd_i32(hcell, hc::LOCATION);
     let off = (loc >> smi::SHIFT) as usize;
     if loc & smi::KIND_MASK == smi::FIELD_IN_OBJECT {
-        object::wr(&rt.heap, c, off, v);
+        object::wr_keep(&rt.heap, c, off, v);
     } else {
         // Out of line: only into room the SLOTS cell has (growth takes the slow path).
         let s = rd(c, obj::SLOTS);
         if s == UNDEFINED || off >= slf::DATA + 8 * rd_i32(cell(s), slf::CAPACITY) as usize {
             return false;
         }
-        object::wr(&rt.heap, cell(s), off, v);
+        object::wr_keep(&rt.heap, cell(s), off, v);
     }
     // An add case is made for a fast, extensible shape that is not in prototype mode
     // ([`store_pre`]), so `o` is extensible and its change invalidates no validity cell.
     debug_assert!(shape::is_extensible(shape::shape_of(o)) && !shape::is_prototype_object(o));
-    shape::install(rt, o, target);
+    shape::install_keep(rt, o, target);
     true
 }
 

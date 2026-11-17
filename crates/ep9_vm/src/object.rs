@@ -1950,3 +1950,14 @@ pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
         ("context", CONTEXT_SIZE, context_size),
     ]
 }
+
+/// Barriered store, the opt-in keep form of [`wr`] for the T0 named store (`ic::store`; M9-P4
+/// X86-STORE-R1): the same check and stores, but on x86-64 abort builds the barrier slow call
+/// is a keep-call (`interp::keepcall::slot_set`), so the handler that inlines it needs no
+/// entry save for it. Elsewhere it is [`wr`]. Every other caller keeps [`wr`].
+#[inline(always)]
+pub(crate) fn wr_keep(heap: &Heap, c: CellPtr, off: usize, v: u64) {
+    // SAFETY: `c` is live (crate invariant).
+    let h = unsafe { c.header() };
+    crate::interp::keepcall::slot_set(slot_of(c, off), h, val(v), heap.barrier());
+}
