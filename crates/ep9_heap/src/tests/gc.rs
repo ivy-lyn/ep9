@@ -748,3 +748,85 @@ fn the_int32_size_form_asserts_on_a_slot_that_is_not_an_int32() {
     // SAFETY: a live cell of the int32 form (the assert checks its slot).
     unsafe { crate::FieldSize::int32(8, 16, 8).size_of(c) };
 }
+
+// Route DRAIN-X64-SIZE (M9-P4 HEAP-DRAIN): the drain reads each cell's size with
+// `KindTable::size_of`, from the kind it has already read. These tests pin what the old
+// `cell_size` read gave: the rounded size of each form, 0 (and a checked-mark error) on an
+// overflow.
+
+/// The marked bytes of a GC are the sum of the rounded sizes of the marked cells, for each
+/// size form: Fixed(12) counts 16, Fixed(20) and a size function's 20 count 24, a field
+/// form counts its `base + scale * n`. And `KindTable::size_of` equals `cell_size` on each.
+#[test]
+fn the_drain_counts_the_rounded_size_of_each_form() {
+    let heap = size_form_heap(|_| {});
+    let cells = [
+        (SIZE_FIXED_12, 12, 16),
+        (SIZE_FIXED_20, 20, 24),
+        (SIZE_DYNAMIC, 20, 24),
+        (SIZE_DYNAMIC, 9, 16),
+        (SIZE_INT32, 16, 16),
+        (SIZE_INT32, 56, 56),
+        (SIZE_FLAGS, 40, 40),
+        (SIZE_WORD32, 64, 64),
+    ];
+    let mut roots = Vec::new();
+    let mut want = 0;
+    for &(kind, size, rounded) in &cells {
+        let c = size_form_cell(&heap, kind, size);
+        {
+            let inner = heap.inner.borrow();
+            let k = inner.kinds.get(kind.get()).expect("registered");
+            assert_eq!(
+                crate::cell::KindTable::size_of(k, c),
+                rounded,
+                "kind {}",
+                kind.get()
+            );
+            assert_eq!(inner.kinds.cell_size(c), Some(rounded));
+        }
+        roots.push(heap.new_global(c.to_value()));
+        want += rounded;
+    }
+    precise_gc(&heap);
+    let st = heap.stats();
+    assert_eq!(st.last_marked_cells, cells.len());
+    assert_eq!(st.last_marked_bytes, want);
+    for g in roots {
+        heap.drop_global(g);
+    }
+}
+
+/// A size that overflows: `size_of` gives 0 where `cell_size` gives `None`, the drain counts
+/// no bytes for the cell, and the checked mark (a GC with `verify_after_gc`) still reports
+/// "size overflows" for it.
+#[test]
+fn the_checked_drain_reports_a_size_overflow() {
+    let heap = size_form_heap(|c| c.verify_after_gc = true);
+    let c = size_form_cell(&heap, SIZE_DYNAMIC, 16);
+    let g = heap.new_global(c.to_value());
+    precise_gc(&heap);
+    assert_eq!(heap.stats().last_marked_bytes, 16);
+    // SAFETY: `c` is live (rooted); the test restores the word before the last GC.
+    unsafe { c.field::<u64>(8).write(u64::MAX) };
+    {
+        let inner = heap.inner.borrow();
+        let k = inner.kinds.get(SIZE_DYNAMIC.get()).expect("registered");
+        assert_eq!(crate::cell::KindTable::size_of(k, c), 0);
+        assert_eq!(inner.kinds.cell_size(c), None);
+    }
+    let r = catch_unwind(AssertUnwindSafe(|| precise_gc(&heap)));
+    let p = r.expect_err("the checked GC missed the size overflow");
+    let msg = p
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default();
+    let at = format!("cell {c:?} (kind {}): size overflows", SIZE_DYNAMIC.get());
+    assert!(msg.contains(&at), "{msg}");
+    // SAFETY: as above.
+    unsafe { c.field::<u64>(8).write(16) };
+    precise_gc(&heap);
+    assert_eq!(heap.stats().last_marked_bytes, 16);
+    heap.drop_global(g);
+}

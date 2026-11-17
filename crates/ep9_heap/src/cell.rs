@@ -219,10 +219,16 @@ impl Heap {
     }
 }
 
+/// `#[repr(C)]` with `kinds` first, so the address of a kind's entry needs no field offset
+/// (rustc's own order put `spaces` first: one more `add` per entry address in the drain and the
+/// sweep; route DRAIN-X64-SIZE).
+#[repr(C)]
 pub(crate) struct KindTable {
     kinds: [Option<CellKind>; 256],
     spaces: [Space; 256],
 }
+
+const _: () = assert!(core::mem::offset_of!(KindTable, kinds) == 0);
 
 impl KindTable {
     pub(crate) fn new() -> KindTable {
@@ -287,6 +293,22 @@ impl KindTable {
             CellSize::Field(s) => return Some(unsafe { s.size_of(cell) }),
         };
         cell_size_for(raw)
+    }
+
+    /// [`KindTable::cell_size`] for the drain: the size of `cell` from its kind `k`, which the
+    /// caller has already read from the table; 0 where `cell_size` gives `None` (an overflow:
+    /// no cell size is 0). No second kind-byte and table read, and no `Option` to join. The
+    /// caller passes a live cell of the kind `k` (the drain: a marked cell and its word0 kind).
+    #[inline(always)]
+    pub(crate) fn size_of(k: &CellKind, cell: CellPtr) -> usize {
+        let raw = match k.size {
+            CellSize::Fixed(n) => n,
+            CellSize::Dynamic(f) => f(cell),
+            // SAFETY: a live cell of the kind `k`, so of the form it was registered with. The
+            // form's size needs no rounding (`FieldSize::new` checks base and scale).
+            CellSize::Field(s) => return unsafe { s.size_of(cell) },
+        };
+        cell_size_for(raw).unwrap_or(0)
     }
 }
 

@@ -707,11 +707,11 @@ impl<'h> Tracer<'h> {
             panic!("heap corrupt: cell {c:?} has the unregistered kind {kind}");
         };
         self.marked_cells += 1;
-        let size = self.kinds.cell_size(c);
+        let size = KindTable::size_of(&k, c);
         if self.check {
-            self.check_marked(c, kind, size);
+            self.check_marked(c, kind, (size != 0).then_some(size));
         }
-        self.marked_bytes += size.unwrap_or(0);
+        self.marked_bytes += size;
         if self.shape_bytes != 0 {
             let id = h.shape_id().get() as usize;
             if id != 0 {
