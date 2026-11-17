@@ -342,6 +342,128 @@ fn searches_match_the_plain_search_in_every_encoding() {
     check_search(&ks, &sur, &[0xDE00, 0xD83D]);
 }
 
+/// [`check_search`] from the given starts only (the ones that are valid), for long inputs.
+fn check_search_from(ks: &[Kernel], hay: &[u16], needle: &[u16], starts: &[usize]) {
+    let last = hay.len() - needle.len();
+    let latin =
+        |s: &[u16]| -> Option<Vec<u8>> { s.iter().map(|&u| u8::try_from(u).ok()).collect() };
+    let (h8, n8) = (latin(hay), latin(needle));
+    for &start in starts.iter().filter(|&&s| s <= last) {
+        for dir in [Dir::Forward, Dir::Backward] {
+            let want = naive(hay, needle, start, dir);
+            for &k in ks {
+                let msg = || format!("{:?} {dir:?} start {start} len {}", k.path(), hay.len());
+                assert_eq!(run_steps(k, hay, needle, start, dir).0, want, "{}", msg());
+                if let Some(h8) = &h8 {
+                    let got = run_steps(k, h8.as_slice(), needle, start, dir).0;
+                    assert_eq!(got, want, "u8 hay, u16 search: {}", msg());
+                    if let Some(n8) = &n8 {
+                        let got = run_steps(k, h8.as_slice(), n8.as_slice(), start, dir).0;
+                        assert_eq!(got, want, "u8 hay, u8 search: {}", msg());
+                    }
+                }
+                if let Some(n8) = &n8 {
+                    let got = run_steps(k, hay, n8.as_slice(), start, dir).0;
+                    assert_eq!(got, want, "u16 hay, u8 search: {}", msg());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_one_unit_search_is_found_at_every_position() {
+    // Wave 3 SIMD-SHORT-CALL: a one-unit search returns at the scan hit, with no compare.
+    // Lengths 1..=64 and 300 (a length-0 string has no candidate: the Cx search returns
+    // before the step), every position, forward and backward, every encoding mix.
+    let ks = kernels();
+    for &(fill, u) in &[
+        (0x61u16, 0x7Au16),
+        (0x00, 0xFF),
+        (0xFF, 0x00),
+        (0x7F, 0x80),
+        (0x61, 0x161), // above 0xFF: never in a Latin-1 string
+        (0x61, 0xD800),
+        (0xD800, 0xDC00),
+        (0xDC00, 0xD800),
+    ] {
+        for n in (1..=64).chain([300]) {
+            let mut hay = vec![fill; n];
+            let none: Vec<usize> = (0..n).collect();
+            check_search_from(&ks, &hay, &[u], &none); // no match
+            for at in 0..n {
+                hay[at] = u;
+                let starts = [0, at.saturating_sub(1), at, at + 1, n - 1];
+                if n <= 64 {
+                    check_search(&ks, &hay, &[u]);
+                } else {
+                    check_search_from(&ks, &hay, &[u], &starts);
+                }
+                if at + 1 < n {
+                    hay[n - 1] = u; // a second match at the last unit
+                    check_search_from(&ks, &hay, &[u], &starts);
+                    hay[n - 1] = fill;
+                }
+                hay[at] = fill;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_short_search_finds_a_miss_at_each_unit() {
+    // Wave 3 SIMD-SHORT-CALL: a search of 2..=17 units, with a candidate that differs only
+    // at unit `j` (unit 0, the last unit, each one between), then the real match or none.
+    // The short compare (fewer than 16 units after unit 0) is an inline loop.
+    let ks = kernels();
+    let alpha: [&[u16]; 2] = [
+        &[
+            0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0xFF, 0x80, 0x7F, 0x00, 0x6A,
+        ],
+        &[
+            0x62, 0xD800, 0x64, 0xDC00, 0xFF, 0x161, 0x68, 0xDBFF, 0x69, 0xDFFF, 0xFFFF,
+        ],
+    ];
+    for units in alpha {
+        for m in 2..=17 {
+            let needle: Vec<u16> = (0..m).map(|i| units[i % units.len()]).collect();
+            for j in 0..m {
+                let mut near = needle.clone();
+                near[j] = if needle[j] == 0x61 { 0x7A } else { 0x61 };
+                for with_match in [false, true] {
+                    let mut hay = vec![0x61u16; 3];
+                    hay.extend_from_slice(&near);
+                    hay.extend_from_slice(&[0x61; 2]);
+                    if with_match {
+                        hay.extend_from_slice(&needle);
+                    }
+                    hay.push(0x61);
+                    check_search(&ks, &hay, &needle);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_search_found_by_the_scan_polls_as_before() {
+    // The scan hit counts unit 0 as 1 unit of work, as the old compare did: the poll count up
+    // to a match at `p` stays `p / 256` forward and `(start - p) / 256` backward.
+    let k = Kernel::detect();
+    for p in [0, 1, 255, 256, 257, 511, 512, 600, 9_998] {
+        let mut hay = vec![b'a'; 10_000];
+        hay[p] = b'b';
+        hay[p + 1] = b'c';
+        for needle in [b"b".as_slice(), b"bc".as_slice()] {
+            let r = run_steps(k, hay.as_slice(), needle, 0, Dir::Forward);
+            assert_eq!(r, (Some(p), p / 256), "forward {p} {needle:?}");
+            let start = 10_000 - needle.len();
+            let r = run_steps(k, hay.as_slice(), needle, start, Dir::Backward);
+            assert_eq!(r, (Some(p), (start - p) / 256), "backward {p} {needle:?}");
+        }
+    }
+}
+
 #[test]
 fn a_long_search_polls_once_per_256_units_of_work() {
     let k = Kernel::detect();

@@ -6,11 +6,13 @@
 //! a step (no GC point; the caller takes the views just before it)
 //!   scan   the next candidate positions (at most the budget left) for the first unit of the
 //!          search string: find_unit (forward) or rfind_unit (backward)
-//!   compare the candidate, at most POLL_UNITS units per pass
+//!   compare the candidate from unit 1 (the scan proved unit 0 equal; a one-unit search
+//!          is found at the scan hit), at most POLL_UNITS units per pass
 //!   Poll   when POLL_UNITS units of work are done; the caller polls (a GC point), takes the
 //!          views again and calls the next step with the same Cursor
-//! work: 1 per position whose first unit differs, plus the units of each compare pass (the
-//! count of the old per-position loop, so a long search still polls)
+//! work: 1 per position whose first unit differs, 1 for unit 0 of each candidate, plus the
+//! units of each compare pass (the count of the old per-position loop, so a long search
+//! still polls)
 //! ```
 //!
 //! The first-unit scan has one body per instruction set. [`Kernel::detect`] picks one at run
@@ -19,7 +21,8 @@
 //! | target | bodies | how the body is picked |
 //! |---|---|---|
 //! | x86-64 | AVX2 (32 bytes), SSE2 (16 bytes; the x86-64 base), scalar | `is_x86_feature_detected!("avx2")` |
-//! | aarch64 | NEON (16 bytes; the aarch64 base), scalar | `is_aarch64_feature_detected!("neon")` |
+//! | aarch64 (little-endian, `neon` in the build) | NEON (16 bytes; the aarch64 base), scalar | `is_aarch64_feature_detected!("neon")`, true at compile time |
+//! | aarch64 big-endian, or no `neon` in the build | scalar | - |
 //! | wasm32 | simd128 (16 bytes), scalar | at compile time: `cfg(target_feature = "simd128")` |
 //! | other | scalar | - |
 //!
@@ -28,6 +31,12 @@
 //! scan, so it has no body. `EP9_SIMD_SEARCH` (`scalar`, `sse2`, `avx2`, `neon`, `simd128`),
 //! read at the first detect, picks another body for a test run; a body that the CPU or the
 //! build does not have is never picked (the detected one is used).
+//!
+//! The NEON bodies build only where `neon` is a feature of the whole build (the aarch64 base)
+//! and the target is little-endian: the `shrn #4` mask puts unit `i` at bits `4i..4i+4` only
+//! on a little-endian target (the technique note: napi-rs/escape-simd 26e04a0,
+//! `crates/escape-simd/src/simd/bits.rs:59-80`, its big-endian fix b07b55b). So the NEON bodies
+//! inline into the search step (no call), and aarch64_be takes the scalar body.
 //!
 //! The file uses only `core` and `std` (no crate item), so a standalone build of it proves the
 //! wasm32 forms: ep9_vm itself does not build for wasm32.
@@ -98,10 +107,15 @@ impl Unit for u16 {
     }
 }
 
-/// Whether two runs of code units of equal length hold the same units (either encoding).
+/// Whether two runs of code units of equal length hold the same units (either encoding). A
+/// run shorter than 16 units is compared in a loop here: a slice `==` of a length that is
+/// not a constant is a call to `bcmp`, which costs more than the units of a short search.
 #[inline(always)]
 pub(crate) fn units_eq<A: Unit, B: Unit>(a: &[A], b: &[B]) -> bool {
     debug_assert_eq!(a.len(), b.len());
+    if a.len() < 16 {
+        return a.iter().zip(b).all(|(x, y)| x.widen() == y.widen());
+    }
     if let (Some(x), Some(y)) = (A::bytes(a), B::bytes(b)) {
         return x == y;
     }
@@ -166,12 +180,22 @@ fn avx2_detected() -> bool {
     false
 }
 
-#[cfg(target_arch = "aarch64")]
+/// True where the NEON bodies build (the `arm` module doc); the macro is a constant there,
+/// because `neon` is a feature of the whole build.
+#[cfg(all(
+    target_arch = "aarch64",
+    target_feature = "neon",
+    target_endian = "little"
+))]
 fn neon_detected() -> bool {
     std::arch::is_aarch64_feature_detected!("neon")
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(all(
+    target_arch = "aarch64",
+    target_feature = "neon",
+    target_endian = "little"
+)))]
 fn neon_detected() -> bool {
     false
 }
@@ -257,8 +281,12 @@ impl Kernel {
             // SAFETY: SSE2 is part of the x86-64 base.
             #[cfg(target_arch = "x86_64")]
             Path::Sse2 => unsafe { x86::find_u8_sse2(hay, b) },
-            // SAFETY: a Kernel of this path exists only when the CPU has NEON.
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(
+                target_arch = "aarch64",
+                target_feature = "neon",
+                target_endian = "little"
+            ))]
+            // SAFETY: this arm builds only with `neon` on for the whole build.
             Path::Neon => unsafe { arm::find_u8_neon(hay, b) },
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
             Path::Simd128 => wasm::find_u8(hay, b),
@@ -276,8 +304,12 @@ impl Kernel {
             // SAFETY: SSE2 is part of the x86-64 base.
             #[cfg(target_arch = "x86_64")]
             Path::Sse2 => unsafe { x86::find_u16_sse2(hay, u) },
-            // SAFETY: a Kernel of this path exists only when the CPU has NEON.
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(
+                target_arch = "aarch64",
+                target_feature = "neon",
+                target_endian = "little"
+            ))]
+            // SAFETY: this arm builds only with `neon` on for the whole build.
             Path::Neon => unsafe { arm::find_u16_neon(hay, u) },
             #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
             Path::Simd128 => wasm::find_u16(hay, u),
@@ -434,22 +466,32 @@ mod x86 {
 }
 
 /// aarch64 bodies (NEON), in the x86 form. The compare mask narrows to a u64 with `shrn #4`:
-/// 4 bits per byte, so 4 bits per Latin-1 unit and 8 bits per UTF-16 unit.
-#[cfg(target_arch = "aarch64")]
+/// 4 bits per byte, so 4 bits per Latin-1 unit and 8 bits per UTF-16 unit. Built only when
+/// `neon` is on for the whole build and the target is little-endian (the file doc): on a
+/// big-endian target the 16 nibbles come out in the reverse order.
+#[cfg(all(
+    target_arch = "aarch64",
+    target_feature = "neon",
+    target_endian = "little"
+))]
 mod arm {
     use core::arch::aarch64::{
         uint8x16_t, vceqq_u8, vceqq_u16, vdupq_n_u8, vdupq_n_u16, vget_lane_u64, vld1q_u8,
         vld1q_u16, vreinterpret_u64_u8, vreinterpretq_u8_u16, vreinterpretq_u16_u8, vshrn_n_u16,
     };
 
-    /// The 64-bit mask of a byte compare: 4 bits per byte. A safe `target_feature` fn: only
-    /// the NEON bodies below call it.
-    #[target_feature(enable = "neon")]
-    #[inline]
+    /// The 64-bit mask of a byte compare: 4 bits per byte, byte `i` at bits `4i..4i+4` (the
+    /// module is little-endian only). No `target_feature` (a safe fn with one must not be
+    /// called where the feature is off): `neon` is on for the whole build.
+    #[inline(always)]
     fn mask(eq: uint8x16_t) -> u64 {
-        vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(vreinterpretq_u16_u8(
-            eq,
-        ))))
+        // SAFETY: the module builds only with `neon` on for the whole build, so the CPU has
+        // NEON.
+        unsafe {
+            vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(vreinterpretq_u16_u8(
+                eq,
+            ))))
+        }
     }
 
     /// NEON: the first `b` in `hay`, 16 bytes per step.
@@ -650,8 +692,17 @@ pub(crate) fn index_of_step<H: Unit, N: Unit>(
                     continue;
                 }
                 Some(d) => {
-                    c.work += d;
+                    // The scan proved unit 0 equal: count it as 1 unit of work (the old
+                    // compare did), then a one-unit search is found here and a longer one
+                    // compares from unit 1 (V8 v8/v8 40f4b69c3b,
+                    // src/strings/string-search.h:236-247 SingleCharSearch and :269-289
+                    // LinearSearch, which compares from pattern[1]).
                     c.pos += d;
+                    c.work += d + 1;
+                    if needle.len() == 1 {
+                        return Step::Found(c.pos);
+                    }
+                    c.matched = 1;
                 }
             }
         }
@@ -698,8 +749,13 @@ pub(crate) fn last_index_of_step<H: Unit, N: Unit>(
                     continue;
                 }
                 Some(d) => {
-                    c.work += c.pos - (lo + d);
+                    // Unit 0 is equal, as in index_of_step.
+                    c.work += c.pos - (lo + d) + 1;
                     c.pos = lo + d;
+                    if needle.len() == 1 {
+                        return Step::Found(c.pos);
+                    }
+                    c.matched = 1;
                 }
             }
         }
