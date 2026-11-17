@@ -15,6 +15,7 @@
 //! | `the_random_mutators_with_the_concurrent_sweep` | the random mutators of stress.rs (S0 GC-stress, S1 checked GC-stress, S1 budget policy) |
 //! | `gc_stress_reaches_the_parallel_mark_and_the_concurrent_sweep` | GCPAR-STRESS: under GC-stress the GCs that `STRESS_PARALLEL_EVERY` picks mark in parallel and sweep concurrently; without GC-stress the same small heap does neither |
 //! | `no_concurrent_sweep_*` | 0 helpers; fewer pages than the start threshold |
+//! | `field_size_kinds_sweep_as_their_size_functions` | V9 SWEEP-NOFNPTR: kinds of the 3 `FieldSize` forms (int32 slot, word0 flags, masked u32) keep and free the same cells and bytes as the same kinds with a size function, in the lazy and the concurrent sweep; the verify passes |
 
 #![cfg(not(miri))]
 
@@ -469,4 +470,151 @@ fn no_concurrent_sweep_below_the_start_threshold() {
     });
     assert!(!heap.sweeping_concurrently(), "a small heap sweeps lazily");
     g.drop_roots(&heap);
+}
+
+/// The kinds of [`field_size_kinds_sweep_as_their_size_functions`]: `n` in an int32 slot at
+/// +8, in the word0 flags (low 8 bits), or in the u32 at +8 (low 31 bits).
+const FIELD_INT32: KindId = KindId::new(50).unwrap();
+const FIELD_FLAGS: KindId = KindId::new(51).unwrap();
+const FIELD_WORD32: KindId = KindId::new(52).unwrap();
+
+fn int32_n_size(c: CellPtr) -> usize {
+    // SAFETY: the heap calls size functions with live cells of the kind; +8 is a slot.
+    16 + 8 * unsafe { c.slot(8) }.bits() as u32 as i32 as usize
+}
+
+fn flags_n_size(c: CellPtr) -> usize {
+    // SAFETY: as above.
+    16 + 8 * usize::from(unsafe { c.header() }.flags() & 0x00FF)
+}
+
+fn word32_n_size(c: CellPtr) -> usize {
+    // SAFETY: as above; +8 is inside the 16-byte minimum.
+    16 + 8 * (unsafe { c.field::<u32>(8).read() } & 0x7FFF_FFFF) as usize
+}
+
+/// A heap with the 3 test kinds: of the field forms if `fields`, else of the size functions.
+fn field_heap(fields: bool) -> Heap {
+    use crate::FieldSize;
+    let heap = test_heap(|_| {});
+    let kinds: [(KindId, &str, CellSize, CellSize); 3] = [
+        (
+            FIELD_INT32,
+            "test-field-int32",
+            CellSize::Field(FieldSize::int32(8, 16, 8)),
+            CellSize::Dynamic(int32_n_size),
+        ),
+        (
+            FIELD_FLAGS,
+            "test-field-flags",
+            CellSize::Field(FieldSize::flags(16, 8, 0x00FF)),
+            CellSize::Dynamic(flags_n_size),
+        ),
+        (
+            FIELD_WORD32,
+            "test-field-word32",
+            CellSize::Field(FieldSize::word32(8, 0x7FFF_FFFF, 16, 8)),
+            CellSize::Dynamic(word32_n_size),
+        ),
+    ];
+    for (id, name, field, function) in kinds {
+        let size = if fields { field } else { function };
+        heap.register_kind(
+            id,
+            CellKind {
+                name,
+                size,
+                trace: no_trace,
+            },
+        )
+        .unwrap();
+    }
+    heap
+}
+
+/// Allocates `cells` cells of the 3 kinds with `n` in 0..40 (16 to 328 bytes, so many cross
+/// a 256-byte line), with other bits set beside each field, roots one in 7, collects once
+/// (lazy or concurrent) and sweeps every page. Returns what was left and the sum of the
+/// rounded sizes of the cells it did not root.
+fn field_gc(fields: bool, concurrent: bool, cells: u32) -> (Left, u64) {
+    let heap = field_heap(fields);
+    let mut rng = Rng(0x5EE9_F1E1);
+    let mut roots = Vec::new();
+    let mut live = Vec::new();
+    let mut dead_bytes = 0u64;
+    for i in 0..cells {
+        let n = rng.below(40) as u32;
+        let kind = [FIELD_INT32, FIELD_FLAGS, FIELD_WORD32][rng.below(3)];
+        let size = 16 + 8 * n as usize;
+        let c = heap.alloc(kind, size).expect("alloc");
+        // SAFETY: `c` is a new cell of `size` bytes (at least 16); the writes are its own
+        // fields, before the next GC point.
+        unsafe {
+            if kind == FIELD_INT32 {
+                c.field::<u64>(8).write(Value::int32(n as i32).to_bits());
+            } else if kind == FIELD_FLAGS {
+                c.header().set_flags(0xA500 | n as u16);
+            } else {
+                c.field::<u32>(8).write(n | 1 << 31);
+                c.field::<u32>(12).write(0xFFFF_FFFF);
+            }
+        }
+        if i % 7 == 0 {
+            roots.push(heap.new_global(c.to_value()));
+            live.push(true);
+        } else {
+            dead_bytes += size as u64;
+            live.push(false);
+        }
+    }
+    let before = heap.stats();
+    let gc = || heap.collect_with_words(&[]);
+    if concurrent {
+        test_controls::with_helpers(2, || test_controls::with_sweeper(1, false, gc));
+        assert!(heap.sweeping_concurrently(), "no concurrent sweep");
+        assert!(
+            heap.wait_for_sweeper(),
+            "the sweeper thread did not end in 10 s"
+        );
+    } else {
+        gc();
+        assert!(!heap.sweeping_concurrently());
+    }
+    heap.finish_sweeping();
+    heap.verify().expect("verifier");
+    for &g in &roots {
+        let v = heap.global(g);
+        assert!(heap.is_cell(CellPtr::from_value(v).expect("a cell").addr()));
+    }
+    let st = heap.stats();
+    let left = Left {
+        live,
+        freed_cells: st.freed_cells - before.freed_cells,
+        freed_bytes: st.freed_bytes - before.freed_bytes,
+        small_pages: st.small_pages,
+        committed_bytes: st.committed_bytes,
+    };
+    for g in roots {
+        heap.drop_global(g);
+    }
+    (left, dead_bytes)
+}
+
+#[test]
+fn field_size_kinds_sweep_as_their_size_functions() {
+    let cells = 40_000;
+    for concurrent in [false, true] {
+        let (by_fields, dead_bytes) = field_gc(true, concurrent, cells);
+        let (by_functions, _) = field_gc(false, concurrent, cells);
+        assert_eq!(
+            by_fields, by_functions,
+            "concurrent {concurrent}: the field forms left another heap"
+        );
+        assert_eq!(
+            by_fields.freed_bytes, dead_bytes,
+            "concurrent {concurrent}: the freed bytes are the sizes of the dead cells"
+        );
+        let dead = by_fields.live.iter().filter(|&&l| !l).count() as u64;
+        assert_eq!(by_fields.freed_cells, dead, "concurrent {concurrent}");
+    }
 }
