@@ -116,7 +116,7 @@ impl<'s> Cx<'s> {
             search::Kernel::scalar()
         };
         if dir == Dir::Forward && k != search::Kernel::scalar() {
-            crate::call::fast_hit!(6);
+            crate::call::fast_hit!(7);
         }
         let mut c = search::Cursor::new(start);
         loop {

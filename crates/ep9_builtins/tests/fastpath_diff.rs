@@ -100,23 +100,33 @@ const INVENTORY: &[FastPath] = &[
         off: Off::Switch,
         what: "f.call(thisArg, ...args) of a bytecode f: the frame pushed from the registers",
     },
+    // ---- M9 OXC-W2-HOSTCALL (the switch) ----
+    FastPath {
+        id: "host-call-property",
+        site: "crates/ep9_vm/src/interp/slow/call.rs call_property (from the cold body of \
+               CallProperty0-2, interp/ops.rs call_property_cold)",
+        off: Off::Switch,
+        what: "a host callee of an unprefixed CallProperty0, CallProperty1 or CallProperty2 \
+               whose receiver is not a function: the host call with the argument count and \
+               the operand places known, no opcode decode",
+    },
     // ---- B0, the switch ----
     FastPath {
         id: "args-create",
-        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :247)",
+        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :252)",
         off: Off::Switch,
         what: "a new arguments object takes the realm's cached shape (V10-D11)",
     },
     FastPath {
         id: "clfal-length",
-        site: "crates/ep9_vm/src/arguments.rs:506 (list_length)",
+        site: "crates/ep9_vm/src/arguments.rs:578 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
                place",
     },
     FastPath {
         id: "clfal-elements",
-        site: "crates/ep9_vm/src/arguments.rs:526 (list_element; abi/mod.rs create_list_from_array_like)",
+        site: "crates/ep9_vm/src/arguments.rs:598 (list_element; abi/mod.rs create_list_from_array_like)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads a present Array or arguments element in place \
                (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
@@ -334,6 +344,62 @@ const CASES: &[Case] = &[
               print('after');",
         spec: None,
     },
+    // ---- host-call-property (M9 OXC-W2-HOSTCALL) ----
+    Case {
+        path: "host-call-property",
+        name: "host methods with 0, 1 and 2 arguments on each receiver kind, in a hot loop",
+        src: "var s = 'abcdef', a = [3, 1, 2], o = { m: Math.max, t: Object.prototype.toString }, sym = Symbol('q');\n\
+              print(s.charCodeAt(1), s.charAt(), s.slice(1, 3), s.indexOf('c'), (5).toFixed(2), (255).toString(16), true.toString());\n\
+              print(a.join(), a.push(4, 5), a.pop(), a.indexOf(1), a.concat(9).length, Math.max(1, 2), Math.abs(-3), o.m(7), o.t(), sym.toString());\n\
+              var n = 0; for (var i = 0; i < 30000; i++) n += s.charCodeAt(i % 7) + a.indexOf(i % 4) + Math.max(i % 5, 2);\n\
+              print(n, JSON.stringify({ k: [1, 'x'] }), Object.keys(o).length, 'x'.concat(), Number.isInteger(n), Array.isArray(a));",
+        spec: None,
+    },
+    Case {
+        path: "host-call-property",
+        name: "calls that take the general path: a function receiver, a patched method, a bytecode method, a Wide call",
+        src: "function f(x) { return 'f' + x; }\n\
+              print(f.toString().length > 0, f.call(null, 1), f.apply(null, [2]), f.bind(null, 3)(), Function.prototype.call.call(f, null, 4));\n\
+              var p = String.prototype.charCodeAt; String.prototype.charCodeAt = function (i) { return 'p' + i; };\n\
+              print('ab'.charCodeAt(1)); String.prototype.charCodeAt = p; print('ab'.charCodeAt(1));\n\
+              var o = { m: function (a, b) { return [this === o, a, b].join(); } }; print(o.m(), o.m(1), o.m(1, 2));\n\
+              function w() {\n\
+              var a0 = 0, a1 = 1, a2 = 2, a3 = 3, a4 = 4, a5 = 5, a6 = 6, a7 = 7, a8 = 8, a9 = 9, a10 = 10, a11 = 11, a12 = 12, a13 = 13,\n\
+                  a14 = 14, a15 = 15, a16 = 16, a17 = 17, a18 = 18, a19 = 19, a20 = 20, a21 = 21, a22 = 22, a23 = 23, a24 = 24, a25 = 25, a26 = 26, a27 = 27,\n\
+                  a28 = 28, a29 = 29, a30 = 30, a31 = 31, a32 = 32, a33 = 33, a34 = 34, a35 = 35, a36 = 36, a37 = 37, a38 = 38, a39 = 39, a40 = 40, a41 = 41,\n\
+                  a42 = 42, a43 = 43, a44 = 44, a45 = 45, a46 = 46, a47 = 47, a48 = 48, a49 = 49, a50 = 50, a51 = 51, a52 = 52, a53 = 53, a54 = 54, a55 = 55,\n\
+                  a56 = 56, a57 = 57, a58 = 58, a59 = 59, a60 = 60, a61 = 61, a62 = 62, a63 = 63, a64 = 64, a65 = 65, a66 = 66, a67 = 67, a68 = 68, a69 = 69,\n\
+                  a70 = 70, a71 = 71, a72 = 72, a73 = 73, a74 = 74, a75 = 75, a76 = 76, a77 = 77, a78 = 78, a79 = 79, a80 = 80, a81 = 81, a82 = 82, a83 = 83,\n\
+                  a84 = 84, a85 = 85, a86 = 86, a87 = 87, a88 = 88, a89 = 89, a90 = 90, a91 = 91, a92 = 92, a93 = 93, a94 = 94, a95 = 95, a96 = 96, a97 = 97,\n\
+                  a98 = 98, a99 = 99, a100 = 100, a101 = 101, a102 = 102, a103 = 103, a104 = 104, a105 = 105, a106 = 106, a107 = 107, a108 = 108, a109 = 109, a110 = 110, a111 = 111,\n\
+                  a112 = 112, a113 = 113, a114 = 114, a115 = 115, a116 = 116, a117 = 117, a118 = 118, a119 = 119, a120 = 120, a121 = 121, a122 = 122, a123 = 123, a124 = 124, a125 = 125,\n\
+                  a126 = 126, a127 = 127, a128 = 128, a129 = 129, a130 = 130, a131 = 131, a132 = 132, a133 = 133, a134 = 134, a135 = 135, a136 = 136, a137 = 137, a138 = 138, a139 = 139;\n\
+                return ['xyz'.charAt(a139 % 3), 'q'.concat(a138, a137), [a136].join(), 'abc'.charCodeAt(a1 + a0)];\n\
+              }\n\
+              print(w().join(), w().join());",
+        spec: None,
+    },
+    Case {
+        path: "host-call-property",
+        name: "a host method that throws: its name, message and stack",
+        src: "function g(s) { var c = s.charAt(0); return c + s.repeat(-1); }\n\
+              try { g('ab'); } catch (e) { print(e.name, e.message, e.stack); }\n\
+              function h() { return [].reduce(function () {}); }\n\
+              try { h(); } catch (e) { print(e.name, e.message, e.stack); }\n\
+              try { [1, 2].map(function (x) { if (x > 1) throw new Error('in ' + x); return x; }); } catch (e) { print(e.message, e.stack); }\n\
+              try { 'a'.normalize('x'); } catch (e) { print(e.name, e.stack); }",
+        spec: None,
+    },
+    Case {
+        path: "host-call-property",
+        name: "a stack overflow through host method callbacks gives RangeError",
+        src: "function r() { return 'a'.replace('a', r); }\n\
+              try { r(); } catch (e) { print(e.name); }\n\
+              function q(x) { return [x].map(q); }\n\
+              try { q(1); } catch (e) { print(e.name); }\n\
+              print('after');",
+        spec: None,
+    },
     // ---- forward-apply (task 4 cases) ----
     Case {
         path: "forward-apply",
@@ -482,6 +548,26 @@ const CASES: &[Case] = &[
                 try { y.callee; } catch (e) { print(e.name); }\n\
                 print(Object.prototype.toString.call(x), Object.getPrototypeOf(y) === Object.prototype);\n\
               }",
+        spec: None,
+    },
+    // M9-P2 LEVER-9 (V8 ARGS-CREATE): @@iterator is %Array.prototype.values% (the isolate-wide
+    // root, filled on the first object), on the spec path and the fast path, also after the
+    // `values` property of Array.prototype is replaced; then the elements and a mapped alias.
+    Case {
+        path: "args-create",
+        name: "@@iterator is %Array.prototype.values%",
+        src: "var V = Array.prototype.values;\n\
+              function m(a, b) { return arguments; }\n\
+              function u(a) { 'use strict'; return arguments; }\n\
+              function w(a) { a = 9; return [...arguments].join(); }\n\
+              for (var i = 0; i < 3; i++) {\n\
+                var x = m(1, 2, 3), y = u(4), z = m();\n\
+                print(x[Symbol.iterator] === V, y[Symbol.iterator] === V, z[Symbol.iterator] === x[Symbol.iterator]);\n\
+                print(Object.getOwnPropertySymbols(x).length, JSON.stringify(Object.getOwnPropertyDescriptor(y, Symbol.iterator).enumerable), [...x].join(), [...y].join(), w(5, 6));\n\
+              }\n\
+              Array.prototype.values = function () { return 'other'; };\n\
+              for (var j = 0; j < 2; j++) print(m(7)[Symbol.iterator] === V, u(8)[Symbol.iterator] === V, [...m(1, 2)].join(), w(3));\n\
+              Array.prototype.values = V;",
         spec: None,
     },
     // ---- clfal-length ----

@@ -1636,20 +1636,20 @@ op!(CallProperty0(st, callee: R, receiver: R, s: FSlot) {
     let (f, this) = (st.reg(callee), call_operand(st, receiver));
     call_fast::<false, false>(st, s, f, this, 0, |_, _| UNDEFINED)
 } cold {
-    call_receiver_cold(st, callee, s, Some(receiver))
+    call_property_cold::<0>(st, callee, s, receiver)
 });
 op!(CallProperty1(st, callee: R, receiver: R, a0: R, s: FSlot) {
     let (f, this, v0) = (st.reg(callee), call_operand(st, receiver), call_operand(st, a0));
     call_fast::<false, true>(st, s, f, this, 1, move |_, _| v0)
 } cold {
-    call_receiver_cold(st, callee, s, Some(receiver))
+    call_property_cold::<1>(st, callee, s, receiver)
 });
 op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
     let (f, this) = (st.reg(callee), call_operand(st, receiver));
     let (v0, v1) = (call_operand(st, a0), call_operand(st, a1));
     call_fast::<false, true>(st, s, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold {
-    call_receiver_cold(st, callee, s, Some(receiver))
+    call_property_cold::<2>(st, callee, s, receiver)
 });
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
@@ -2314,6 +2314,48 @@ fn call_record_out_or_cold(st: &mut St<'_>) -> Done {
         return st.switch(v);
     }
     call_cold(st)
+}
+
+/// The cold body of `CallProperty0`, `CallProperty1` and `CallProperty2` (`N` arguments) on
+/// x86-64 (not spike-native): [`call_receiver_cold`] with the call of `slow::call_property`
+/// in place of `slow::call` at its end (M9 OXC-W2-HOSTCALL), where a call with a receiver
+/// that is not a FUNCTION and no record due arrives (a host method of a String, an Array,
+/// `Math`). `slow::call_property` runs a host callee with `N` known and gives every other
+/// call to `slow::call`, so the tests, the record and the forward run as before, and the
+/// handler keeps one call and the state of the base cold body.
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(always)]
+fn call_property_cold<const N: u32>(st: &mut St<'_>, callee: R, s: FSlot, receiver: R) -> Done {
+    let this = st.reg(receiver);
+    if object::is_function(this) {
+        return call_receiver_cold(st, callee, s, Some(receiver));
+    }
+    if st.cx.budget > crate::interp::BUDGET - profile::CALL_WINDOW {
+        // SAFETY: as in `call_receiver_cold`.
+        let v = unsafe { record_call_out(st.cx, st.pc, st.fp) };
+        return st.switch(v);
+    }
+    // SAFETY: the cold handler's state: `fp` is the live top frame (bytecode runs with no
+    // scratch area) and `pc` its current `CallProperty<N>` instruction (or its prefix) of
+    // verified code, and `this` its receiver register.
+    let v = unsafe { slow::call_property::<N>(st.cx, st.fp, st.pc, this, st.acc) };
+    st.switch(v)
+}
+
+/// The cold body of `CallProperty0`-`2` on the other targets and builds: [`call_record_cold`]
+/// with the call of `slow::call_property` in place of `slow::call` after the record (as the
+/// x86-64 form).
+#[cfg(not(all(not(feature = "spike-native"), target_arch = "x86_64")))]
+#[inline(always)]
+fn call_property_cold<const N: u32>(st: &mut St<'_>, callee: R, s: FSlot, receiver: R) -> Done {
+    let f = st.reg(callee);
+    profile::record_call(st, s, f);
+    let this = st.reg(receiver);
+    // SAFETY: the cold handler's state: `fp` is the live top frame (bytecode runs with no
+    // scratch area) and `pc` its current `CallProperty<N>` instruction (or its prefix) of
+    // verified code, and `this` its receiver register.
+    let v = unsafe { slow::call_property::<N>(st.cx, st.fp, st.pc, this, st.acc) };
+    st.switch(v)
 }
 
 /// The callee of the call at `pc` read at its fixed place (operand 0 of the 5 opcodes of
