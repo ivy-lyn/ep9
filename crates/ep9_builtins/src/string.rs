@@ -306,9 +306,9 @@ fn units_range<'s>(
 ) -> JsResult<Vec<u16>> {
     debug_assert!(from <= to && to <= cx.string_len(s));
     let flat = cx.flatten(s)?;
-    Ok((from..to)
-        .map(|i| cx.code_unit_at(flat, i).expect("i < length"))
-        .collect())
+    let mut out = Vec::with_capacity(to - from); // one bulk copy, not a call per unit
+    cx.push_code_units(flat, from, to, &mut out);
+    Ok(out)
 }
 
 /// ToString(v) as code units.
@@ -367,8 +367,8 @@ impl SearchWork {
 }
 
 /// Whether the substring of `string` from `at` to `at + search.len()` is `search` (it must
-/// fit). A candidate whose first code unit differs counts 1 unit in `work`; any other is
-/// compared in chunks of [`SEARCH_POLL_UNITS`] code units, each counted in full.
+/// fit) and its first code unit already matched. It is compared in chunks of
+/// [`SEARCH_POLL_UNITS`] code units, each counted in full in `work`.
 fn matches_at<'s>(
     cx: &mut Cx<'s>,
     string: &[u16],
@@ -376,13 +376,6 @@ fn matches_at<'s>(
     at: usize,
     work: &mut SearchWork,
 ) -> JsResult<bool> {
-    let Some(&first) = search.first() else {
-        return Ok(true);
-    };
-    if string[at] != first {
-        work.add(cx, 1)?;
-        return Ok(false);
-    }
     for (k, chunk) in search.chunks(SEARCH_POLL_UNITS).enumerate() {
         work.add(cx, chunk.len())?;
         let start = at + k * SEARCH_POLL_UNITS;
@@ -393,9 +386,14 @@ fn matches_at<'s>(
     Ok(true)
 }
 
-/// StringIndexOf ( string, searchValue, fromIndex ) (§6.1.4.1), on code units. `None` for
-/// "not found" (the spec's -1). Polls per [`SEARCH_POLL_UNITS`] code units compared
-/// ([`SearchWork`]); `Err` only when the isolate terminates.
+/// StringIndexOf ( string, searchValue, fromIndex ) (§6.1.4.1), on code units already
+/// copied out (split, replace, replaceAll). indexOf, includes and lastIndexOf search the
+/// strings' own code units with no copy (`Cx::string_index_of`, `Cx::string_last_index_of`:
+/// a SIMD first-unit scan, the same poll count), and `units` copies with one bulk copy
+/// (`Cx::push_code_units`; OXC-PERF wave 2). `None` for "not found" (the spec's -1). The candidates are found
+/// by a scan for the first code unit, at most [`SEARCH_POLL_UNITS`] positions per pass, each
+/// position counted as 1 unit; polls per [`SEARCH_POLL_UNITS`] code units ([`SearchWork`]);
+/// `Err` only when the isolate terminates.
 fn string_index_of<'s>(
     cx: &mut Cx<'s>,
     string: &[u16],
@@ -405,9 +403,9 @@ fn string_index_of<'s>(
     // 1. Let len be the length of string.
     let len = string.len();
     // 2. If searchValue is the empty String and fromIndex ≤ len, return fromIndex.
-    if search.is_empty() {
+    let Some(&first) = search.first() else {
         return Ok((from <= len).then_some(from));
-    }
+    };
     // 3. Let searchLen be the length of searchValue.
     let search_len = search.len();
     // 4. For each integer i such that fromIndex ≤ i ≤ len - searchLen, in ascending order, do
@@ -418,10 +416,22 @@ fn string_index_of<'s>(
         return Ok(None);
     }
     let mut work = SearchWork::default();
-    for i in from..=len - search_len {
+    let (mut i, last) = (from, len - search_len);
+    while i <= last {
+        let end = (last + 1).min(i + SEARCH_POLL_UNITS);
+        let Some(d) = string[i..end].iter().position(|&u| u == first) else {
+            work.add(cx, end - i)?;
+            i = end;
+            continue;
+        };
+        if d > 0 {
+            work.add(cx, d)?;
+        }
+        i += d;
         if matches_at(cx, string, search, i, &mut work)? {
             return Ok(Some(i));
         }
+        i += 1;
     }
     Ok(None)
 }

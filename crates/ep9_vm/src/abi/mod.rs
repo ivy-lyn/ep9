@@ -1789,3 +1789,8 @@ mod typed;
 pub use self::typed::SharedBlockRef;
 // TypedArray TA-4 R1 (H20 part 2): the kind of `Cx::create_array_iterator`.
 pub use self::iter::ArrayIterKind;
+// OXC-PERF wave 2 STR-SEARCH-SIMD (H20 part 2): the string searches and the bulk unit copy on
+// the string payload.
+mod strings;
+// OXC-PERF wave 3 W3-JSON-QUOTE (H20 part 2): the JSON.stringify text on the string payload.
+mod json;

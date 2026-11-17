@@ -616,3 +616,67 @@ fn termination_stops_the_string_loops() {
         );
     }
 }
+
+/// OXC-PERF wave 2 STR-SEARCH-SIMD: indexOf, lastIndexOf, includes, startsWith, endsWith,
+/// split, replace and replaceAll on flat, rope, slice and atom strings, Latin-1 and UTF-16,
+/// with lone surrogates, empty search strings and every position clamp (node v26.13.1: the
+/// row count and a hash of every result row, then two rows in full).
+#[test]
+fn search_methods_on_every_string_kind_and_position() {
+    assert_eq!(
+        common::run_both(
+            r#"var x = 'cdefghijklmno', r = 'ab' + x + 'Āz' + x, long = 'abcdefghijklmnopqrstuvwxyz0123456789abc', sl = long.substring(3, 36);
+var u = '😀smile😁grin😀smile' + x, o = {}; o[r] = 1; var k = Object.keys(o)[0];
+var hs = ['', 'a', 'abcabc', r, sl, u, k, long + long + long, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab'];
+var ns = ['', 'a', 'b', 'c', 'abc', 'cde', 'oĀ', 'Ā', 'z', '\ude00', '\ud83d', '😀', 'smile', 'xyz0', 'aab', 'nmo', 'mnoĀ', 'ab' + x];
+var ps = [undefined, NaN, -Infinity, Infinity, -0, -1, 0, 1, 1.5, 2, 3, 14, 16, 17, 30, 40, 1e10, '2', { valueOf: function () { return 3; } }];
+var out = [];
+for (var i = 0; i < hs.length; i++) for (var j = 0; j < ns.length; j++) {
+  var h = hs[i], n = ns[j], row = [];
+  for (var q = 0; q < ps.length; q++) {
+    var p = ps[q];
+    row.push(h.indexOf(n, p), h.lastIndexOf(n, p), h.includes(n, p) ? 1 : 0, h.startsWith(n, p) ? 1 : 0, h.endsWith(n, p) ? 1 : 0);
+  }
+  row.push(h.indexOf(n), h.lastIndexOf(n), h.split(n).length, h.split(n).join('|').length, h.replace(n, '#').length, h.replaceAll(n, '#').length);
+  out.push(row.join(','));
+}
+var s = 0; for (var i = 0; i < out.length; i++) for (var c = 0; c < out[i].length; c++) s = (s * 31 + out[i].charCodeAt(c)) % 1000000007;
+print(out.length, s);
+print(out[3 * ns.length + 4], out[5 * ns.length + 9]);"#
+        ),
+        lines(&[
+            "162 541106930",
+            "0,0,1,1,0,0,0,1,1,0,0,0,1,1,0,-1,0,0,0,0,0,0,1,1,0,0,0,1,1,0,0,0,1,1,0,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,1,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,0,-1,0,0,0,1,0,0,2,28,28,28 1,14,1,0,0,1,14,1,0,0,1,-1,1,0,0,-1,14,0,0,0,1,-1,1,0,0,1,-1,1,0,0,1,-1,1,0,0,1,1,1,1,0,1,1,1,1,0,14,1,1,0,1,14,1,1,0,0,14,14,1,1,0,-1,14,0,0,0,-1,14,0,0,0,-1,14,0,0,0,-1,14,0,0,0,-1,14,0,0,0,14,1,1,0,1,14,1,1,0,0,1,14,3,33,33,33"
+        ])
+    );
+}
+
+/// STR-SEARCH-SIMD: searches longer than one poll window (256 code units) and search strings
+/// longer than one compare pass, the order ToString(this), ToString(search), position, and
+/// the argument edges (node v26.13.1).
+#[test]
+fn search_methods_on_long_strings_keep_the_order_of_steps() {
+    assert_eq!(
+        common::run_both(
+            r#"var a = 'a'.repeat(3000), n = 'a'.repeat(700) + 'b', h = a + 'b' + a + 'ĀZ' + a, w = 'ā'.repeat(900) + 'Ā' + 'ā'.repeat(400);
+var log = []; var t = { toString: function () { log.push('this'); return 'xyzxyz'; } };
+var r1 = String.prototype.indexOf.call(t, { toString: function () { log.push('search'); return 'z'; } }, { valueOf: function () { log.push('pos'); return 3; } });
+var r2 = String.prototype.lastIndexOf.call(t, { toString: function () { log.push('search'); return 'z'; } }, { valueOf: function () { log.push('pos'); return 3; } });
+var r3 = String.prototype.includes.call(t, { toString: function () { log.push('search'); return 'yz'; } }, { valueOf: function () { log.push('pos'); return 4; } });
+print(r1, r2, r3, log.join());
+print(h.indexOf(n), h.lastIndexOf(n), h.indexOf(a + 'b' + a), h.lastIndexOf(a.substring(1)), h.indexOf('ĀZ'), h.lastIndexOf('Āa'), h.includes('aĀ'), h.indexOf('Z' + a), h.indexOf(a, 3002), h.lastIndexOf('b', 100000), h.lastIndexOf('b', 2999));
+print(w.indexOf('Ā'), w.indexOf('āĀā'), w.lastIndexOf('ā'.repeat(401)), w.lastIndexOf('ā'.repeat(300) + 'Ā'), w.indexOf('ā'.repeat(901)), w.includes('a'), w.startsWith('ā'.repeat(900) + 'Ā'), w.endsWith('Ā' + 'ā'.repeat(400)));
+try { 'abc'.includes(/b/); } catch (e) { print(e.name); }
+try { String.prototype.indexOf.call(null, 'a'); } catch (e) { print(e.name); }
+print('abc'.indexOf(), 'undefined'.indexOf(), 'a1b'.indexOf(1), 'abc'.lastIndexOf('c', -5), 'abc'.lastIndexOf('a', -5), 'abc'.lastIndexOf('', 1.9), 'abc'.lastIndexOf('', -1), 'abc'.indexOf('', 9), 'abc'.includes(''), ''.lastIndexOf(''), ''.indexOf('', 1));"#
+        ),
+        lines(&[
+            "5 2 true this,search,pos,this,search,pos,this,search,pos",
+            "2300 2300 0 6004 6001 -1 true 6002 6003 3000 -1",
+            "900 899 499 600 -1 false true true",
+            "TypeError",
+            "TypeError",
+            "-1 0 1 -1 0 1 0 3 true 0 0"
+        ])
+    );
+}

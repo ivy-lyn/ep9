@@ -94,6 +94,12 @@ mod keepcall;
 // FORIN-DEDUPE (oxc-perf b): the for-in key list and its seen test; after the list, so no
 // cited line above moves.
 mod for_in;
+// STR-SEARCH-SIMD (oxc-perf wave 2): the code-unit search bodies and the Cx searches; after
+// the list, so no cited line above moves.
+mod string_search;
+// W3-JSON-QUOTE (oxc-perf wave 3): the JSON quote bodies and the JSON text; after the list,
+// so no cited line above moves.
+mod json_quote;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;
