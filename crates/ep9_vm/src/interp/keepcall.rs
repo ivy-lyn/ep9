@@ -44,7 +44,7 @@
 //!   new-value filter, then `gc_state <= threshold`), the same Relaxed store on the fast path
 //!   (`Slot::init` is the store of the `else` arm of `Slot::set`) and the same slow-path entry
 //!   (`barrier_slow`, which does the store). Only the call instruction differs. A const check
-//!   ties this copy of the fast path to `BARRIER_VERSION` 2.
+//!   ties this copy and `set_shape_keep` (a copy of `ep9_heap::set_shape`) to `BARRIER_VERSION` 2.
 //! - **Unwind info.** DWARF CFI on ELF and Mach-O, SEH on Windows (the form of
 //!   `ep9_platform::spill`): rustc adds none to a naked function.
 //! - **Not handlers.** The wrapper is an `ep9_keep_*` symbol, not an `ep9h__` one, so
@@ -68,8 +68,8 @@ compile_error!(
      as changed; with avx512f, zmm16-zmm31 and k0-k7 are caller-saved too (DL M8-P3-D3 X2)"
 );
 
-// The fast path below is a copy of `Slot::set` of barrier version 2. A new version may change
-// it, so a bump stops the build here.
+// The fast paths of this file copy `Slot::set` (`slot_set_keep`) and `ep9_heap::set_shape`
+// (`set_shape_keep`, :433) of barrier version 2. A new version may change them, so a bump stops the build here.
 const _: () = assert!(ep9_heap::BARRIER_VERSION == 2);
 
 // Unwind directives: DWARF CFI everywhere except Windows, SEH on Windows. Each expands to one
