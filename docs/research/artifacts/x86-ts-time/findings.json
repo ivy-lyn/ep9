@@ -1,0 +1,573 @@
+{
+ "schema": "ep9-research/x86-ts-time/v1",
+ "report": "docs/research/21-m2-x86-ts-time.md",
+ "date": "2026-11-19",
+ "ep9_tree": "m9-p5 86e39c6530371bac073162c70b9461f06328831c",
+ "docs_head": "15f2ba11 (m2m9/month-end); DL and MR9 line cites",
+ "upstream": {
+  "v8": "v8/v8@40f4b69c3bc25f2a9c1c4137e27c545b6b1183d0 (clone of 2026-11-02)",
+  "quickjs": "bellard/quickjs@712e8c0ca26949477c38f91dbaf955cc48e2f261 (clone of 2026-11-02)"
+ },
+ "short_forms": {
+  "MR9": "docs/measurements/2026-11-19-m2-month9.md",
+  "DL": "docs/decisions-log.md",
+  "XJR": "the X86-JITLESS-READ box summary at m8-p5 (06486612); DL M9-P0-D1",
+  "Path B month 9": "the 2-box Path B compare at m9-p5; DL M9-END-D5; printed in MR9:136-318"
+ },
+ "need_per_cell": [
+  {
+   "host": "linux-x64",
+   "build": "jit",
+   "unit": "box 1",
+   "median": 0.902,
+   "low": 0.898,
+   "high": 0.911,
+   "x_median": 1.109,
+   "x_low_end": 1.114,
+   "source": "MR9:155; Path B month 9 group A"
+  },
+  {
+   "host": "linux-x64",
+   "build": "jit",
+   "unit": "box 2",
+   "median": 0.914,
+   "low": 0.899,
+   "high": 0.92,
+   "x_median": 1.094,
+   "x_low_end": 1.112,
+   "source": "MR9:155; Path B month 9 group A"
+  },
+  {
+   "host": "linux-x64",
+   "build": "jitless",
+   "unit": "box 1",
+   "median": 0.888,
+   "low": 0.874,
+   "high": 0.898,
+   "x_median": 1.126,
+   "x_low_end": 1.144,
+   "source": "MR9:159; Path B month 9 group A"
+  },
+  {
+   "host": "linux-x64",
+   "build": "jitless",
+   "unit": "box 2",
+   "median": 0.893,
+   "low": 0.873,
+   "high": 0.911,
+   "x_median": 1.12,
+   "x_low_end": 1.145,
+   "source": "MR9:159; Path B month 9 group A"
+  },
+  {
+   "host": "win-x64",
+   "build": "jit",
+   "unit": "runner w3",
+   "median": 0.881,
+   "low": 0.873,
+   "high": 0.883,
+   "x_median": 1.135,
+   "x_low_end": 1.145,
+   "source": "MR9:341; DL M9-END-D6"
+  },
+  {
+   "host": "win-x64",
+   "build": "jit",
+   "unit": "runner w4",
+   "median": 0.88,
+   "low": 0.879,
+   "high": 0.883,
+   "x_median": 1.136,
+   "x_low_end": 1.138,
+   "source": "MR9:341; DL M9-END-D6"
+  },
+  {
+   "host": "win-x64",
+   "build": "jitless",
+   "unit": "runner w3",
+   "median": 0.898,
+   "low": 0.894,
+   "high": 0.9,
+   "x_median": 1.114,
+   "x_low_end": 1.119,
+   "source": "MR9:345; DL M9-END-D6"
+  },
+  {
+   "host": "win-x64",
+   "build": "jitless",
+   "unit": "runner w4",
+   "median": 0.903,
+   "low": 0.902,
+   "high": 0.906,
+   "x_median": 1.107,
+   "x_low_end": 1.109,
+   "source": "MR9:345; DL M9-END-D6"
+  }
+ ],
+ "need_summary": {
+  "linux-x64 jit": "x1.112-1.114",
+  "linux-x64 jitless": "x1.144-1.145",
+  "win-x64 jit": "x1.138-1.145",
+  "win-x64 jitless": "x1.109-1.119"
+ },
+ "month9_move": {
+  "jit": {
+   "m8_mean": 0.8825,
+   "m9_mean": 0.908,
+   "change_pct": 2.9
+  },
+  "jitless": {
+   "m8_mean": 0.873,
+   "m9_mean": 0.8905,
+   "change_pct": 2.0
+  },
+  "source": "month-8 medians 0.884/0.881, 0.872/0.874 (DL M8-END-D4); month-9 MR9:155, :159"
+ },
+ "windows_0966_cross_host_low_end": {
+  "ts_jit": {
+   "win_low": 0.873,
+   "linux_high": 0.92,
+   "ratio": 0.949
+  },
+  "ts_jitless": {
+   "win_low": 0.894,
+   "linux_high": 0.911,
+   "ratio": 0.981
+  },
+  "note": "Zen 3 runners (EPYC 7763) against Zen 4 boxes (EPYC 9684X); not a gate-host reading; plan v15 reads 09:66 only on same-CPU-model pairs (M10-PLAN-D16)"
+ },
+ "mac_gw11b": {
+  "ts_gross_jit_s": [
+   2.628,
+   2.571,
+   2.969
+  ],
+  "ts_gross_jitless_s": [
+   2.555,
+   2.529,
+   2.797
+  ],
+  "mac_line_s": 2.8,
+  "ts_ratio_m8": {
+   "jit": 1.021,
+   "jitless": 1.041
+  },
+  "ts_ratio_m9": {
+   "jit": 1.05,
+   "jitless": 1.063
+  },
+  "blocks": {
+   "A": "VALID in run 2 (jit half provisional, load 4.62 after the run)",
+   "B": "MISSING (after-guard load over 3.005 in runs 1 and 2)",
+   "C": "VALID, JetStream list ratios 0.537 / 0.549"
+  },
+  "guard_limit": 3.005,
+  "source": "MR9:76, :107-115; DL M9-END-D9 (DL:5611)"
+ },
+ "ts_ir": {
+  "fd9c12ce_m8p5_code": {
+   "run": 43819528550,
+   "x64_jit": 60526632601,
+   "x64_jitless": 60001856743,
+   "a64_jit": 54099462709,
+   "a64_jitless": 53549056819
+  },
+  "86e39c65_m9p5": {
+   "run": 44303131944,
+   "x64_jit": 56749561000,
+   "x64_jitless": 56175245578,
+   "a64_jit": 51867209493,
+   "a64_jitless": 51245619457
+  },
+  "note": "octane-typescript base rows (cachegrind Ir) of the GitHub bench mode"
+ },
+ "ts_ir_change_pct": {
+  "x64_jit": -6.24,
+  "x64_jitless": -6.38,
+  "a64_jit": -4.13,
+  "a64_jitless": -4.3
+ },
+ "x86_penalty": {
+  "m8": {
+   "jit": 1.157,
+   "jitless": 1.192
+  },
+  "m9": {
+   "jit": 1.156,
+   "jitless": 1.194
+  },
+  "x64_over_a64_ir_m8": {
+   "jit": 1.119,
+   "jitless": 1.121
+  },
+  "x64_over_a64_ir_m9": {
+   "jit": 1.094,
+   "jitless": 1.096
+  }
+ },
+ "ir_to_time_factor": [
+  {
+   "reading": "x86 jit",
+   "ir_change_pct": -6.24,
+   "time_change_pct": 2.89,
+   "time_per_1pct_ir": 0.46
+  },
+  {
+   "reading": "x86 jitless",
+   "ir_change_pct": -6.38,
+   "time_change_pct": 2.0,
+   "time_per_1pct_ir": 0.31
+  },
+  {
+   "reading": "Mac a64 jit",
+   "ir_change_pct": -4.13,
+   "time_change_pct": 2.84,
+   "time_per_1pct_ir": 0.69
+  },
+  {
+   "reading": "Mac a64 jitless",
+   "ir_change_pct": -4.3,
+   "time_change_pct": 2.11,
+   "time_per_1pct_ir": 0.49
+  }
+ ],
+ "factor_use": {
+  "x64_only_ir_lever_on_x86": "0.31-0.46 (plan v15 rule 81; M10-PLAN-D6)",
+  "platform_neutral_lever": "0.31-0.69 (plan v15 section 0)"
+ },
+ "real_counters_ts_jit_m8p5": {
+  "source": "XJR section C (median of 30 rounds)",
+  "wall_ms": 7564.6,
+  "cycles": 27771296668,
+  "instructions": 60816118430.5,
+  "branch_misses": 103114233,
+  "ipc": 2.19,
+  "clock_ghz": 3.67,
+  "mpki": 1.7,
+  "cachegrind_bcm": 396534525,
+  "cachegrind_bim": 861945496,
+  "cachegrind_mispredicts": 1258480021,
+  "sim_over_real": 12.2,
+  "branch_miss_cycle_share_pct_at_12_15_20_cycles": [
+   4.5,
+   5.6,
+   7.4
+  ],
+  "ep9h_handler_share_of_sim_bim_pct": 94.9
+ },
+ "alignment_ab_m8p5": {
+  "source": "XJR section C; DL M9-P0-D1",
+  "form": "every ep9h__ handler at 64 B (jitless-al) vs the plain jitless build; 30 measured rounds",
+  "ts": {
+   "wall_al_over_jitless": [
+    0.975,
+    0.958,
+    0.984
+   ],
+   "cycles_al_over_jitless": [
+    0.974,
+    0.957,
+    0.981
+   ],
+   "instr_al_over_jitless": [
+    1.0,
+    0.998,
+    1.001
+   ],
+   "branch_misses_jitless_to_al": [
+    101715551.5,
+    103915368
+   ],
+   "wall_jitless_over_jit": [
+    1.021,
+    1.012,
+    1.034
+   ],
+   "share_of_jitless_wall_loss_removed": 1.308
+  },
+  "crypto": {
+   "wall_al_over_jitless": [
+    0.897,
+    0.871,
+    0.932
+   ]
+  }
+ },
+ "jitless_over_jit_ts_m9p5": {
+  "box1": [
+   1.017,
+   1.005,
+   1.026
+  ],
+  "box2": [
+   1.018,
+   0.996,
+   1.042
+  ],
+  "source": "MR9:302"
+ },
+ "ts_hot_paths_m8p5_x64_jitless": {
+  "total_ir": 59960000000.0,
+  "group_share_pct": {
+   "ic_shape": 41.8,
+   "dispatch_handlers": 26.7,
+   "calls": 18.8,
+   "alloc_gc": 3.5,
+   "property_maps": 3.2,
+   "builtins": 3.0,
+   "strings_atoms": 1.5,
+   "compiler": 1.2
+  },
+  "dispatches": {
+   "Star": 373400000.0,
+   "Ldar": 261800000.0,
+   "node_Ldar": 62400000.0
+  },
+  "ic_cold_rate_pct": {
+   "SetNamedProperty": [
+    10460000.0,
+    65510000.0,
+    16.0
+   ],
+   "GetNamedProperty": [
+    54690000.0,
+    347720000.0,
+    15.7
+   ]
+  },
+  "operand_decode_ir_pct_upper_bound": {
+   "Star_Ldar_Mov": 3.4,
+   "plus_GetNamedProperty_object": 1.7
+  },
+  "prefixed": {
+   "scaled_step_S2_pct": 3.62,
+   "Wide_cold_pct": 0.72,
+   "Wide_pct": 0.53,
+   "sum_pct": 4.9,
+   "ops": 39200000.0,
+   "ir_per_op": 74,
+   "scaled_step_ir_per_op": 55
+  }
+ },
+ "ts_cold_store_after_m9_x64_jit_pct": {
+  "source": "bench log 44204846399 134468049051:1505-1525 (head 56dd9df4)",
+  "SetNamedProperty_cold": 2.09,
+  "shape::lookup_with": 0.67,
+  "set_named_miss": 0.45,
+  "ic::grow_add::<true>": 0.35
+ },
+ "dead_ldar": {
+  "static_sites": 16001,
+  "dead_sites": 11180,
+  "dead_share_pct": 69.87,
+  "next_op_GetNamedProperty": 6194,
+  "rule": "the next instruction writes the accumulator and does not read it",
+  "source": "the month-9 TS bytecode count (DL M9-P0-D1 has the totals)",
+  "if_dynamic_dead_50_70pct": {
+   "dispatches_removed": [
+    130000000.0,
+    183000000.0
+   ],
+   "x64_ts_ir_pct": [
+    -1.8,
+    -2.6
+   ]
+  },
+  "ep9_rule": "crates/ep9_frontend/src/bytecodegen/regopt.rs:20 (O2); docs/adr/H24-debug-and-profiling-hooks.md:31 (R4); guard crates/ep9_frontend/src/bytecodegen/tests.rs:826-837"
+ },
+ "upstream_forms": [
+  {
+   "form": "lazy accumulator",
+   "cites": [
+    "v8/v8@40f4b69c3 src/interpreter/bytecode-array-builder.cc:753-759",
+    "src/interpreter/bytecode-register-optimizer.h:53-58",
+    ":75-92",
+    ":94-99",
+    ":101-105",
+    "src/interpreter/bytecode-register-optimizer.cc:456-483"
+   ]
+  },
+  {
+   "form": "Star lookahead with a duplicated dispatch site",
+   "producers_at_single_scale": 37,
+   "plus": "kDebugBreak0",
+   "cites": [
+    "v8/v8@40f4b69c3 src/interpreter/bytecodes.cc:261-307",
+    "src/interpreter/interpreter-assembler.cc:1344-1372",
+    ":1365-1368",
+    ":1405-1414"
+   ]
+  },
+  {
+   "form": "pinned handler registers, no callee-saved",
+   "cites": [
+    "v8/v8@40f4b69c3 src/codegen/x64/register-x64.h:363-366",
+    "src/compiler/linkage.cc:767-768"
+   ]
+  },
+  {
+   "form": "QuickJS stack machine and computed goto",
+   "cites": [
+    "bellard/quickjs@712e8c0c quickjs.c:19050-19057",
+    "quickjs.c:18218-18241"
+   ]
+  }
+ ],
+ "star_fuse_m9": {
+  "mac_ts_ir_pct": [
+   0.454,
+   0.456
+  ],
+  "mac_ts_wall_pct": -2.1,
+  "variants_wall_pct": {
+   "11_producers": -2.8,
+   "head_set": -3.1
+  },
+  "bench_fail_pct": {
+   "t0-prop_x64": [
+    1.019,
+    1.02
+   ],
+   "octane-typescript_x64": [
+    0.568,
+    0.574
+   ]
+  },
+  "revert": "30d41178",
+  "source": "DL M9-P0-D4 (DL:5316); variants: the role acceptance record"
+ },
+ "sums": {
+  "research": {
+   "low": {
+    "W2": 1.015,
+    "W3": 1.01,
+    "W4_jit": 1.0,
+    "W4_jitless": 1.025,
+    "W5": 1.005,
+    "W6": 1.005,
+    "W10": 1.001
+   },
+   "high": {
+    "W2": 1.035,
+    "W3": 1.03,
+    "W4_jit": 1.015,
+    "W4_jitless": 1.025,
+    "W5": 1.015,
+    "W6": 1.015,
+    "W10": 1.002
+   },
+   "stated": {
+    "linux-x64 jit": [
+     1.036,
+     1.115,
+     1.075
+    ],
+    "linux-x64 jitless": [
+     1.062,
+     1.126,
+     1.094
+    ],
+    "win-x64 jit (+W7 1.02-1.04)": [
+     1.057,
+     1.16,
+     1.11
+    ]
+   },
+   "recomputed": {
+    "linux-x64 jit": [
+     1.036,
+     1.117
+    ],
+    "linux-x64 jitless": [
+     1.062,
+     1.128
+    ],
+    "win-x64 jit": [
+     1.057,
+     1.162
+    ],
+    "note": "the stated highs differ by 0.002 (rounding of the factors)"
+   }
+  },
+  "measured_factor": {
+   "rows": {
+    "W2": [
+     1.006,
+     1.018
+    ],
+    "W3": [
+     1.0,
+     1.03
+    ],
+    "W4_jit": [
+     1.0,
+     1.015
+    ],
+    "W4_jitless": [
+     1.017,
+     1.025
+    ],
+    "W5": [
+     1.0,
+     1.015
+    ],
+    "W6": [
+     1.0,
+     1.007
+    ],
+    "Q4_Q8": [
+     1.0,
+     1.0
+    ]
+   },
+   "jit": {
+    "low": 1.006,
+    "high": 1.088,
+    "middle": 1.046,
+    "need": "x1.112-1.114",
+    "rest_month11": 1.064
+   },
+   "jitless": {
+    "low": 1.023,
+    "high": 1.099,
+    "middle": 1.06,
+    "need": "x1.144-1.145",
+    "rest_month11": 1.08
+   },
+   "method": "low and high = products of the rows; middle = sqrt(low x high); rest = the middle of the need / the middle",
+   "plan_v15_section0": "about x1.05 (jit) / x1.06 (jitless); month 11 needs about x1.06 / x1.08 more",
+   "only_levers_for_rest": {
+    "PGO": "+3..+10% (est., no ep9 data; M10-PLAN-D39)",
+    "REG-SLOT-ENCODE": "TS Ir -3.4..-5.1% upper bound, G8 >= +1 (M10-PLAN-D53)"
+   }
+  }
+ },
+ "prealloc_bestfit": {
+  "prealloc_04bd5b8b_ts_x64_ir_pct": [
+   -0.217,
+   -0.219
+  ],
+  "bestfit_7c339b38_ts_x64_ir_pct": [
+   -0.178,
+   -0.179
+  ],
+  "x86_ts_time_est_pct": [
+   0.1,
+   0.2
+  ],
+  "source": "DL M9-END-D12 (DL:5614); MR9:429-437"
+ },
+ "plan_v15_rows": [
+  "M10-PLAN-D1",
+  "M10-PLAN-D6",
+  "M10-PLAN-D7",
+  "M10-PLAN-D8",
+  "M10-PLAN-D9",
+  "M10-PLAN-D10",
+  "M10-PLAN-D11",
+  "M10-PLAN-D16",
+  "M10-PLAN-D39",
+  "M10-PLAN-D52",
+  "M10-PLAN-D53"
+ ]
+}
