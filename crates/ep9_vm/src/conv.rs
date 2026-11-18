@@ -38,7 +38,7 @@ use crate::error::{not_implemented, throw_error};
 use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
 use crate::kinds::{is_bigint, is_callable, is_symbol};
-use crate::numconv::{exponentiate, fmod, number_to_string, string_to_number};
+use crate::numconv::{exponentiate, fmod, number_to_string, string_to_number_text};
 use crate::object::{self, is_function, is_object, is_string};
 use crate::runtime::{Atom, ErrorKind, Root, val};
 use crate::symbol::{self, WellKnownSymbol};
@@ -168,7 +168,7 @@ pub(crate) fn to_number(cx: &mut Cx, b: u64) -> Res<f64> {
         TRUE => 1.0,
         _ if is_string(b) => {
             let s = crate::string::flatten(cx, b);
-            string_to_number(&crate::string::view(cx, s).to_utf16())
+            string_to_number_text(crate::string::view(cx, s))
         }
         _ if is_object(b) => {
             let p = to_primitive(cx, b, Hint::Number)?;

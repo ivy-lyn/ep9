@@ -136,6 +136,7 @@ impl LoadedUnit {
                 .iter()
                 .map(|f| (0..f.constants.len()).map(|_| undefined()).collect())
                 .collect(),
+            roots: Vec::with_capacity(1 + unit.functions.len()),
             unit,
             infos: Box::new([]),
             context_scopes: Box::new([]),
@@ -144,7 +145,6 @@ impl LoadedUnit {
             eval_private: Box::new([]),
             eval_prologue: OnceCell::new(),
             script_or_module: None,
-            roots: Vec::new(),
         });
         // SAFETY: the slices live in boxes that the LoadedUnit owns. LoadedUnit has no Drop and
         // nothing removes these ranges (`roots` only records the ids). The Runtime keeps every

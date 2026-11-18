@@ -815,8 +815,8 @@ pub(crate) fn new_string_latin1(rt: &Runtime, bytes: &[u8]) -> u64 {
 /// A string from UTF-16 code units. Latin-1 storage when every unit fits.
 pub(crate) fn new_string_utf16(rt: &Runtime, units: &[u16]) -> u64 {
     if units.iter().all(|&u| u <= 0xFF) {
-        let bytes: Vec<u8> = units.iter().map(|&u| u as u8).collect();
-        return new_string_latin1(rt, &bytes);
+        // PREALLOC K11: each unit narrowed straight into the cell (no temporary Vec).
+        return new_latin1_from_units(rt, units);
     }
     new_seq_utf16(rt, units)
 }
@@ -1412,4 +1412,64 @@ pub(crate) fn json_text_string(rt: &Runtime, text: JsonText) -> u64 {
             new_seq_utf16(rt, &v)
         }
     }
+}
+
+/// A SEQ_LATIN1 string of `units` (every unit is at most 0xFF): one cell, each unit narrowed
+/// into it, with no temporary copy (PREALLOC K11). GC point; `units` may be a view of a live
+/// heap string, as for [`new_seq_utf16`] (cells never move, and the conservative scan finds
+/// a cell from an interior pointer).
+fn new_latin1_from_units(rt: &Runtime, units: &[u16]) -> u64 {
+    debug_assert!(units.iter().all(|&u| u <= 0xFF), "a unit above 0xFF");
+    let c = alloc_string(rt, units.len(), false);
+    // SAFETY: the new cell has room for `len` bytes at +16 (alloc_string), and it is not
+    // `units` (a new cell).
+    let data = unsafe { core::slice::from_raw_parts_mut(c.field::<u8>(strf::DATA), units.len()) };
+    narrow_into(data, units);
+    c.to_value().to_bits()
+}
+
+/// `dst[i] = units[i] as u8` (`dst.len() == units.len()`, every unit at most 0xFF).
+fn narrow_into(dst: &mut [u8], units: &[u16]) {
+    for (d, &u) in dst.iter_mut().zip(units) {
+        *d = u as u8;
+    }
+}
+
+/// A new flat string of `pre`, `mid` and `post` (`pre` and `post` ASCII) in one cell, with the
+/// storage that [`new_string_utf16`] gives the joined units: SEQ_LATIN1 when every unit of
+/// `mid` is at most 0xFF, else SEQ_UTF16 (PREALLOC K15, Object.prototype.toString). The caller
+/// checks the length limit. GC point; `mid` may be a view of a live heap string (see
+/// [`new_latin1_from_units`]).
+pub(crate) fn new_string_joined(rt: &Runtime, pre: &[u8], mid: JsStr<'_>, post: &[u8]) -> u64 {
+    debug_assert!(pre.is_ascii() && post.is_ascii(), "ASCII prefix and suffix");
+    let len = pre.len() + mid.len() + post.len();
+    let (a, b) = (pre.len(), pre.len() + mid.len());
+    let wide = match mid {
+        JsStr::Latin1(_) => false,
+        JsStr::Utf16(u) => u.iter().any(|&x| x > 0xFF),
+    };
+    let c = alloc_string(rt, len, wide);
+    if wide {
+        // SAFETY: the new cell has room for `len` u16 at +16 (8-aligned), and it is not `mid`.
+        let d = unsafe { core::slice::from_raw_parts_mut(c.field::<u16>(strf::DATA), len) };
+        for (o, &x) in d[..a].iter_mut().zip(pre) {
+            *o = u16::from(x);
+        }
+        if let JsStr::Utf16(u) = mid {
+            d[a..b].copy_from_slice(u);
+        }
+        for (o, &x) in d[b..].iter_mut().zip(post) {
+            *o = u16::from(x);
+        }
+    } else {
+        // SAFETY: the new cell has room for `len` bytes at +16, and it is not `mid`.
+        let d = unsafe { core::slice::from_raw_parts_mut(c.field::<u8>(strf::DATA), len) };
+        d[..a].copy_from_slice(pre);
+        match mid {
+            JsStr::Latin1(m) => d[a..b].copy_from_slice(m),
+            JsStr::Utf16(u) => narrow_into(&mut d[a..b], u),
+        }
+        d[b..].copy_from_slice(post);
+    }
+    c.to_value().to_bits()
 }

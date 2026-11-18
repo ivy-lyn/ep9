@@ -283,6 +283,40 @@ pub fn string_to_number(units: &[u16]) -> f64 {
         return f64::NAN;
     }
     let t: String = s.iter().map(|&u| u as u8 as char).collect();
+    ascii_to_number(&t)
+}
+
+/// StringToNumber of the code units of a flat string (H19 `JsStr`) with no copy: Latin-1
+/// text is trimmed, checked and parsed as its own bytes; UTF-16 text goes to
+/// [`string_to_number`] as it is. The same result as [`string_to_number`] of the units. Not a
+/// GC point. For `conv::to_number` (PREALLOC K12).
+pub(crate) fn string_to_number_text(text: crate::string::JsStr<'_>) -> f64 {
+    let mut s = match text {
+        crate::string::JsStr::Latin1(b) => b,
+        crate::string::JsStr::Utf16(u) => return string_to_number(u),
+    };
+    while let [first, rest @ ..] = s
+        && is_js_whitespace(u16::from(*first))
+    {
+        s = rest;
+    }
+    while let [rest @ .., last] = s
+        && is_js_whitespace(u16::from(*last))
+    {
+        s = rest;
+    }
+    if s.is_empty() {
+        return 0.0;
+    }
+    // Every valid literal is ASCII (and ASCII bytes are UTF-8).
+    if !s.is_ascii() {
+        return f64::NAN;
+    }
+    ascii_to_number(core::str::from_utf8(s).expect("ASCII text"))
+}
+
+/// StringToNumber of `t`: ASCII text, not empty, with no leading or trailing white space.
+fn ascii_to_number(t: &str) -> f64 {
     let b = t.as_bytes();
     if b.len() > 2 && b[0] == b'0' {
         let radix = match b[1] {
@@ -298,7 +332,7 @@ pub fn string_to_number(units: &[u16]) -> f64 {
     let (sign, body) = match b[0] {
         b'+' => (1.0, &t[1..]),
         b'-' => (-1.0, &t[1..]),
-        _ => (1.0, &t[..]),
+        _ => (1.0, t),
     };
     if body == "Infinity" {
         return sign * f64::INFINITY;
@@ -645,6 +679,111 @@ mod tests {
         }
         assert!(string_to_number(&u("-0")).is_sign_negative());
         assert_eq!(string_to_number(&u("\u{FEFF}7\u{3000}")), 7.0);
+    }
+
+    /// `string_to_number_text` of `units` as Latin-1 bytes (when every unit fits) and as
+    /// UTF-16 units: both give the bits of `string_to_number(units)`.
+    fn same_text_result(units: &[u16]) {
+        use crate::string::JsStr;
+        let want = string_to_number(units).to_bits();
+        assert_eq!(
+            string_to_number_text(JsStr::Utf16(units)).to_bits(),
+            want,
+            "UTF-16 {units:x?}"
+        );
+        if units.iter().all(|&c| c <= 0xFF) {
+            let bytes: Vec<u8> = units.iter().map(|&c| c as u8).collect();
+            assert_eq!(
+                string_to_number_text(JsStr::Latin1(&bytes)).to_bits(),
+                want,
+                "Latin-1 {bytes:x?}"
+            );
+        }
+    }
+
+    /// PREALLOC K12: the no-copy form (Latin-1 bytes, or the UTF-16 units as they are) gives
+    /// the same Number as `string_to_number` of the units: the grammar cases above, every
+    /// Latin-1 white space and non-ASCII byte around a literal, and 200,000 seeded random
+    /// texts over an alphabet of literal parts, white space and Latin-1 bytes.
+    #[test]
+    fn string_to_number_text_matches_the_units_form() {
+        // '|' separates the cases (the first one is "").
+        let fixed = "|  \n\t |42| -1.5e3 |.5|5.|+Infinity|-Infinity|Infinity|0x1F|0X1f|0b101|0B2|\
+                     0o17|0O8|1e1000|-1e-400|0.1|-0|+0|9007199254740993|inf|NaN|infinity|1e|e5|.|\
+                     0x|-0x10|1_0|12a|+-1|00|007|1.e5|.e5|1E+5|1e-5";
+        for t in fixed.split('|') {
+            same_text_result(&u(t));
+        }
+        // Each Latin-1 byte as a prefix, a suffix and alone: the white space set (0x09-0x0D,
+        // 0x20, 0xA0) trims, every other byte (0x85, 0xFF, 0x00, ...) makes NaN.
+        for c in 0u16..=0xFF {
+            same_text_result(&[c]);
+            same_text_result(&[c, u16::from(b'7')]);
+            same_text_result(&[u16::from(b'7'), c]);
+            same_text_result(&[c, u16::from(b'1'), u16::from(b'.'), u16::from(b'5'), c]);
+        }
+        // UTF-16 only: white space above 0xFF trims, other units make NaN.
+        same_text_result(&u("\u{FEFF}7\u{3000}"));
+        same_text_result(&u("\u{2028}0x10\u{2029}"));
+        same_text_result(&u("1\u{100}"));
+        let alphabet: Vec<u16> = "0123456789+-.eExXoObBaAfFIinNtyl_ "
+            .encode_utf16()
+            .chain([
+                0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0xA0, 0x85, 0xFF, 0x00, 0x1680, 0xFEFF,
+            ])
+            .collect();
+        let mut rng = XorShift(0x4B31_2D50_5245_414C);
+        for _ in 0..200_000 {
+            let n = (rng.next() % 12) as usize;
+            let t: Vec<u16> = (0..n)
+                .map(|_| alphabet[(rng.next() % alphabet.len() as u64) as usize])
+                .collect();
+            same_text_result(&t);
+        }
+        // Mostly valid literals: white space, a sign, then a decimal (digits, point, digits,
+        // exponent) or a radix integer, then white space.
+        let ws: [&[u16]; 4] = [&[], &[0x20], &[0x09, 0x0A], &[0xA0]];
+        let digit = |rng: &mut XorShift, radix: u64| -> u16 {
+            let d = (rng.next() % radix) as u8;
+            u16::from(if d < 10 { b'0' + d } else { b'a' + d - 10 })
+        };
+        for _ in 0..200_000 {
+            let mut t: Vec<u16> = ws[(rng.next() % 4) as usize].to_vec();
+            let r = rng.next();
+            if r.is_multiple_of(4) {
+                let (p, radix) = [(b'x', 16), (b'o', 8), (b'b', 2)][(r / 4 % 3) as usize];
+                t.extend([u16::from(b'0'), u16::from(p)]);
+                for _ in 0..rng.next() % 30 {
+                    t.push(digit(&mut rng, radix));
+                }
+            } else {
+                t.extend(match r / 4 % 3 {
+                    0 => None,
+                    1 => Some(u16::from(b'+')),
+                    _ => Some(u16::from(b'-')),
+                });
+                for _ in 0..rng.next() % 20 {
+                    t.push(digit(&mut rng, 10));
+                }
+                if rng.next().is_multiple_of(2) {
+                    t.push(u16::from(b'.'));
+                    for _ in 0..rng.next() % 20 {
+                        t.push(digit(&mut rng, 10));
+                    }
+                }
+                if rng.next().is_multiple_of(3) {
+                    t.push(u16::from(b'e'));
+                    if rng.next().is_multiple_of(2) {
+                        t.push(u16::from(b'-'));
+                    }
+                    for _ in 0..rng.next() % 4 {
+                        t.push(digit(&mut rng, 10));
+                    }
+                }
+            }
+            t.extend(ws[(rng.next() % 4) as usize]);
+            same_text_result(&t);
+        }
     }
 
     /// `%` and `**` reach ep9_math (the vectors moved there with the code, M0 week 4).

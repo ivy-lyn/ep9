@@ -1517,10 +1517,10 @@ pub(crate) fn object_to_string<'s>(
     let tag = property::get(cx, o, key)?;
     // 16-17. "[object " + tag + "]", with builtinTag unless tag is a String.
     if !is_string(tag) {
-        return Ok(local(string::new_string(
-            rt,
-            &format!("[object {builtin_tag}]"),
-        )));
+        // PREALLOC K15: one Latin-1 cell of "[object " + builtinTag + "]" (no format! text).
+        let bt = string::JsStr::Latin1(builtin_tag.as_bytes());
+        let s = string::new_string_joined(rt, b"[object ", bt, b"]");
+        return Ok(local(s));
     }
     let tag = string::flatten(cx, tag);
     if string::str_len(tag) > MAX_STRING_LENGTH - 9 {
@@ -1530,10 +1530,10 @@ pub(crate) fn object_to_string<'s>(
             "Invalid string length",
         ));
     }
-    let mut units: Vec<u16> = "[object ".encode_utf16().collect();
-    units.extend(string::view(cx, tag).to_utf16());
-    units.push(u16::from(b']'));
-    Ok(local(string::new_string_utf16(rt, &units)))
+    // One cell of 9 + len units, with the storage of the joined units (no temporary list).
+    // GC point: the view keeps `tag` live (an interior pointer; cells never move).
+    let s = string::new_string_joined(rt, b"[object ", string::view(cx, tag), b"]");
+    Ok(local(s))
 }
 
 /// Object.prototype.valueOf (§20.1.3.7): ? ToObject(this value), so a primitive gets its
