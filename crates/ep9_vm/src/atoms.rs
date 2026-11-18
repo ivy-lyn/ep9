@@ -51,7 +51,7 @@ macro_rules! atoms {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         #[repr(u16)]
         pub enum Atom { $($name,)* }
-
+        atoms_from_text! { $($name = $text,)* }
         impl Atom {
             /// Every atom, in id order.
             pub const ALL: &'static [Atom] = &[$(Atom::$name,)*];
@@ -312,13 +312,21 @@ pub(crate) fn init(rt: &Runtime) {
 }
 
 /// The atom for the string `s`: the existing atom of its text, or `s` itself, which becomes
-/// the atom (see the module docs for THIN cells). Not a GC point. A CONS or SLICED `s` whose
-/// text has no atom yet becomes a rope or slice atom; [`atomize`] makes a flat one instead.
+/// the atom (see the module docs for THIN cells). Not a GC point. Slow part: [`intern_slow`].
+#[inline(always)]
 pub(crate) fn intern(rt: &Runtime, s: u64) -> u64 {
     debug_assert!(is_string(s));
     if string::is_atom(s) {
         return s;
     }
+    intern_slow(rt, s)
+}
+
+/// [`intern`] of a string that is not an atom yet. BESTFIT B2: it stays out of line, so only
+/// the `is_atom` guard above inlines into the callers. A CONS or SLICED `s` whose text has no
+/// atom yet becomes a rope or slice atom; [`atomize`] makes a flat one instead.
+#[inline(never)]
+fn intern_slow(rt: &Runtime, s: u64) -> u64 {
     if let Some(a) = string::thin_target(s) {
         return a;
     }
@@ -337,14 +345,6 @@ pub(crate) fn intern(rt: &Runtime, s: u64) -> u64 {
     string::set_atom(s);
     rt.atoms.borrow_mut().insert(hash, s);
     s
-}
-
-/// Makes the CONS or SLICED string `s` a THIN cell forwarding to its atom `a` when `a` is a
-/// SEQ atom (H19-Q4); any other pair stays as it is. Not a GC point.
-fn forward(rt: &Runtime, s: u64, a: u64) {
-    if s != a && string::is_rope_or_slice(s) && string::is_seq(a) {
-        string::make_thin(rt, s, a);
-    }
 }
 
 /// The atom for the string `s`, always a SEQ atom unless one of another kind already holds
@@ -405,8 +405,25 @@ fn intern_text(rt: &Runtime, text: JsStr<'_>, make: impl FnOnce(&Runtime) -> u64
     s
 }
 
+/// Makes the CONS or SLICED string `s` a THIN cell forwarding to its atom `a` when `a` is a
+/// SEQ atom (H19-Q4); any other pair stays as it is. Not a GC point.
+fn forward(rt: &Runtime, s: u64, a: u64) {
+    if s != a && string::is_rope_or_slice(s) && string::is_seq(a) {
+        string::make_thin(rt, s, a);
+    }
+}
+
 /// The atom for the Rust text `s`. GC point.
 pub(crate) fn intern_str(rt: &Runtime, s: &str) -> u64 {
+    // BESTFIT B1: a static atom's text gives its root, with no hash and no probe. It is the
+    // same atom: `init_static` made the root with this function, and roots never die. Before
+    // `init_static` the root is UNDEFINED, so the text takes the probe below.
+    if let Some(a) = Atom::from_text(s) {
+        let b = rt.atom(a);
+        if b != UNDEFINED {
+            return b;
+        }
+    }
     if s.is_ascii() {
         return intern_latin1(rt, s.as_bytes());
     }
@@ -571,3 +588,34 @@ pub(crate) fn check_at_drop(rt: &Runtime) {
         "{n} property-key compares looked at content (a key was not an atom; W4-KEY-EQ)"
     );
 }
+
+// ---- the static text match (BESTFIT B1) ------------------------------------------------------
+
+/// Called by `atoms!` with the same list: makes `Atom::from_text`. Each text is a `&[u8]`
+/// constant, and constant byte-slice patterns compile to a match on the length first, then on
+/// the bytes (no hash, no table). Defined here, after the list, so the list keeps its lines
+/// (H19 cites them); the `use` below makes it visible to `atoms!` above.
+macro_rules! atoms_from_text {
+    ($($name:ident = $text:literal,)*) => {
+        /// The bytes of each atom's text, as constant patterns for [`Atom::from_text`].
+        #[allow(non_upper_case_globals)]
+        struct AtomText;
+
+        #[allow(non_upper_case_globals)]
+        impl AtomText {
+            $(const $name: &'static [u8] = $text.as_bytes();)*
+        }
+
+        impl Atom {
+            /// The static atom whose text is `s`, if there is one (BESTFIT B1). Not a GC
+            /// point; it reads no isolate. [`intern_str`] uses it to return the root.
+            pub(crate) const fn from_text(s: &str) -> Option<Atom> {
+                match s.as_bytes() {
+                    $(AtomText::$name => Some(Atom::$name),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+use atoms_from_text;
