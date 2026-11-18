@@ -103,7 +103,7 @@ pub(crate) fn number_key(rt: &Runtime, d: f64) -> PropertyKey {
     let a = if (0.0..=f64::from(u32::MAX)).contains(&d) && d.fract() == 0.0 {
         index_key(rt, d as u32)
     } else {
-        atoms::intern_str(rt, &crate::numconv::number_to_string(d))
+        crate::numconv::intern_number(rt, d)
     };
     atoms::cache_number_string(rt, d, a);
     a

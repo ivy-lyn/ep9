@@ -240,7 +240,7 @@ pub(crate) fn number_string(cx: &mut Cx, d: f64) -> u64 {
     if let Some(s) = crate::atoms::cached_number_string(rt, d) {
         return s;
     }
-    let s = object::new_string(rt, &number_to_string(d));
+    let s = crate::numconv::number_cell(rt, d);
     crate::atoms::cache_number_string(rt, d, s);
     s
 }
