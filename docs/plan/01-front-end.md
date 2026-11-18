@@ -221,7 +221,7 @@ Any other TS-only runtime form found at M4 also goes into BytecodeGen. The M4 AD
                            count it                         v
                                     BytecodeGen (+ TS lowering, H3) writes HINTED entries
                                     keyed by (function id, feedback slot)
-                                    -> CompiledUnit hint section (format in ep9_facts)
+                                    -> container facts section, kind 6 (format in ep9_facts)
 ```
 
 | Rule | Detail | Evidence |
