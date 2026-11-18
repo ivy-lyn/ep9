@@ -956,8 +956,8 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
     runs-on: ubuntu-24.04
-    # Rule 25: max 68.55 min (run 44204833743; 47.5 in 44221214860, 68 in 44074556351): 103 (was 102).
-    timeout-minutes: 103
+    # Rule 25 (2x): 2x the m9-p5 max 67.5 min (RULE25-MARGIN-M10; was 103 at 1.5x 68.55): 135.
+    timeout-minutes: 135
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
@@ -997,7 +997,7 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       MIRI_TOOLCHAIN: nightly-2026-10-04
     steps:
@@ -1612,10 +1612,10 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: 1.5x the last measured max: 103.1 min (linux-arm64, run 44204833743, the M9-P4 merge-head
-    # CI; 102.5 in 44221214860, the tag CI; other targets <= 95), so 155 (was 153 = 1.5 x 102;
+    # Rule 25 (2x): 2x the m9-p5 max 102.5 min (linux-arm64; RULE25-MARGIN-M10), so 205 (was 155 = 1.5x
+    # 103.1 min, run 44204833743; was 153 = 1.5 x 102 before; other targets <= 95;
     # M6-ORCH-864, -890, -905, -919, -965; route BUILTINS-TIMEOUT closed at 153 in M9-P3).
-    timeout-minutes: 155
+    timeout-minutes: 205
     steps:
       # Windows: keep LF in our files, allow long paths (as build-test).
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
