@@ -551,6 +551,19 @@ impl FunctionBuilder {
         self.insns.len() as u32
     }
 
+    /// Reserves room for `insns` more instructions and `positions` more position entries
+    /// (a capacity hint: the output does not change). BytecodeGen passes the instruction
+    /// count it recorded before the replay.
+    pub fn reserve(&mut self, insns: usize, positions: usize) {
+        self.insns.reserve(insns);
+        self.positions.reserve(positions);
+    }
+
+    /// The number of instructions the builder holds without a new allocation.
+    pub fn instruction_capacity(&self) -> usize {
+        self.insns.capacity()
+    }
+
     // ---- Emit ----
 
     /// Emits `opcode` with operands from the typed emitters (generic form, used by tests and
@@ -948,6 +961,13 @@ impl UnitBuilder {
     /// The source length in bytes.
     pub fn source_len(&self) -> u32 {
         self.source_len
+    }
+
+    /// Reserves room for `scopes` more scope descriptors and `functions` more functions
+    /// (a capacity hint: the unit does not change).
+    pub fn reserve(&mut self, scopes: usize, functions: usize) {
+        self.scopes.reserve(scopes);
+        self.functions.reserve(functions);
     }
 
     /// Adds a scope descriptor. `outer` must be an earlier scope.

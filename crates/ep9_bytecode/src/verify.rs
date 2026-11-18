@@ -401,7 +401,9 @@ fn verify_function(
     // Pass 1: decode, mark instruction starts, check prefixes and opcodes.
     let len = f.bytecode.len();
     let mut starts = vec![false; len];
-    let mut insns: Vec<Instruction<'_>> = Vec::new();
+    // A capacity hint (about 2-3 bytes per instruction), capped so that a unit that fails
+    // to decode early cannot make a large reservation first.
+    let mut insns: Vec<Instruction<'_>> = Vec::with_capacity((len / 2 + 1).min(1 << 16));
     for r in Instructions::new(&f.bytecode) {
         let insn = match r {
             Ok(i) => i,

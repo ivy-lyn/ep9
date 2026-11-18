@@ -16,7 +16,10 @@ pub enum UnitString {
 impl UnitString {
     /// The string for UTF-8 text.
     pub fn new(s: &str) -> UnitString {
-        if s.chars().all(|c| u32::from(c) <= 0xFF) {
+        if s.is_ascii() {
+            // One code unit per byte: the bytes are the Latin-1 form (one exact allocation).
+            UnitString::Latin1(Box::from(s.as_bytes()))
+        } else if s.chars().all(|c| u32::from(c) <= 0xFF) {
             UnitString::Latin1(s.chars().map(|c| c as u8).collect())
         } else {
             UnitString::Utf16(s.encode_utf16().collect())
@@ -130,6 +133,45 @@ mod tests {
         assert!(!UnitString::Utf16(vec![0x61].into()).is_canonical());
         // Astral characters are two code units.
         assert_eq!(UnitString::new("\u{1F600}").len(), 2);
+    }
+
+    /// The `UnitString::new` body before the ASCII path (PREALLOC K3), kept as the oracle.
+    fn old_new(s: &str) -> UnitString {
+        if s.chars().all(|c| u32::from(c) <= 0xFF) {
+            UnitString::Latin1(s.chars().map(|c| c as u8).collect())
+        } else {
+            UnitString::Utf16(s.encode_utf16().collect())
+        }
+    }
+
+    #[test]
+    fn ascii_path_equals_the_old_path() {
+        // ASCII (with the empty string and every ASCII byte), Latin-1, BMP and astral text.
+        let all_ascii: String = (0u8..0x80).map(char::from).collect();
+        for s in [
+            "",
+            "a",
+            "__proto__",
+            all_ascii.as_str(),
+            "caf\u{e9}",
+            "\u{ff}\u{80}",
+            "a\u{100}",
+            "\u{20ac}x",
+            "\u{1F600}",
+            "x\u{1F600}\u{e9}",
+        ] {
+            let new = UnitString::new(s);
+            assert_eq!(new, old_new(s), "{s:?}");
+            assert!(new.is_canonical(), "{s:?}");
+            assert_eq!(
+                new.to_utf16(),
+                s.encode_utf16().collect::<Vec<_>>(),
+                "{s:?}"
+            );
+        }
+        // A lone surrogate is not UTF-8 text; it reaches a unit through `from_utf16` only.
+        let lone = UnitString::from_utf16(&[0x61, 0xD800]);
+        assert!(matches!(lone, UnitString::Utf16(_)));
     }
 
     #[test]
