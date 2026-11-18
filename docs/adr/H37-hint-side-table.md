@@ -16,7 +16,7 @@
 - D18 is (b): a cheap type oracle now (A1h), hint consumers only in A4, and a kill by K-A4H ([11-decisions](../plan/11-decisions.md)). The oracle is tsrs, in the separate binary `ep9-typecheck`. It is never linked into the engine (N8, H26).
 - The schema is ep9-owned so that tsrs churn stays outside the engine: the oracle built against a 15-day-old tsrs with 6 compile errors [R13]. The schema also absorbs the BOM, UTF-16 and lossy-UTF-8 offset shifts of the tsrs decoder [R13], and the Unicode pin (below).
 - A hint is never a fact. HINTED is the lowest source (H30: RUNTIME > PROFILED > HINTED, per fact kind); TS types never become PROVEN, and every HINTED fact needs a guard or a fuse (H30 Rules). 24 crafted hole classes pass strict checks and lie at run time [R12]; the tsrs hint is wrong in each of 13 crafted oracle holes [R13].
-- Depends on: H1 (the join is inside `ep9_frontend`), H2 (the stable function id; the CompiledUnit hint section stays empty), H3 (the three TS flags), H16 and H30 (the FactSnapshot schema and the HINTED source), H35 (the container `facts` section), H26 (the tsrs workspace and the lock guard). Depended on by: the A4 hint consumers (K-A4H), SP-HintPrecision, SP-RegionCoverage (K-A5v-cov), the L2 class records (doc 13 §4.1).
+- Depends on: H1 (the join is inside `ep9_frontend`), H2 (the stable function id; the CompiledUnit hint section stays empty), H3 (the three TS flags), H16 and H30 (the FactSnapshot schema and the HINTED source), H32 (the guard exit of a failed HINTED guard), H35 (the container `facts` section), H26 (the tsrs workspace and the lock guard). Depended on by: the A4 hint consumers (K-A4H), SP-HintPrecision, SP-RegionCoverage (K-A5v-cov), the L2 class records (doc 13 §4.1).
 
 ## Decision
 
@@ -50,7 +50,7 @@ Copied from the plan row (02 §6): an ep9-owned binary schema in `ep9_hints` (ze
 
 | Part | What it holds | Freeze point | After the freeze point | Check |
 |---|---|---|---|---|
-| Schema v0 | The `.ep9h` layout (header, file table, classes, records, strings), the key, S1-S9 and the Q1-Q5 fills | A4 start (README §3.4 row H37) | Frozen-part rules (README §3.2) | the `ep9_hints` round-trip tests and the A1h gate (Validated by) |
+| Schema v0 | The `.ep9h` layout (header, file table, classes, records, strings), the key, S1-S9 and the Q1-Q6 fills | A4 start (README §3.4 row H37) | Frozen-part rules (README §3.2) | the `ep9_hints` round-trip tests and the A1h gate (Validated by) |
 
 ## Rules
 
@@ -62,11 +62,12 @@ Copied from the plan row (02 §6): an ep9-owned binary schema in `ep9_hints` (ze
 | A header, hash or kind mismatch, or a file with type errors, drops that file's hints and is counted (S3, S5) | `ep9_hints` and `ep9_frontend` tests, one per drop reason | A1h |
 | A hint never changes program output | the hint soundness corpus: 24 hole classes [R12] and 13 tsrs holes [R13], output with hints on equals node (10-quality §2) | A1h |
 | HINTED facts never become PROVEN, and each one gets a guard or a fuse | H30 Rules; hint chaos fuzzing (10-quality §4) | A4 |
+| A failed HINTED guard follows H32: JIT code (only if K-A4H keeps HINTED) deopts and counts the exit; hybrid code deopts, then re-tiers instrumented (H33); AOT-jitless code deopts to a T0 frame within its budgets: a site with a SLOWPATH variant takes it after 4 deopts (est.), else the function is PINned to baseline-AOT after 16 exits (est.); SLOWPATH and PIN are jitless only. A site with 4 guard failures stops using its hint in every mode. A hint failure never throws | H32:23, :29-30, :46, :58; 05-aot.md:149, :309-328 | A4 |
 | No codegen reads hints before A4 | review of each A1h change (S9; D18 default b) | A1h |
 
 ## A1h scope
 
-A1h is "Hint oracle v0" (`docs/plan/09-milestones.md:211`): after M1 exit, due at M4 exit, AOT lane, 1-3 PM (est.). It does not gate M2, M5 or M7. In month 9 it is docs only (this v0; M9-PLAN-D17). It may start because the A2 gate items hold (M9-PLAN-D24, M9-PRE-A2GATE): `git diff --stat c583b842 5c271a9d -- crates/ep9_unit crates/ep9_vm/src/unit_loader.rs` is empty.
+A1h is "Hint oracle v0" (`docs/plan/09-milestones.md:211`): after M1 exit, due at M4 exit, AOT lane, 1-3 PM (est.). It does not gate M2, M5 or M7. In month 9 it is docs only (this v0; M9-PLAN-D17). It may start because the A2 gate items hold (M9-PLAN-D24, M9-PRE-A2GATE): `git diff --stat c583b842 5c271a9d -- crates/ep9_unit crates/ep9_vm/src/unit_loader.rs` is empty. From 06486612 (m8-p5, the A2 gate reading) to 5c271a9d, `crates/ep9_vm/src/unit_loader.rs` has no change, and `crates/ep9_unit` changes only `tests/fuzz_seeds.rs` (+401) and the `tests/golden/root-slots.txt` append of slot 327 (`327 root 35 ArrayValues`).
 
 | # | A1h item | Done when | Source | State at 5c271a9d |
 |---|---|---|---|---|
@@ -110,6 +111,7 @@ Not in A1h: the HINTED consumers in `ep9_opt` (A4), K-A4H (A4), the `ep9c build 
 | H37-Q3 | The decoded-text hash: which function and width? | A1h | The H2 source hash: SHA-256 of the decoded UTF-8 text (H02 F12), so a unit and its `.ep9h` name one source the same way |
 | H37-Q4 | The offset unit of (start, end) | A1h | UTF-8 byte offsets of the decoded text after the BOM strip, as oxc spans and the R13 prototype use |
 | H37-Q5 | When does `ep9c build --hints` write the HINTED FactSnapshot into the unit `facts` section: at A1h, or with the first consumer? | A1h | A1h writes only the join counts and the SP-HintPrecision report; the facts-section write comes with the first consumer (A4) |
+| H37-Q6 | How are the function-entry records of 05-aot.md:229 (parameter and return repr) keyed? | A1h | As L2 function records by function id (doc 13:413), not as S7 (function id, feedback slot) entries |
 
 ## Reopens if
 
@@ -122,3 +124,4 @@ Not in A1h: the HINTED consumers in `ep9_opt` (A4), K-A4H (A4), the `ep9c build 
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-11-18 | draft | First draft, schema v0 (plan v14 §7.2; M9-PLAN-D25; route A1H-DOCS): the plan row and the 05 §7 layout, S1-S9 (S7 and S8 follow doc 13 F-R1: the HINTED FactSnapshot goes to the unit `facts` section, not to the CompiledUnit hint section), the Freeze table (one part, Schema v0, at A4 start), the A1h scope, Q1-Q5, and the tsrs pin re-check (still `=1.1.2`). README §5 moves H37 from Not started to Draft (the M4-P2 ADR-A0 form) | M9-P4 A1H-TEXT (AOT lane) |
+| 2026-11-18 | draft | Route MC-w46-1 (MODES-CHECK-w46; M9-P5 integration fixer r1, DL M9-P5-WPRE-4): Depends on adds H32 (the guard exit of a failed HINTED guard); a Rules row on a failed HINTED guard, per mode as H32 gives it (W-pre check F7); Open question H37-Q6 (the key of the function-entry records of 05-aot.md:229), and the Freeze cell says Q1-Q6; the A1h scope paragraph adds the 06486612 to 5c271a9d diff of `crates/ep9_unit` and `unit_loader.rs` | M9-P5 integration fixer r1 |
