@@ -100,23 +100,33 @@ const INVENTORY: &[FastPath] = &[
         off: Off::Switch,
         what: "f.call(thisArg, ...args) of a bytecode f: the frame pushed from the registers",
     },
+    // ---- M9 OXC-W2-HOSTCALL (the switch) ----
+    FastPath {
+        id: "host-call-property",
+        site: "crates/ep9_vm/src/interp/slow/call.rs call_property (from the cold body of \
+               CallProperty0-2, interp/ops.rs call_property_cold)",
+        off: Off::Switch,
+        what: "a host callee of an unprefixed CallProperty0, CallProperty1 or CallProperty2 \
+               whose receiver is not a function: the host call with the argument count and \
+               the operand places known, no opcode decode",
+    },
     // ---- B0, the switch ----
     FastPath {
         id: "args-create",
-        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :247)",
+        site: "crates/ep9_vm/src/arguments.rs:64 (create_fast, :252)",
         off: Off::Switch,
         what: "a new arguments object takes the realm's cached shape (V10-D11)",
     },
     FastPath {
         id: "clfal-length",
-        site: "crates/ep9_vm/src/arguments.rs:506 (list_length)",
+        site: "crates/ep9_vm/src/arguments.rs:578 (list_length)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads the length of an unmodified arguments object in \
                place",
     },
     FastPath {
         id: "clfal-elements",
-        site: "crates/ep9_vm/src/arguments.rs:526 (list_element; abi/mod.rs create_list_from_array_like)",
+        site: "crates/ep9_vm/src/arguments.rs:598 (list_element; abi/mod.rs create_list_from_array_like)",
         off: Off::Switch,
         what: "CreateListFromArrayLike reads a present Array or arguments element in place \
                (switched from M7-P0 fixer r2, Codex r1 CALLHOST-1)",
@@ -182,6 +192,15 @@ const INVENTORY: &[FastPath] = &[
         what: "GetIterator of a string primitive: a code point split",
     },
     FastPath {
+        id: "iter-typed-array",
+        site: "crates/ep9_vm/src/interp/slow/iter.rs (Builtin::TypedArray, copy_typed_array; \
+               M9-P4 TA-SPREAD-FAST)",
+        off: Off::Guard,
+        what: "CreateArrayFromIterable of an in-bounds TypedArray whose method is this realm's \
+               %TypedArray.prototype.values%, with the intrinsic %ArrayIteratorPrototype%.next: \
+               an element copy",
+    },
+    FastPath {
         id: "array-tostring",
         site: "crates/ep9_vm/src/natives.rs:1546",
         off: Off::Guard,
@@ -239,6 +258,32 @@ const INVENTORY: &[FastPath] = &[
         what: "an int32 key on a TypedArray: the element or undefined at GetKeyedProperty; at \
                SetKeyedProperty the in-bounds store of an int32 (integer types) or a Number \
                (Float32, Float64)",
+    },
+    // ---- OXC-PERF a CHARCODE-FAST, a guard form ----
+    FastPath {
+        id: "char-code-at",
+        site: "crates/ep9_builtins/src/string.rs char_code_at (the int32 fast path)",
+        off: Off::Guard,
+        what: "String.prototype.charCodeAt on a String value with an int32 pos: the code unit \
+               or NaN, with no ToString or ToIntegerOrInfinity call",
+    },
+    // ---- OXC-PERF wave 2 STR-SEARCH-SIMD (the switch) ----
+    FastPath {
+        id: "unit-search",
+        site: "crates/ep9_vm/src/abi/strings.rs search (string/search.rs Kernel::detect)",
+        off: Off::Switch,
+        what: "the first-unit scan of Cx::string_index_of (indexOf, includes) runs the SIMD \
+               body of the CPU (SSE2 or AVX2 on x86-64, NEON on aarch64); off: the scalar body",
+    },
+    // ---- OXC-PERF wave 3 W3-JSON-QUOTE (the switch) ----
+    FastPath {
+        id: "json-quote",
+        site: "crates/ep9_vm/src/abi/json.rs json_quote_into (string/json_quote.rs \
+               Kernel::detect)",
+        off: Off::Switch,
+        what: "QuoteJSONString of JSON.stringify (values and keys) runs the SIMD body of the \
+               CPU on the flat payload (SSE2 or AVX2 on x86-64, NEON on aarch64; SWAR \
+               elsewhere) into a one-byte text; off: the per-unit reference loop",
     },
 ];
 
@@ -315,6 +360,62 @@ const CASES: &[Case] = &[
               try { r(); } catch (e) { print(e.name); }\n\
               var it = { [Symbol.iterator]: function () { new Map(it); return [][Symbol.iterator](); } };\n\
               try { new Map(it); } catch (e) { print(e.name); }\n\
+              print('after');",
+        spec: None,
+    },
+    // ---- host-call-property (M9 OXC-W2-HOSTCALL) ----
+    Case {
+        path: "host-call-property",
+        name: "host methods with 0, 1 and 2 arguments on each receiver kind, in a hot loop",
+        src: "var s = 'abcdef', a = [3, 1, 2], o = { m: Math.max, t: Object.prototype.toString }, sym = Symbol('q');\n\
+              print(s.charCodeAt(1), s.charAt(), s.slice(1, 3), s.indexOf('c'), (5).toFixed(2), (255).toString(16), true.toString());\n\
+              print(a.join(), a.push(4, 5), a.pop(), a.indexOf(1), a.concat(9).length, Math.max(1, 2), Math.abs(-3), o.m(7), o.t(), sym.toString());\n\
+              var n = 0; for (var i = 0; i < 30000; i++) n += s.charCodeAt(i % 7) + a.indexOf(i % 4) + Math.max(i % 5, 2);\n\
+              print(n, JSON.stringify({ k: [1, 'x'] }), Object.keys(o).length, 'x'.concat(), Number.isInteger(n), Array.isArray(a));",
+        spec: None,
+    },
+    Case {
+        path: "host-call-property",
+        name: "calls that take the general path: a function receiver, a patched method, a bytecode method, a Wide call",
+        src: "function f(x) { return 'f' + x; }\n\
+              print(f.toString().length > 0, f.call(null, 1), f.apply(null, [2]), f.bind(null, 3)(), Function.prototype.call.call(f, null, 4));\n\
+              var p = String.prototype.charCodeAt; String.prototype.charCodeAt = function (i) { return 'p' + i; };\n\
+              print('ab'.charCodeAt(1)); String.prototype.charCodeAt = p; print('ab'.charCodeAt(1));\n\
+              var o = { m: function (a, b) { return [this === o, a, b].join(); } }; print(o.m(), o.m(1), o.m(1, 2));\n\
+              function w() {\n\
+              var a0 = 0, a1 = 1, a2 = 2, a3 = 3, a4 = 4, a5 = 5, a6 = 6, a7 = 7, a8 = 8, a9 = 9, a10 = 10, a11 = 11, a12 = 12, a13 = 13,\n\
+                  a14 = 14, a15 = 15, a16 = 16, a17 = 17, a18 = 18, a19 = 19, a20 = 20, a21 = 21, a22 = 22, a23 = 23, a24 = 24, a25 = 25, a26 = 26, a27 = 27,\n\
+                  a28 = 28, a29 = 29, a30 = 30, a31 = 31, a32 = 32, a33 = 33, a34 = 34, a35 = 35, a36 = 36, a37 = 37, a38 = 38, a39 = 39, a40 = 40, a41 = 41,\n\
+                  a42 = 42, a43 = 43, a44 = 44, a45 = 45, a46 = 46, a47 = 47, a48 = 48, a49 = 49, a50 = 50, a51 = 51, a52 = 52, a53 = 53, a54 = 54, a55 = 55,\n\
+                  a56 = 56, a57 = 57, a58 = 58, a59 = 59, a60 = 60, a61 = 61, a62 = 62, a63 = 63, a64 = 64, a65 = 65, a66 = 66, a67 = 67, a68 = 68, a69 = 69,\n\
+                  a70 = 70, a71 = 71, a72 = 72, a73 = 73, a74 = 74, a75 = 75, a76 = 76, a77 = 77, a78 = 78, a79 = 79, a80 = 80, a81 = 81, a82 = 82, a83 = 83,\n\
+                  a84 = 84, a85 = 85, a86 = 86, a87 = 87, a88 = 88, a89 = 89, a90 = 90, a91 = 91, a92 = 92, a93 = 93, a94 = 94, a95 = 95, a96 = 96, a97 = 97,\n\
+                  a98 = 98, a99 = 99, a100 = 100, a101 = 101, a102 = 102, a103 = 103, a104 = 104, a105 = 105, a106 = 106, a107 = 107, a108 = 108, a109 = 109, a110 = 110, a111 = 111,\n\
+                  a112 = 112, a113 = 113, a114 = 114, a115 = 115, a116 = 116, a117 = 117, a118 = 118, a119 = 119, a120 = 120, a121 = 121, a122 = 122, a123 = 123, a124 = 124, a125 = 125,\n\
+                  a126 = 126, a127 = 127, a128 = 128, a129 = 129, a130 = 130, a131 = 131, a132 = 132, a133 = 133, a134 = 134, a135 = 135, a136 = 136, a137 = 137, a138 = 138, a139 = 139;\n\
+                return ['xyz'.charAt(a139 % 3), 'q'.concat(a138, a137), [a136].join(), 'abc'.charCodeAt(a1 + a0)];\n\
+              }\n\
+              print(w().join(), w().join());",
+        spec: None,
+    },
+    Case {
+        path: "host-call-property",
+        name: "a host method that throws: its name, message and stack",
+        src: "function g(s) { var c = s.charAt(0); return c + s.repeat(-1); }\n\
+              try { g('ab'); } catch (e) { print(e.name, e.message, e.stack); }\n\
+              function h() { return [].reduce(function () {}); }\n\
+              try { h(); } catch (e) { print(e.name, e.message, e.stack); }\n\
+              try { [1, 2].map(function (x) { if (x > 1) throw new Error('in ' + x); return x; }); } catch (e) { print(e.message, e.stack); }\n\
+              try { 'a'.normalize('x'); } catch (e) { print(e.name, e.stack); }",
+        spec: None,
+    },
+    Case {
+        path: "host-call-property",
+        name: "a stack overflow through host method callbacks gives RangeError",
+        src: "function r() { return 'a'.replace('a', r); }\n\
+              try { r(); } catch (e) { print(e.name); }\n\
+              function q(x) { return [x].map(q); }\n\
+              try { q(1); } catch (e) { print(e.name); }\n\
               print('after');",
         spec: None,
     },
@@ -466,6 +567,26 @@ const CASES: &[Case] = &[
                 try { y.callee; } catch (e) { print(e.name); }\n\
                 print(Object.prototype.toString.call(x), Object.getPrototypeOf(y) === Object.prototype);\n\
               }",
+        spec: None,
+    },
+    // M9-P2 LEVER-9 (V8 ARGS-CREATE): @@iterator is %Array.prototype.values% (the isolate-wide
+    // root, filled on the first object), on the spec path and the fast path, also after the
+    // `values` property of Array.prototype is replaced; then the elements and a mapped alias.
+    Case {
+        path: "args-create",
+        name: "@@iterator is %Array.prototype.values%",
+        src: "var V = Array.prototype.values;\n\
+              function m(a, b) { return arguments; }\n\
+              function u(a) { 'use strict'; return arguments; }\n\
+              function w(a) { a = 9; return [...arguments].join(); }\n\
+              for (var i = 0; i < 3; i++) {\n\
+                var x = m(1, 2, 3), y = u(4), z = m();\n\
+                print(x[Symbol.iterator] === V, y[Symbol.iterator] === V, z[Symbol.iterator] === x[Symbol.iterator]);\n\
+                print(Object.getOwnPropertySymbols(x).length, JSON.stringify(Object.getOwnPropertyDescriptor(y, Symbol.iterator).enumerable), [...x].join(), [...y].join(), w(5, 6));\n\
+              }\n\
+              Array.prototype.values = function () { return 'other'; };\n\
+              for (var j = 0; j < 2; j++) print(m(7)[Symbol.iterator] === V, u(8)[Symbol.iterator] === V, [...m(1, 2)].join(), w(3));\n\
+              Array.prototype.values = V;",
         spec: None,
     },
     // ---- clfal-length ----
@@ -1032,6 +1153,82 @@ const CASES: &[Case] = &[
         ),
     },
     Case {
+        path: "iter-typed-array",
+        name: "spread of each element type",
+        src: "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+              function own(t) { return t; }\n\
+              var T = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float16Array, Float32Array, Float64Array];\n\
+              for (var i = 0; i < T.length; i++) { var a = [...own(new T[i]([1.5, -2, 300, NaN, -0]))]; print(T[i].name, a.length, a.join(), 1 / a[4]); }\n\
+              var b = [own(new BigInt64Array([1n, -2n, 2n ** 63n])), own(new BigUint64Array([1n, -2n]))];\n\
+              for (var j = 0; j < b.length; j++) print([...b[j]].join(), typeof [...b[j]][0]);\n\
+              print([...own(new Int8Array(0))].length, Math.max(...own(new Uint8Array([3, 9, 4]))), Array.from(own(new Int16Array([7, 8]))).join());",
+        spec: Some(
+            "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+             function own(t) { var p = Object.getPrototypeOf(t); t[Symbol.iterator] = function () { return p[Symbol.iterator].call(this); }; return t; }\n\
+             var T = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, Float16Array, Float32Array, Float64Array];\n\
+             for (var i = 0; i < T.length; i++) { var a = [...own(new T[i]([1.5, -2, 300, NaN, -0]))]; print(T[i].name, a.length, a.join(), 1 / a[4]); }\n\
+             var b = [own(new BigInt64Array([1n, -2n, 2n ** 63n])), own(new BigUint64Array([1n, -2n]))];\n\
+             for (var j = 0; j < b.length; j++) print([...b[j]].join(), typeof [...b[j]][0]);\n\
+             print([...own(new Int8Array(0))].length, Math.max(...own(new Uint8Array([3, 9, 4]))), Array.from(own(new Int16Array([7, 8]))).join());",
+        ),
+    },
+    Case {
+        path: "iter-typed-array",
+        name: "a length-tracking, out-of-bounds, growable or subclass view",
+        src: "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+              function own(t) { return t; }\n\
+              var rab = new ArrayBuffer(4, { maxByteLength: 8 }), lt = own(new Uint8Array(rab)); lt.set([1, 2, 3, 4]);\n\
+              var fx = own(new Uint8Array(rab, 1, 2)); print([...lt].join(), [...fx].join());\n\
+              rab.resize(8); print([...lt].join(), [...fx].join());\n\
+              rab.resize(2); print([...lt].join());\n\
+              try { [...fx]; } catch (e) { print(e.name, e.message); }\n\
+              var off = own(new Uint16Array(rab, 2)); rab.resize(0);\n\
+              try { print([...off].length); } catch (e) { print(e.name, e.message); }\n\
+              var gsab = new SharedArrayBuffer(2, { maxByteLength: 4 }), g = own(new Int8Array(gsab)); gsab.grow(4); print([...g].join());\n\
+              class X extends Int16Array {} var x = own(new X([7, 8])); print([...x].join(), Object.getPrototypeOf([...x]) === Array.prototype);",
+        spec: Some(
+            "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+             function own(t) { var p = Object.getPrototypeOf(t); t[Symbol.iterator] = function () { return p[Symbol.iterator].call(this); }; return t; }\n\
+             var rab = new ArrayBuffer(4, { maxByteLength: 8 }), lt = own(new Uint8Array(rab)); lt.set([1, 2, 3, 4]);\n\
+             var fx = own(new Uint8Array(rab, 1, 2)); print([...lt].join(), [...fx].join());\n\
+             rab.resize(8); print([...lt].join(), [...fx].join());\n\
+             rab.resize(2); print([...lt].join());\n\
+             try { [...fx]; } catch (e) { print(e.name, e.message); }\n\
+             var off = own(new Uint16Array(rab, 2)); rab.resize(0);\n\
+             try { print([...off].length); } catch (e) { print(e.name, e.message); }\n\
+             var gsab = new SharedArrayBuffer(2, { maxByteLength: 4 }), g = own(new Int8Array(gsab)); gsab.grow(4); print([...g].join());\n\
+             class X extends Int16Array {} var x = own(new X([7, 8])); print([...x].join(), Object.getPrototypeOf([...x]) === Array.prototype);",
+        ),
+    },
+    Case {
+        path: "iter-typed-array",
+        name: "a patched values, next or @@iterator",
+        src: "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+              function own(t) { return t; }\n\
+              var t = own(new Int8Array([1, 2, 3])), v = TA.values;\n\
+              TA.values = function () { return [9][Symbol.iterator](); }; print([...t].join());\n\
+              TA.values = v;\n\
+              var AIP = Object.getPrototypeOf([][Symbol.iterator]()), n = AIP.next;\n\
+              AIP.next = function () { var r = n.call(this); if (!r.done) r.value = r.value * 10; return r; }; print([...t].join());\n\
+              AIP.next = n;\n\
+              TA[Symbol.iterator] = function* () { yield 5; }; print([...t].join());\n\
+              TA[Symbol.iterator] = v; Int8Array.prototype[Symbol.iterator] = function* () { yield 6; }; print([...t].join(), [...own(new Uint8Array([4]))].join());\n\
+              delete Int8Array.prototype[Symbol.iterator]; print([...t].join());",
+        spec: Some(
+            "var TA = Object.getPrototypeOf(Int8Array.prototype);\n\
+             function own(t) { var p = Object.getPrototypeOf(t); t[Symbol.iterator] = function () { return p[Symbol.iterator].call(this); }; return t; }\n\
+             var t = own(new Int8Array([1, 2, 3])), v = TA.values;\n\
+             TA.values = function () { return [9][Symbol.iterator](); }; print([...t].join());\n\
+             TA.values = v;\n\
+             var AIP = Object.getPrototypeOf([][Symbol.iterator]()), n = AIP.next;\n\
+             AIP.next = function () { var r = n.call(this); if (!r.done) r.value = r.value * 10; return r; }; print([...t].join());\n\
+             AIP.next = n;\n\
+             TA[Symbol.iterator] = function* () { yield 5; }; print([...t].join());\n\
+             TA[Symbol.iterator] = v; Int8Array.prototype[Symbol.iterator] = function* () { yield 6; }; print([...t].join(), [...own(new Uint8Array([4]))].join());\n\
+             delete Int8Array.prototype[Symbol.iterator]; print([...t].join());",
+        ),
+    },
+    Case {
         path: "array-tostring",
         name: "the builtin join or a wrapper",
         src: "print([1, [2, 3], null, undefined].toString(), String([4, 5]));",
@@ -1175,8 +1372,8 @@ const CASES: &[Case] = &[
     },
     // M7-P4 LEVER-2 (TSPASS2): the IC hit of a prefixed site. `f` loads 300 other names
     // first, so the name constant of `o.x` needs a `Wide` operand, and its loop body is longer
-    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): on aarch64 the
-    // `Wide` fast body runs them (`interp/ops.rs` `prefix_runs_fast`). Mono, falsy, a string
+    // than 255 bytes (`Wide` JumpIfFalse, JumpIfToBooleanFalse and JumpLoop): the `Wide` fast
+    // body (aarch64) or cold block (x86-64, `tails::wide`) runs them. Mono, falsy, a string
     // ToBoolean (cold), a getter (cold), 8 shapes (megamorphic), a prototype load and its change.
     Case {
         path: "ic-named",
@@ -1292,6 +1489,121 @@ const CASES: &[Case] = &[
              for (var j = 0; j < 8; j++) { var o = {}; o['p' + j] = j; o.x = j + 1; r.push(f(o, 3)); }\n\
              var P = { x: 100 }; var c = Object.create(P); r.push(f(c, 2)); P.x = 5; r.push(f(c, 2));\n\
              print(r.join(' '));",
+        ),
+    },
+    // M9-P1 X86-WIDE-FAST: forward jumps of `interp/ops.rs` `prefix_set` at `Wide` scale (each
+    // over 64 `i |= 0`): `||` (JumpIfToBooleanTrue), `&&` and `if` (JumpIfToBooleanFalse), `??`
+    // and `?.` (JumpIfUndefinedOrNull), a default parameter (JumpIfNotUndefined); aarch64 runs
+    // them in the `Wide` fast body, x86-64 in its cold block (`tails::wide`). The spec form passes
+    // strings: no fast ToBoolean case, so the cold body runs after the fast body.
+    Case {
+        path: "t0-operators",
+        name: "prefixed (Wide) forward jumps: ToBoolean, nullish, a default parameter",
+        src: "function g(a, b, c, k, d = (k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+              k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, 'D')) {\n\
+              var i = 0;\n\
+              var x = (a || (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 0)) ? 'T' : 'F';\n\
+              var y = (b && (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 1)) ? 'T' : 'F';\n\
+              if (a) { i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0; y += 'i'; }\n\
+              var z = c ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'N');\n\
+              var w = c?.p ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+              i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'Q');\n\
+              return [x, y, z, w, d, i, k].join(' ');\n\
+              }\n\
+              print(g(1, 0, null, 0), g(0, 1, 5, 0, 'e'), g(1, 1, undefined, 0), g(0, 0, { p: 'P' }, 0));",
+        spec: Some(
+            "function g(a, b, c, k, d = (k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0,\n\
+             k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, k |= 0, 'D')) {\n\
+             var i = 0;\n\
+             var x = (a || (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 0)) ? 'T' : 'F';\n\
+             var y = (b && (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 1)) ? 'T' : 'F';\n\
+             if (a) { i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0; y += 'i'; }\n\
+             var z = c ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'N');\n\
+             var w = c?.p ?? (i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0,\n\
+             i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, i |= 0, 'Q');\n\
+             return [x, y, z, w, d, i, k].join(' ');\n\
+             }\n\
+             print(g('1', '', null, 0), g('', '1', 5, 0, 'e'), g('1', '1', undefined, 0), g('', '', { p: 'P' }, 0));",
         ),
     },
     // M7-P5 LEVER-4 (ICWIDE): `keyed_ic::fast_set` stores a missing element of an Array in
@@ -1529,6 +1841,57 @@ const CASES: &[Case] = &[
              __grow(s, 16); st(sa, 7, -5); r.push(ld(sa, 7), ld(sf, 3), sh(ld(sf, 4)));\n\
              print(r.join());",
         ),
+    },
+    // ---- char-code-at: the spec form passes pos as a string, so ToNumber runs ----
+    Case {
+        path: "char-code-at",
+        name: "a rope, a slice, a two-byte string and the index edges",
+        src: "var x = 'cdefghijklmno', r = 'ab' + x + '\\u0100z', sl = (x + x + x).substring(2, 30), out = [];\n\
+              for (var i = -2; i <= 30; i++) out.push(r.charCodeAt(i), sl.charCodeAt(i), ('xy' + x).charCodeAt(i));\n\
+              print(out.join(), r.charCodeAt(-2147483648), r.charCodeAt(2147483647));",
+        spec: Some(
+            "var x = 'cdefghijklmno', r = 'ab' + x + '\\u0100z', sl = (x + x + x).substring(2, 30), out = [];\n\
+             for (var i = -2; i <= 30; i++) out.push(r.charCodeAt('' + i), sl.charCodeAt('' + i), ('xy' + x).charCodeAt('' + i));\n\
+             print(out.join(), r.charCodeAt('-2147483648'), r.charCodeAt('2147483647'));",
+        ),
+    },
+    // ---- unit-search ----
+    Case {
+        path: "unit-search",
+        name: "Latin-1 and UTF-16 text, ropes and slices, each match position",
+        src: "var b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out = [];\n\
+              for (var i = 0; i < b64.length; i++) out.push(b64.indexOf(b64[i]), b64.indexOf(b64[i], i + 1));\n\
+              var x = 'cdefghijklmnopq', r = 'ab' + x + '\\u0100z' + x + x, sl = (x + x + x).substring(2, 40);\n\
+              var w = '\\ud83d\\ude00' + x + '\\u0101'.repeat(40) + '\\ude00' + x;\n\
+              for (var h of [r, sl, w, b64 + b64]) for (var n of ['q', 'pq', 'z', '\\u0100', '\\ude00', 'qc', 'nope', '/A', '\\u0101\\ude00'])\n\
+                for (var p of [0, 5, 16, 31, 33, 60]) out.push(h.indexOf(n, p), h.includes(n, p) ? 1 : 0);\n\
+              print(out.join());",
+        spec: None,
+    },
+    // ---- json-quote ----
+    Case {
+        path: "json-quote",
+        name: "strings with escapes, Latin-1, lone surrogates and pairs, ropes and slices",
+        src: "var src = 'function f(a) {\\n\\t\\treturn \"x\\\\y\" + a; // \\u0001\\u001f\\u007f\\n}', out = [];\n\
+              out.push(JSON.stringify(src), JSON.stringify(src.repeat(9)), JSON.stringify(src.substring(3, 50)));\n\
+              var l1 = ''; for (var c = 0; c < 256; c++) l1 += String.fromCharCode(c);\n\
+              out.push(JSON.stringify(l1), JSON.stringify(l1 + l1 + 'tail'), JSON.stringify(['\\ud800x', '\\udc00', 'a\\udbff', '\\ud83d\\ude00', '\\ud83d\\ud83d\\ude00z']));\n\
+              var w = 'k'.repeat(29) + '\\ud83d\\ude00' + 'm'.repeat(40) + '\\ud800' + '\\u4e2d\\\"'.repeat(20);\n\
+              out.push(JSON.stringify(w), JSON.stringify({ a: w, b: l1 }));\n\
+              print(out.join('|'));",
+        spec: None,
+    },
+    Case {
+        path: "json-quote",
+        name: "short keys, a two-byte gap, rawJSON, numbers, a 70k string",
+        src: "var o = {}; for (var i = 0; i < 300; i++) o['k' + i] = i % 3 ? 'v' + i : { x: i, 'q\"': [i, 'e\\u00e9'] };\n\
+              var out = [JSON.stringify(o), JSON.stringify(o, null, ' '), JSON.stringify([o.k1, { s: 'x' }], null, '\\u2603\\u2603')];\n\
+              out.push(JSON.stringify([JSON.rawJSON('\"\\u4e2d\"'), 'after', JSON.rawJSON('12')]));\n\
+              out.push(JSON.stringify(['a', JSON.rawJSON('\"\\u00e9\"'), 'b\\n']));\n\
+              var big = 'abc\\\\def\"gh\\n'.repeat(7000); var t = JSON.stringify({ big: big, n: [1.5, -0, 1e21] });\n\
+              out.push(t.length, t.slice(0, 40), t.slice(-40));\n\
+              print(out.join('|'));",
+        spec: None,
     },
 ];
 

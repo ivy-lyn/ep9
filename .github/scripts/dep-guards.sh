@@ -468,7 +468,7 @@ fi
 #     Temporal objects and the tz data through ep9_temporal's pub API; its other normal edges
 #     are the ICU4X 2.4 components of INTL-I1-D5 and their base crates, and icu_normalizer (NFD
 #     and the ccc for the collator's stream-safe step; icu_collator's own dependency).
-deps_within 24 ep9_intl ep9_vm ep9_temporal icu_locale_core icu_locale icu_collator icu_normalizer icu_decimal fixed_decimal icu_plurals icu_list icu_segmenter icu_casemap icu_experimental icu_calendar icu_time icu_datetime icu_provider writeable tinystr zerovec
+deps_within 24 ep9_intl ep9_vm ep9_temporal icu_locale_core icu_locale icu_collator icu_normalizer icu_decimal fixed_decimal icu_plurals icu_list icu_segmenter icu_casemap icu_experimental icu_calendar icu_time icu_datetime icu_provider writeable tinystr zerovec icu_collections
 
 # 25) The ICU4X components that only Intl uses have ep9_intl as their only workspace dependent
 #     (any edge kind, as check 19), so builtins and ep9_temporal reach them only through

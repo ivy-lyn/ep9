@@ -1272,13 +1272,18 @@ impl<'s> Cx<'s> {
 
     /// ToIntegerOrInfinity (§7.1.5).
     pub fn to_integer_or_infinity(&mut self, v: impl Into<Local<'s>>) -> JsResult<f64> {
+        let v = v.into();
+        // An int32 is its own integer (ToNumber gives it back; +0 for 0): no call.
+        if let Some(i) = v.as_int32() {
+            return Ok(f64::from(i));
+        }
         let d = self.to_number(v)?;
         Ok(if d.is_nan() || d == 0.0 {
             0.0
         } else if d.is_infinite() {
             d
         } else {
-            d.trunc()
+            trunc_exact(d)
         })
     }
 
@@ -1740,6 +1745,36 @@ impl<'s> Cx<'s> {
     }
 }
 
+/// `d.trunc()` (IEEE roundToIntegralTowardZero) with the same bits for every non-NaN `d`, also
+/// -0 and the infinities; a NaN stays a NaN. No libm call on any target.
+///
+/// - On x86-64 without SSE4.1 (the baseline build), `f64::trunc` is a libm call, because
+///   there is no `roundsd`. There, a `d` with `|d| < 2^52` may have a fraction, and it fits
+///   in an i64, so the i64 round trip (cvttsd2si / cvtsi2sd) truncates it exactly;
+///   `copysign` keeps the sign of a result of 0 (-0.5 -> -0). Every other `d` is already
+///   integral, or NaN, or infinite, and is its own result.
+/// - On every other target, `f64::trunc` is 1 instruction (aarch64 `frintz`, wasm32
+///   `f64.trunc`, x86-64 with SSE4.1 `roundsd`), so this is `d.trunc()`.
+///
+/// The form is chosen at compile time from the target. Scalar code (no SIMD, no runtime
+/// feature test).
+#[inline]
+pub(crate) fn trunc_exact(d: f64) -> f64 {
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "sse4.1")))]
+    {
+        const TWO_POW_52: f64 = 4_503_599_627_370_496.0;
+        if d.abs() < TWO_POW_52 {
+            ((d as i64) as f64).copysign(d)
+        } else {
+            d
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", not(target_feature = "sse4.1"))))]
+    {
+        d.trunc()
+    }
+}
+
 // M7-P0 CALLHOST (H20 part 2): the forwarded calls of `apply` and `call`, and the human
 // fast-path switch of the FASTDIFF tests.
 mod forward;
@@ -1754,3 +1789,8 @@ mod typed;
 pub use self::typed::SharedBlockRef;
 // TypedArray TA-4 R1 (H20 part 2): the kind of `Cx::create_array_iterator`.
 pub use self::iter::ArrayIterKind;
+// OXC-PERF wave 2 STR-SEARCH-SIMD (H20 part 2): the string searches and the bulk unit copy on
+// the string payload.
+mod strings;
+// OXC-PERF wave 3 W3-JSON-QUOTE (H20 part 2): the JSON.stringify text on the string payload.
+mod json;

@@ -651,3 +651,182 @@ fn the_walk_marks_the_lines_of_the_live_cells() {
         }
     }
 }
+
+// Size-form test kinds: one kind of each `CellSize` form (routes FIELDSIZE-INT32-ASSERT and
+// DRAIN-X64-SIZE, M9-P4 HEAP-DRAIN).
+
+const SIZE_FIXED_12: KindId = KindId::new(90).unwrap();
+const SIZE_FIXED_20: KindId = KindId::new(91).unwrap();
+const SIZE_DYNAMIC: KindId = KindId::new(92).unwrap();
+const SIZE_INT32: KindId = KindId::new(93).unwrap();
+const SIZE_FLAGS: KindId = KindId::new(94).unwrap();
+const SIZE_WORD32: KindId = KindId::new(95).unwrap();
+
+/// The raw word at +8 of a SIZE_DYNAMIC cell: its size before rounding (20 gives 24). The
+/// value `u64::MAX` gives a size that `cell_size_for` cannot round (an overflow).
+fn raw_word_size(c: CellPtr) -> usize {
+    // SAFETY: the heap calls size functions with live cells of the kind; +8 is inside the
+    // 16-byte minimum, written right after the allocation.
+    unsafe { c.field::<u64>(8).read() as usize }
+}
+
+/// A heap with one kind of each size form: 2 fixed sizes that need rounding, a size function
+/// that needs rounding, and the 3 field forms.
+fn size_form_heap(tweak: impl FnOnce(&mut HeapConfig)) -> Heap {
+    use crate::FieldSize;
+    let heap = test_heap(tweak);
+    let kinds = [
+        (SIZE_FIXED_12, CellSize::Fixed(12)),
+        (SIZE_FIXED_20, CellSize::Fixed(20)),
+        (SIZE_DYNAMIC, CellSize::Dynamic(raw_word_size)),
+        (SIZE_INT32, CellSize::Field(FieldSize::int32(8, 16, 8))),
+        (SIZE_FLAGS, CellSize::Field(FieldSize::flags(16, 8, 0x00FF))),
+        (
+            SIZE_WORD32,
+            CellSize::Field(FieldSize::word32(8, 0x7FFF_FFFF, 16, 8)),
+        ),
+    ];
+    for (id, size) in kinds {
+        heap.register_kind(
+            id,
+            CellKind {
+                name: "test-size-form",
+                size,
+                trace: leaf_trace,
+            },
+        )
+        .unwrap();
+    }
+    heap
+}
+
+/// Allocates one cell of `kind` whose size is `size` and writes its size field (`n` =
+/// (size - 16) / 8 for a field form).
+fn size_form_cell(heap: &Heap, kind: KindId, size: usize) -> CellPtr {
+    let c = heap.alloc(kind, size).expect("alloc");
+    let n = (size.max(16) - 16) / 8;
+    // SAFETY: a new cell of at least 16 bytes; the writes are its own fields, before the
+    // next GC point.
+    unsafe {
+        if kind == SIZE_DYNAMIC {
+            c.field::<u64>(8).write(size as u64);
+        } else if kind == SIZE_INT32 {
+            c.field::<u64>(8).write(Value::int32(n as i32).to_bits());
+        } else if kind == SIZE_FLAGS {
+            c.header().set_flags(0xA500 | n as u16);
+        } else if kind == SIZE_WORD32 {
+            c.field::<u32>(8).write(n as u32 | 1 << 31);
+        }
+    }
+    c
+}
+
+// Route FIELDSIZE-INT32-ASSERT: the int32 form's slot holds an int32 Value (debug builds).
+
+/// The int32 form of a slot that holds an int32 Value: no assert.
+#[test]
+fn the_int32_size_form_reads_an_int32_slot() {
+    let heap = size_form_heap(|_| {});
+    let c = size_form_cell(&heap, SIZE_INT32, 48);
+    // SAFETY: a live cell of the int32 form with an int32 Value in its slot.
+    assert_eq!(unsafe { crate::FieldSize::int32(8, 16, 8).size_of(c) }, 48);
+}
+
+/// The int32 form of a slot that holds a double whose low half is a small number: the debug
+/// assert fires (the old form read the low half as `n` and gave a size).
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "FieldSize int32 form: the slot is not an int32 Value")]
+fn the_int32_size_form_asserts_on_a_slot_that_is_not_an_int32() {
+    let heap = size_form_heap(|_| {});
+    let c = size_form_cell(&heap, SIZE_INT32, 48);
+    // A double with the low half 4 (the n of a 48-byte cell): only the tag is wrong.
+    let bits = Value::double(f64::from_bits(0x4010_0000_0000_0004)).to_bits();
+    assert_eq!(bits as u32, 4, "the low half is the old n");
+    // SAFETY: `c` is a live cell; the slot at +8 is its own.
+    unsafe { c.field::<u64>(8).write(bits) };
+    // SAFETY: a live cell of the int32 form (the assert checks its slot).
+    unsafe { crate::FieldSize::int32(8, 16, 8).size_of(c) };
+}
+
+// Route DRAIN-X64-SIZE (M9-P4 HEAP-DRAIN): the drain reads each cell's size with
+// `KindTable::size_of`, from the kind it has already read. These tests pin what the old
+// `cell_size` read gave: the rounded size of each form, 0 (and a checked-mark error) on an
+// overflow.
+
+/// The marked bytes of a GC are the sum of the rounded sizes of the marked cells, for each
+/// size form: Fixed(12) counts 16, Fixed(20) and a size function's 20 count 24, a field
+/// form counts its `base + scale * n`. And `KindTable::size_of` equals `cell_size` on each.
+#[test]
+fn the_drain_counts_the_rounded_size_of_each_form() {
+    let heap = size_form_heap(|_| {});
+    let cells = [
+        (SIZE_FIXED_12, 12, 16),
+        (SIZE_FIXED_20, 20, 24),
+        (SIZE_DYNAMIC, 20, 24),
+        (SIZE_DYNAMIC, 9, 16),
+        (SIZE_INT32, 16, 16),
+        (SIZE_INT32, 56, 56),
+        (SIZE_FLAGS, 40, 40),
+        (SIZE_WORD32, 64, 64),
+    ];
+    let mut roots = Vec::new();
+    let mut want = 0;
+    for &(kind, size, rounded) in &cells {
+        let c = size_form_cell(&heap, kind, size);
+        {
+            let inner = heap.inner.borrow();
+            let k = inner.kinds.get(kind.get()).expect("registered");
+            assert_eq!(
+                crate::cell::KindTable::size_of(k, c),
+                rounded,
+                "kind {}",
+                kind.get()
+            );
+            assert_eq!(inner.kinds.cell_size(c), Some(rounded));
+        }
+        roots.push(heap.new_global(c.to_value()));
+        want += rounded;
+    }
+    precise_gc(&heap);
+    let st = heap.stats();
+    assert_eq!(st.last_marked_cells, cells.len());
+    assert_eq!(st.last_marked_bytes, want);
+    for g in roots {
+        heap.drop_global(g);
+    }
+}
+
+/// A size that overflows: `size_of` gives 0 where `cell_size` gives `None`, the drain counts
+/// no bytes for the cell, and the checked mark (a GC with `verify_after_gc`) still reports
+/// "size overflows" for it.
+#[test]
+fn the_checked_drain_reports_a_size_overflow() {
+    let heap = size_form_heap(|c| c.verify_after_gc = true);
+    let c = size_form_cell(&heap, SIZE_DYNAMIC, 16);
+    let g = heap.new_global(c.to_value());
+    precise_gc(&heap);
+    assert_eq!(heap.stats().last_marked_bytes, 16);
+    // SAFETY: `c` is live (rooted); the test restores the word before the last GC.
+    unsafe { c.field::<u64>(8).write(u64::MAX) };
+    {
+        let inner = heap.inner.borrow();
+        let k = inner.kinds.get(SIZE_DYNAMIC.get()).expect("registered");
+        assert_eq!(crate::cell::KindTable::size_of(k, c), 0);
+        assert_eq!(inner.kinds.cell_size(c), None);
+    }
+    let r = catch_unwind(AssertUnwindSafe(|| precise_gc(&heap)));
+    let p = r.expect_err("the checked GC missed the size overflow");
+    let msg = p
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default();
+    let at = format!("cell {c:?} (kind {}): size overflows", SIZE_DYNAMIC.get());
+    assert!(msg.contains(&at), "{msg}");
+    // SAFETY: as above.
+    unsafe { c.field::<u64>(8).write(16) };
+    precise_gc(&heap);
+    assert_eq!(heap.stats().last_marked_bytes, 16);
+    heap.drop_global(g);
+}

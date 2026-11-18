@@ -1,15 +1,15 @@
 //! `%String.prototype%` methods without a pattern or a case mapping (§22.1.3): at, charAt,
 //! codePointAt, concat, endsWith, includes, indexOf, lastIndexOf, isWellFormed, toWellFormed,
-//! localeCompare, padStart, padEnd, repeat, slice, startsWith, substring, trim, trimStart,
-//! trimEnd.
+//! localeCompare, normalize, padStart, padEnd, repeat, slice, startsWith, substring, trim,
+//! trimStart, trimEnd.
 
 use core::cmp::Ordering;
 
-use ep9_vm::{Args, Cx, JsResult, Local};
+use ep9_vm::{Args, Cx, JsResult, JsString, Local};
 
 use super::{
-    MAX_LENGTH, SearchWork, clamp, matches_at, new_str, pattern::is_reg_exp, push_units,
-    string_index_of, this_string, to_units, units, units_range,
+    MAX_LENGTH, clamp, new_str, pattern::is_reg_exp, push_units, this_string, to_units, units,
+    units_range,
 };
 
 /// String.prototype.at ( index ) (§22.1.3.1).
@@ -129,6 +129,16 @@ pub(super) fn concat<'s>(
 /// Steps 3-4 of endsWith, includes and startsWith: ? IsRegExp(searchString), a TypeError if
 /// it is a RegExp, then ? ToString(searchString).
 fn search_string<'s>(cx: &mut Cx<'s>, search: Local<'s>, name: &str) -> JsResult<Vec<u16>> {
+    let s = search_string_value(cx, search, name)?;
+    units(cx, s)
+}
+
+/// [`search_string`] as a string value (no copy of its code units).
+fn search_string_value<'s>(
+    cx: &mut Cx<'s>,
+    search: Local<'s>,
+    name: &str,
+) -> JsResult<Local<'s, JsString>> {
     // 3. Let isRegExp be ? IsRegExp(searchString).
     // 4. If isRegExp is true, throw a TypeError exception.
     if is_reg_exp(cx, search)? {
@@ -137,7 +147,7 @@ fn search_string<'s>(cx: &mut Cx<'s>, search: Local<'s>, name: &str) -> JsResult
         return Err(cx.throw_type_error(&msg));
     }
     // 5. Let searchStr be ? ToString(searchString).
-    to_units(cx, search)
+    cx.to_string(search)
 }
 
 /// String.prototype.endsWith ( searchString [ , endPosition ] ) (§22.1.3.7).
@@ -193,20 +203,20 @@ pub(super) fn includes<'s>(
     // 1. Let O be ? RequireObjectCoercible(this value).
     // 2. Let S be ? ToString(O).
     let s = this_string(cx, this, "includes")?;
-    // 3-5. (search_string)
-    let search_str = search_string(cx, args.get(0), "includes")?;
+    // 3-5. (search_string_value)
+    let search_str = search_string_value(cx, args.get(0), "includes")?;
     // 6. Let pos be ? ToIntegerOrInfinity(position).
     // 7. Assert: If position is undefined, then pos is 0.
     let pos = cx.to_integer_or_infinity(args.get(1))?;
     // 8. Let len be the length of S.
     // 9. Let start be the result of clamping pos between 0 and len.
-    let s = units(cx, s)?;
-    let start = clamp(pos, s.len());
+    let start = clamp(pos, cx.string_len(s));
     // 10. Let index be StringIndexOf(S, searchStr, start).
     // 11. If index is not-found, return false.
     // 12. Return true.
+    //     (on the strings' own code units: no copy; OXC-PERF wave 2)
     Ok(Local::boolean(
-        string_index_of(cx, &s, &search_str, start)?.is_some(),
+        cx.string_index_of(s, search_str, start)?.is_some(),
     ))
 }
 
@@ -221,18 +231,18 @@ pub(super) fn index_of<'s>(
     // 2. Let S be ? ToString(O).
     let s = this_string(cx, this, "indexOf")?;
     // 3. Let searchStr be ? ToString(searchString).
-    let search_str = to_units(cx, args.get(0))?;
+    let search_str = cx.to_string(args.get(0))?;
     // 4. Let pos be ? ToIntegerOrInfinity(position).
     // 5. Assert: If position is undefined, then pos is 0.
     let pos = cx.to_integer_or_infinity(args.get(1))?;
     // 6. Let len be the length of S.
     // 7. Let start be the result of clamping pos between 0 and len.
-    let s = units(cx, s)?;
-    let start = clamp(pos, s.len());
+    let start = clamp(pos, cx.string_len(s));
     // 8. Let result be StringIndexOf(S, searchStr, start).
     // 9. If result is not-found, return -1𝔽.
     // 10. Return 𝔽(result).
-    Ok(index_value(string_index_of(cx, &s, &search_str, start)?))
+    //     (on the strings' own code units: no copy; OXC-PERF wave 2)
+    Ok(index_value(cx.string_index_of(s, search_str, start)?))
 }
 
 /// An index result: `𝔽(i)`, or -1 for not-found (string indices fit an int32).
@@ -268,7 +278,7 @@ pub(super) fn last_index_of<'s>(
     // 2. Let S be ? ToString(O).
     let s = this_string(cx, this, "lastIndexOf")?;
     // 3. Let searchStr be ? ToString(searchString).
-    let search_str = to_units(cx, args.get(0))?;
+    let search_str = cx.to_string(args.get(0))?;
     // 4. Let numPos be ? ToNumber(position).
     // 5. Assert: If position is undefined, then numPos is NaN.
     let num_pos = cx.to_number(args.get(1))?;
@@ -279,10 +289,9 @@ pub(super) fn last_index_of<'s>(
         cx.to_integer_or_infinity(Local::number(num_pos))?
     };
     // 7. Let len be the length of S.
-    let s = units(cx, s)?;
-    let len = s.len();
+    let len = cx.string_len(s);
     // 8. Let searchLen be the length of searchStr.
-    let search_len = search_str.len();
+    let search_len = cx.string_len(search_str);
     // (a search string longer than S matches nowhere: the clamp range below is empty)
     let Some(last) = len.checked_sub(search_len) else {
         return Ok(Local::int32(-1));
@@ -294,14 +303,9 @@ pub(super) fn last_index_of<'s>(
     //     a. Let candidate be the substring of S from i to i + searchLen.
     //     b. If candidate is searchStr, return 𝔽(i).
     // 12. Return -1𝔽.
-    //     (polled per 256 code units compared, as StringIndexOf is: `SearchWork`)
-    let mut work = SearchWork::default();
-    for i in (0..=start).rev() {
-        if matches_at(cx, &s, &search_str, i, &mut work)? {
-            return Ok(index_value(Some(i)));
-        }
-    }
-    Ok(index_value(None))
+    //     (on the strings' own code units, polled per 256 code units of work, as
+    //     StringIndexOf is: `Cx::string_last_index_of`)
+    Ok(index_value(cx.string_last_index_of(s, search_str, start)?))
 }
 
 /// String.prototype.localeCompare ( that [ , locales [ , options ] ] ) (ECMA-402 §19.1.1): the
@@ -697,4 +701,50 @@ pub(super) fn trim_start<'s>(
     // 1. Let S be the this value.
     // 2. Return ? TrimString(S, start).
     trim_string(cx, this, Where::Start, "trimStart")
+}
+
+/// String.prototype.normalize ( \[ form \] ) (§22.1.3.15). The normalization is
+/// `ep9_intl::normalize` (ICU4X; only `ep9_intl` depends on `icu_normalizer`, dep-guards check
+/// 25); lone surrogates pass through. A string that is normal already is returned as it is.
+pub(super) fn normalize<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // Function-local imports: the lines above this function keep their numbers (docs cite them).
+    use ep9_intl::normalize::{Form, normalize};
+    use std::borrow::Cow;
+
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
+    let s = this_string(cx, this, "normalize")?;
+    let form = args.get(0);
+    let f = if form.is_undefined() {
+        // 3. If form is undefined, let f be "NFC".
+        Form::Nfc
+    } else {
+        // 4. Else, let f be ? ToString(form).
+        let f = to_units(cx, form)?;
+        // 5. If f is not one of "NFC", "NFD", "NFKC", or "NFKD", throw a RangeError exception.
+        match Form::from_units(&f) {
+            Some(f) => f,
+            None => {
+                return Err(cx.throw_range_error(
+                    "The normalization form should be one of NFC, NFD, NFKC, NFKD.",
+                ));
+            }
+        }
+    };
+    // 6. Let ns be the String value that is the result of normalizing S into the normalization
+    //    form named by f as specified in the latest Unicode Standard, Normalization Forms.
+    // 7. Return ns.
+    //    The result stops at MAX_LENGTH: past it, the RangeError of a too long string, with
+    //    no buffer past the limit (W4 Codex r1 F2).
+    let units = units(cx, s)?;
+    match normalize(&units, f, MAX_LENGTH) {
+        Ok(Cow::Borrowed(_)) => Ok(s.value()),
+        Ok(Cow::Owned(ns)) => new_str(cx, &ns),
+        Err(_) => Err(cx.throw_range_error("Invalid string length")),
+    }
 }

@@ -1,0 +1,4 @@
+# Fixture for the disasm.rs frame tests: the golden of base.txt.
+target x86_64-unknown-linux-gnu
+sib BadOpcode 0
+sib CallProperty0 2

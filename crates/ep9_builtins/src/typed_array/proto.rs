@@ -1,6 +1,6 @@
 //! The methods of `%TypedArray.prototype%`
 //! (`sec-properties-of-the-%typedarray%-prototype-object`): module `typed_array_proto`, block
-//! 36. Owner of this file: TypedArray TA-4 R1 (the one writer of the TA-4 lists; design
+//! 42. Owner of this file: TypedArray TA-4 R1 (the one writer of the TA-4 lists; design
 //! `docs/plan/notes/typedarray-design.md` TA-PROTO). The module joins the lazy group of
 //! `array_buffer` (TA-D14): each table entry targets `%TypedArray.prototype%`.
 //!
@@ -16,17 +16,20 @@
 //! ```
 //!
 //! `[Symbol.iterator]` is the function of `values`, a `PropDef::alias`
-//! (`sec-%typedarray%.prototype-%symbol.iterator%`: the same object). `toString` is a function
-//! of its own with the steps of `Array.prototype.toString` (route TA-TOSTRING-IDENTITY:
-//! `sec-%typedarray%.prototype.tostring` wants the same object).
+//! (`sec-%typedarray%.prototype-%symbol.iterator%`: the same object). `toString` is
+//! `%Array.prototype.toString%` itself, a `PropDef::intrinsic`
+//! (`sec-%typedarray%.prototype.tostring`: the same object; route TA-TOSTRING-IDENTITY, M9-P4);
+//! definition 30 stays for the id order, and no property names it. `values` makes
+//! `%TypedArray.prototype.values%`, the identity guard of the TypedArray spread fast path
+//! (route TA-SPREAD-FAST).
 //!
 //! Ids are append-only: definition `i` of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by
 //! `tests/golden/ids-typed_array_proto.txt`. The ids follow node v26's key order. A missing
 //! definition is appended at the end (42.32 and on), never inserted.
 
 use ep9_vm::{
-    BuiltinDef, BuiltinModule, IntrinsicId, ObjectProps, PropAttrs, PropDef, PropKey,
-    WellKnownSymbol,
+    BuiltinDef, BuiltinModule, IntrinsicDef, IntrinsicId, IntrinsicValue, ObjectProps, PropAttrs,
+    PropDef, PropKey, WellKnownSymbol,
 };
 
 use super::{proto_copy, proto_iter};
@@ -112,7 +115,11 @@ pub const PROPS: &[ObjectProps] = &[ObjectProps {
         method("toSorted", 27),
         method("with", 28),
         method("toLocaleString", 29),
-        method("toString", 30),
+        PropDef::intrinsic(
+            PropKey::Str("toString"),
+            IntrinsicId::ArrayPrototypeToString,
+            PropAttrs::METHOD,
+        ),
         PropDef::accessor(
             PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
             Some(31),
@@ -131,6 +138,9 @@ pub const MODULE: BuiltinModule = BuiltinModule {
     name: "typed_array_proto",
     block: BLOCK,
     defs: DEFS,
-    intrinsics: &[],
+    intrinsics: &[IntrinsicDef {
+        id: IntrinsicId::TypedArrayPrototypeValues,
+        value: IntrinsicValue::Builtin(2),
+    }],
     props: PROPS,
 };

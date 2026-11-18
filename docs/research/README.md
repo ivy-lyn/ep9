@@ -1,11 +1,11 @@
 # ep9 research reports
 
-- These 18 reports are the evidence base for the plan. The plan cites them by tag: [R01] = `01-*.md`, and so on.
-- Reports 01-09 come from the JIT research round. Reports 10-17 come from the AOT round. Report 18 comes from the sound-regions round. It was revised in place after an adversarial review, so it has no separate refutation report.
+- These 20 reports are the evidence base for the plan. The plan cites them by tag: [R01] = `01-*.md`, and so on.
+- Reports 01-09 come from the JIT research round. Reports 10-17 come from the AOT round. Report 18 comes from the sound-regions round. It was revised in place after an adversarial review, so it has no separate refutation report. Report 19 comes from the 2026-11-18 VM-lessons round: .NET, Dart, Kotlin. Its findings were checked by adversarial verifiers and its synthesis by a critic, and the fixes are applied in place. Report 20 comes from the 2026-11-18 best-fit data-structure round, with the oxc study. Two adversarial verifiers (security, gain) checked its synthesis; their verdicts are applied in place, and its refuted items are listed in the report.
 - Two rules settle conflicts: [R17] corrects [R16], and [R09] arbitrates among [R01]-[R08].
 - Paths inside the reports point into a session scratchpad. They were session-local and no longer exist. Cite the tag, not the path. Since 2026-10-21 they read `scratchpad/...`, `~/...` (the home folder of the research host) or a repo-relative path, without the absolute session prefix. A file that was copied into [artifacts/](artifacts/README.md) is linked there.
 - The plan starts at [../PLAN.md](../PLAN.md).
-- Reusable harnesses are kept in [artifacts/](artifacts/README.md): the tsrs type oracle, the tsrs/oxc test262 scorer and, since 2026-10-21, the R18 sound-regions scripts and cited results ([artifacts/sound-regions/](artifacts/sound-regions/README.md)) and the inputs of the 2026-10-20 decision round ([artifacts/decide/](artifacts/decide/README.md)).
+- Reusable harnesses are kept in [artifacts/](artifacts/README.md): the tsrs type oracle, the tsrs/oxc test262 scorer and, since 2026-10-21, the R18 sound-regions scripts and cited results ([artifacts/sound-regions/](artifacts/sound-regions/README.md)) and the inputs of the 2026-10-20 decision round ([artifacts/decide/](artifacts/decide/README.md)), and since 2026-11-18 the raw findings and verify verdicts of [R19] ([artifacts/vm-lessons/](artifacts/vm-lessons/README.md)).
 
 ## Run context
 
@@ -42,6 +42,8 @@
 | [R16] | [16-aot-synthesis.md](16-aot-synthesis.md) | First AOT synthesis | Dual mode is buildable; no general "AOT beats V8". Corrected by [R17] |
 | [R17] | [17-aot-refutation.md](17-aot-refutation.md) | Adversarial review of [R16] | Keeps the architecture and the A4 kill; corrects scriptc, startup, memory and span-join claims |
 | [R18] | [18-sound-regions.md](18-sound-regions.md) | Automatic sound regions (no opt-in subset) | Feasible and test262-legal with checks and fuses; real-app hot coverage 0-11% (vscode diff 24-39%); jitless gain est. +0-0.8% on tsc, hono, date-fns; keep D17 = Defer and add a <= 1 PM coverage pre-check. Decided 2026-10-20: D17 rule with option (d), SP-RegionCoverage in A1h ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)) |
+| [R19] | [19-vm-aot-jit-lessons.md](19-vm-aot-jit-lessons.md) | AOT/JIT lessons from .NET (Roslyn, RyuJIT, ReadyToRun, NativeAOT), Dart and Kotlin (K2, Kotlin/Native) with HotSpot Leyden | 115 findings (88 confirmed, 27 corrected, 0 refuted); 12 lessons. ADOPT: a JIT-mode per-function give-up counter, a unit key from one registry, stress knobs per transition, a debug trap on PROVEN facts, a mode-branch count. CONSIDER: .NET's reason to re-tier hot R2R code through an optimized instrumented tier, not Tier0. 15 follow-ups LRN-01 to LRN-15, text only before the M2 gate |
+| [R20] | [20-bestfit-data-structures.md](20-bestfit-data-structures.md) | Best-fit data structures for heap containers; the oxc optimization study (oxc-project/oxc@3464a0d18) | A faster HashMap cannot pass the 0.2% kill line: all std SipHash cost is compile time, at most 0.174% (earley-boyer). The real hash cost is ep9 re-interning static Rust text: KEEP B1 (static atom text gives its root; deltablue est. -1.3..-1.4%) and B2 (intern guard split; t0-gen est. -2.6..-2.8%, a call shape, handed back). Refuted: a flat Fx scope map and the oxc ident hash on hostile names (HashDoS). A hasher rule for ep9 and 5 hash weaknesses already in the tree, handed back |
 
 ## Notes for readers
 

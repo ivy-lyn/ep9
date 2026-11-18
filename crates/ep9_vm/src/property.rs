@@ -1324,16 +1324,15 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     }
     // EnumerateObjectProperties (§14.7.5.9): each object's own keys in [[OwnPropertyKeys]]
     // order (§10.1.11: array indices ascending, then strings in creation order), then the
-    // prototype's. A key seen before, enumerable or not, is skipped later.
-    // GC: the Rust vectors hold only indices, key atoms of property storage (reachable from
+    // prototype's. A key seen before, enumerable or not, is skipped later ([`ForInSeen`]).
+    // GC: the seen lists hold only indices, key atoms of property storage (reachable from
     // `o`) and the `length` atom (a runtime root); a new index string goes into `keys` (a Rust
     // local, so a root) at once. A routed kind's keys come from its key array (`own`), and
     // each such array goes into `kept` (a Rust local, so a root) until the loop ends. From
-    // the first routed hop on, `kept` also holds every key of `seen_string` (an enumerable
+    // the first routed hop on, `kept` also holds every seen string key (an enumerable
     // one is in `keys`): a proxy trap runs JS that may delete a property whose key was seen
     // and then collect, and the atom table is weak (PROXY2).
-    let mut seen_index: Vec<u32> = Vec::new();
-    let mut seen_string: Vec<u64> = Vec::new();
+    let mut seen = ForInSeen::default();
     let mut kept = UNDEFINED;
     let mut hops = 0;
     let mut cur = o;
@@ -1348,11 +1347,11 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             // `[[OwnPropertyKeys]]` and, but for a proxy, `[[GetOwnProperty]]`
             // ([`for_in_attrs`]). GC points.
             if kept == UNDEFINED {
-                // Before the first hook runs (no JS has run yet, so every key in
-                // `seen_string` is still in some object's storage): root them all. A trap
+                // Before the first hook runs (no JS has run yet, so every seen string key
+                // is still in some object's storage): root both lists. A trap
                 // may delete those properties and collect, and the atom table is weak.
                 kept = object::new_array(cx.rt(), 0);
-                for (i, &k) in seen_string.iter().enumerate() {
+                for (i, &k) in seen.atoms.iter().chain(&seen.other).enumerate() {
                     object::array_set(cx.rt(), kept, i as u32, k);
                 }
             }
@@ -1405,11 +1404,13 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             }
         }
         index_keys.sort_by_key(|&(n, _)| n);
+        // The seen test of this hop: which indices came before it, and whether its string
+        // keys are unique with none seen yet (an ordinary object that is not a String wrapper).
+        seen.begin_hop(cur);
         for (n, enumerable) in index_keys {
-            if seen_index.contains(&n) {
+            if !seen.add_index(n, enumerable) {
                 continue;
             }
-            seen_index.push(n);
             if enumerable {
                 let s = crate::conv::number_string(cx, f64::from(n));
                 let len = object::array_len(keys);
@@ -1417,10 +1418,9 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             }
         }
         for (k, enumerable) in string_keys {
-            if seen_string.iter().any(|&x| object::key_eq(x, k)) {
+            if !seen.add_string(k, enumerable) {
                 continue;
             }
-            seen_string.push(k);
             if enumerable {
                 let len = object::array_len(keys);
                 object::array_set(cx.rt(), keys, len, k);
@@ -2375,4 +2375,98 @@ fn for_in_has_at_proxy(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
 #[inline(always)]
 fn fast_element(o: u64, i: u32) -> bool {
     object::array_get(o, i).is_some() && elements::integrity_of(o) == 0 || is_extensible(o)
+}
+
+/// The keys [`for_in_keys`] saw (§14.7.5.9: a key seen before, enumerable or not, is skipped
+/// later), and its seen test (FORIN-DEDUPE; oxc 30dc517c4 and 7ed27b75f: skip the test the
+/// invariant makes useless, and compare bits in place of content):
+///
+/// - Only an enumerable key is tested. A non-enumerable key is never listed, so it is recorded
+///   with no test (a second copy in a list changes no answer).
+/// - The string keys are in two lists: `atoms`, tested by bits (two distinct atoms are never
+///   equal, `key::key_eq`), and `other`, tested by `key_eq` (content). `other` is usually
+///   empty: stored keys and a proxy's keys are atoms.
+/// - A hop whose string keys are unique (an ordinary object that is not a String wrapper:
+///   one storage entry per key) with no string key seen yet lists them with no test.
+/// - A hop's index keys come sorted, so a repeat in the hop is the last seen index; only the
+///   indices of earlier hops (`index[..prior]`) are searched.
+///
+/// The lists hold raw bits; see the GC note in [`for_in_keys`]. Not a GC point.
+#[derive(Default)]
+struct ForInSeen {
+    index: Vec<u32>,
+    atoms: Vec<u64>,
+    other: Vec<u64>,
+    /// `index.len()` when this hop began.
+    prior: usize,
+    /// This hop's string keys are unique and no string key was seen before it.
+    fresh: bool,
+}
+
+impl ForInSeen {
+    /// Starts the hop of `cur` (after its keys are listed, before any is added).
+    #[inline]
+    fn begin_hop(&mut self, cur: u64) {
+        self.prior = self.index.len();
+        self.fresh = self.atoms.is_empty()
+            && self.other.is_empty()
+            && !exotic::is_hooked(kind::cell_kind(cur))
+            && wrapper::wrapper_value(cur)
+                .filter(|&p| is_string(p))
+                .is_none();
+    }
+
+    /// Records the index `n`; false if an enumerable `n` was seen before (skip it).
+    #[inline]
+    fn add_index(&mut self, n: u32, enumerable: bool) -> bool {
+        if enumerable && (self.index.last() == Some(&n) || self.index[..self.prior].contains(&n)) {
+            return false;
+        }
+        self.index.push(n);
+        true
+    }
+
+    /// Records the string key `k`; false if an enumerable `k` was seen before (skip it).
+    #[inline]
+    fn add_string(&mut self, k: u64, enumerable: bool) -> bool {
+        let atom = string::is_atom(k);
+        if enumerable && !self.fresh && self.has_string(k, atom) {
+            return false;
+        }
+        debug_assert!(
+            !(enumerable && self.fresh) || !self.has_string(k, atom),
+            "a fresh hop lists a string key twice"
+        );
+        if atom {
+            self.atoms.push(k);
+        } else {
+            self.other.push(k);
+        }
+        true
+    }
+
+    /// Whether the string key `k` (`atom`: `string::is_atom(k)`) is seen: `key::key_eq` with
+    /// each seen key. An atom `k` equals a seen atom only as the same bits.
+    #[inline]
+    fn has_string(&self, k: u64, atom: bool) -> bool {
+        if atom {
+            self.atoms.contains(&k) || self.other.iter().any(|&x| object::key_eq(x, k))
+        } else {
+            self.atoms
+                .iter()
+                .chain(&self.other)
+                .any(|&x| object::key_eq(x, k))
+        }
+    }
+}
+
+/// [`ForInSeen::has_string`] for tests: `atoms` and `other` as the seen lists.
+#[cfg(test)]
+pub(crate) fn for_in_seen(atoms: &[u64], other: &[u64], k: u64, atom: bool) -> bool {
+    let seen = ForInSeen {
+        atoms: atoms.to_vec(),
+        other: other.to_vec(),
+        ..ForInSeen::default()
+    };
+    seen.has_string(k, atom)
 }

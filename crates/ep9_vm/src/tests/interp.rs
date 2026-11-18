@@ -542,8 +542,8 @@ fn far_jumps_unit(far: usize) -> VerifiedUnit {
 /// 40,000 bytes each is a `Wide` instruction whose 2-byte offset has its top bit set, so a
 /// decoder that sign-extends it jumps to the wrong place. Node prints 3 for the same script.
 /// On aarch64 the `Wide` and `ExtraWide` fast bodies run all three (`ops.rs`
-/// `prefix_runs_fast`): no run of `interp::scaled::step`. Elsewhere each runs in `step`: 3 per
-/// loop turn and the exit `JumpIfFalse`. Every expansion, with and without GC stress.
+/// `prefix_runs_fast`), on x86-64 their cold block through `interp::tails::wide` (M9-P1): no
+/// run of `interp::scaled::step` on any target. Every expansion, with and without GC stress.
 #[test]
 fn extra_wide_jumps_over_64_kib() {
     use ep9_bytecode::{Instructions, Opcode as O, OperandScale as S};
@@ -569,22 +569,28 @@ fn extra_wide_jumps_over_64_kib() {
                 assert!(i.operand(0) > 0x8000, "{:?} {}", i.opcode, i.operand(0));
             }
         }
-        let steps = if crate::interp::ops::PREFIXED_FAST {
+        // x86-64: one run of `tails::wide` per prefixed jump: 3 per loop turn and the exit.
+        let wide = if crate::interp::ops::PREFIXED_FAST {
             0
         } else {
             3 * 3 + 1
         };
         for &d in Dispatch::ALL {
             for stress in [false, true] {
-                let (r, n) = on_big_stack(move || {
-                    let before = scaled_runs();
+                let (r, n, w) = on_big_stack(move || {
+                    let before = (
+                        scaled_runs(),
+                        crate::interp::tails::WIDE_RUNS.with(|c| c.get()),
+                    );
                     let r = super::run_in(config(d, stress), far_jumps_unit(far));
-                    (r, scaled_runs()[0] - before[0])
+                    let w = crate::interp::tails::WIDE_RUNS.with(|c| c.get()) - before.1;
+                    (r, scaled_runs()[0] - before.0[0], w)
                 });
                 let label = format!("{far} bytes: {} stress={stress}", d.name());
                 assert_eq!(ok(&r), "3", "{label}");
                 assert_eq!(r.output, ["3"], "{label}");
-                assert_eq!(n, steps, "{label}: the runs of interp::scaled::step");
+                assert_eq!(n, 0, "{label}: the runs of interp::scaled::step");
+                assert_eq!(w, wide, "{label}: the runs of interp::tails::wide");
             }
         }
     }
@@ -667,7 +673,7 @@ records 9
 
 /// MC-w34-6 (1): the feedback of a prefixed instruction must not depend on the path that runs
 /// it. On aarch64 the `Wide` fast body runs the prefixed GetNamedProperty and jumps
-/// (`ops.rs` `prefix_runs_fast`); x86-64 runs them in `interp::scaled::step`. FASTDIFF compares
+/// (`ops.rs` `prefix_runs_fast`); x86-64 runs them in `interp::tails::wide`. FASTDIFF compares
 /// printed output only, so this test compares the FactSnapshot records (the slot kinds and
 /// their facts) with one text, [`PREFIXED_FACTS`], on every target that runs it (CI: 4). Every
 /// expansion, with and without GC stress.
@@ -721,6 +727,208 @@ fn prefixed_feedback_is_the_same_on_every_arch() {
             assert_eq!(r.as_deref(), Ok("40"), "{label}");
             assert_eq!(out, ["40 1000.5"], "{label}");
             assert_eq!(facts, PREFIXED_FACTS, "{label}");
+        }
+    }
+}
+
+// ---- M9-P1 X86-WIDE-FAST: every prefixed jump of `ops::prefix_set`, an ExtraWide load -------
+
+/// An accumulator value before a jump of [`prefix_set_unit`].
+#[derive(Clone, Copy, Debug)]
+enum Acc {
+    True,
+    False,
+    Null,
+    Undef,
+    Smi(i32),
+    Str(&'static str),
+    Obj,
+}
+
+/// The 11 forward jumps of `ops::prefix_set`, each with accumulator values and whether the
+/// jump is taken. The strings are no fast ToBoolean case (`ops.rs` `fast_truthy`): their
+/// `JumpIfToBoolean*` runs the cold body after the fast body.
+const PREFIX_JUMPS: &[(ep9_bytecode::Opcode, &[(Acc, bool)])] = {
+    use Acc::*;
+    use ep9_bytecode::Opcode as O;
+    &[
+        (O::Jump, &[(Undef, true)]),
+        (
+            O::JumpIfTrue,
+            &[(True, true), (False, false), (Smi(1), false)],
+        ),
+        (
+            O::JumpIfFalse,
+            &[(False, true), (True, false), (Smi(0), false)],
+        ),
+        (
+            O::JumpIfToBooleanTrue,
+            &[
+                (Smi(1), true),
+                (Smi(0), false),
+                (Null, false),
+                (Str("a"), true),
+                (Str(""), false),
+            ],
+        ),
+        (
+            O::JumpIfToBooleanFalse,
+            &[
+                (Smi(0), true),
+                (True, false),
+                (Undef, true),
+                (Str(""), true),
+                (Str("a"), false),
+            ],
+        ),
+        (
+            O::JumpIfNull,
+            &[(Null, true), (Undef, false), (Smi(0), false)],
+        ),
+        (O::JumpIfNotNull, &[(Undef, true), (Null, false)]),
+        (O::JumpIfUndefined, &[(Undef, true), (Null, false)]),
+        (O::JumpIfNotUndefined, &[(Null, true), (Undef, false)]),
+        (
+            O::JumpIfUndefinedOrNull,
+            &[(Null, true), (Undef, true), (Smi(0), false), (Obj, false)],
+        ),
+        (
+            O::JumpIfJSReceiver,
+            &[(Obj, true), (Smi(1), false), (Null, false)],
+        ),
+    ]
+};
+
+/// For each case of [`PREFIX_JUMPS`]: the value, the jump to `T`, then `print(2k)` and a
+/// `Jump` to `E`, 300 one-byte instructions, `T: print(2k + 1)`, `E:` (k = the case number).
+/// Both jumps need a `Wide` offset. Then `o = {}; o.x = 7` and 3 loop turns of `print(o.x)`,
+/// whose LoadNamed slot comes after 65,536 other slots: an `ExtraWide` GetNamedProperty (a
+/// miss, then hits). Gives the unit, the printed lines, and the runs of the prefixed
+/// instructions of `ops::prefix_set`.
+fn prefix_set_unit() -> (VerifiedUnit, Vec<String>, u64) {
+    use ep9_bytecode::Opcode as O;
+    let mut s = Asm::script(0);
+    let (mut want, mut runs, mut k) = (Vec::new(), 0, 0);
+    for &(op, values) in PREFIX_JUMPS {
+        for &(v, taken) in values {
+            match v {
+                Acc::True => s.b.lda_true(),
+                Acc::False => s.b.lda_false(),
+                Acc::Null => s.b.lda_null(),
+                Acc::Undef => s.b.lda_undefined(),
+                Acc::Smi(i) => s.b.lda_smi(i),
+                Acc::Str(t) => &mut s.lda_str(t).b,
+                Acc::Obj => s.b.create_empty_object_literal(),
+            };
+            let (t, e) = (s.b.new_label(), s.b.new_label());
+            match op {
+                O::Jump => s.b.jump(t),
+                O::JumpIfTrue => s.b.jump_if_true(t),
+                O::JumpIfFalse => s.b.jump_if_false(t),
+                O::JumpIfToBooleanTrue => s.b.jump_if_to_boolean_true(t),
+                O::JumpIfToBooleanFalse => s.b.jump_if_to_boolean_false(t),
+                O::JumpIfNull => s.b.jump_if_null(t),
+                O::JumpIfNotNull => s.b.jump_if_not_null(t),
+                O::JumpIfUndefined => s.b.jump_if_undefined(t),
+                O::JumpIfNotUndefined => s.b.jump_if_not_undefined(t),
+                O::JumpIfUndefinedOrNull => s.b.jump_if_undefined_or_null(t),
+                _ => s.b.jump_if_js_receiver(t),
+            };
+            s.b.lda_smi(2 * k);
+            s.print_acc();
+            s.b.jump(e);
+            for _ in 0..300 {
+                s.b.lda_zero();
+            }
+            s.b.bind(t);
+            s.b.lda_smi(2 * k + 1);
+            s.print_acc();
+            s.b.bind(e);
+            want.push((2 * k + i32::from(taken)).to_string());
+            // The jump, and the `Jump` to `E` where it falls through.
+            runs += if taken { 1 } else { 2 };
+            k += 1;
+        }
+    }
+    for _ in 0..1 << 16 {
+        s.b.feedback_slot(FeedbackSlotKind::BinaryOp);
+    }
+    let named = s.b.feedback_slot(FeedbackSlotKind::LoadNamed);
+    let kx = s.b.string_constant("x");
+    let (o, i) = (s.b.new_register(), s.b.new_register());
+    s.b.create_empty_object_literal().star(o);
+    s.b.lda_smi(7).set_named_property(o, kx, s.set_named);
+    s.b.lda_zero().star(i);
+    let (header, exit) = (s.b.bound_label(), s.b.new_label());
+    s.b.lda_smi(3).test_less_than(i, s.cmp).jump_if_false(exit);
+    s.b.get_named_property(o, kx, named);
+    s.print_acc();
+    s.b.ldar(i).inc(s.bin).star(i);
+    s.b.jump_loop(header, 0, s.loop_);
+    s.b.bind(exit);
+    s.b.lda_undefined().return_();
+    want.extend(["7", "7", "7"].map(String::from));
+    runs += 3;
+    (unit("", vec![s.finish()]), want, runs)
+}
+
+/// M9-P1 X86-WIDE-FAST: each prefixed opcode of `ops::prefix_set` (the 11 forward jumps at
+/// `Wide` scale with values that take them and values that do not, and an `ExtraWide`
+/// GetNamedProperty) runs its fast body with the opcode's own answer, and never the whole
+/// instruction in `interp::scaled::step`: on aarch64 in the `Wide` fast body, on x86-64 in the
+/// cold block through `interp::tails::wide` (one run per prefixed instruction). The string
+/// ToBoolean cases and the first (missing) load run the cold body in `step_cold` after it.
+/// Every expansion, with and without GC stress.
+#[test]
+fn prefix_set_opcodes_run_their_fast_body_on_every_arch() {
+    use ep9_bytecode::{Instructions, Opcode as O, OperandScale as S};
+    let (u, want, runs) = prefix_set_unit();
+    let prefixed: Vec<(O, S)> = Instructions::new(&u.functions[0].bytecode)
+        .map(|i| i.unwrap())
+        .filter(|i| i.scale != S::Single)
+        .map(|i| (i.opcode, i.scale))
+        .collect();
+    // Every prefixed instruction is in the set: the jumps and the `Jump` of each case at
+    // `Wide` scale, then the `ExtraWide` load.
+    let cases: usize = PREFIX_JUMPS.iter().map(|(_, v)| v.len()).sum();
+    assert_eq!(prefixed.len(), 2 * cases + 1, "{prefixed:?}");
+    assert!(
+        prefixed
+            .iter()
+            .all(|&(op, _)| crate::interp::ops::prefix_set(op as u8))
+    );
+    assert_eq!(prefixed.last(), Some(&(O::GetNamedProperty, S::ExtraWide)));
+    for &(op, _) in PREFIX_JUMPS {
+        assert!(prefixed.contains(&(op, S::Wide)), "{op:?}");
+    }
+    let helper = if crate::interp::ops::PREFIXED_FAST {
+        0
+    } else {
+        runs
+    };
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let (r, n, w) = on_big_stack(move || {
+                let (u, ..) = prefix_set_unit();
+                let before = (
+                    scaled_runs(),
+                    crate::interp::tails::WIDE_RUNS.with(|c| c.get()),
+                );
+                let r = super::run_in(config(d, stress), u);
+                let after = (
+                    scaled_runs(),
+                    crate::interp::tails::WIDE_RUNS.with(|c| c.get()),
+                );
+                let n = [after.0[0] - before.0[0], after.0[1] - before.0[1]];
+                (r, n, after.1 - before.1)
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert_eq!(ok(&r), "undefined", "{label}");
+            assert_eq!(r.output, want, "{label}");
+            assert_eq!(n[0], 0, "{label}: the runs of interp::scaled::step");
+            // 2 ToBoolean of "a" and of "", 2 of "" and "a", and the first load (a miss).
+            assert!(n[1] >= 5, "{label}: the runs of step_cold: {n:?}");
+            assert_eq!(w, helper, "{label}: the runs of interp::tails::wide");
         }
     }
 }

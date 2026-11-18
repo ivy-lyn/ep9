@@ -26,7 +26,7 @@
 //! global                 String {w, c}
 //! ```
 //!
-//! Not here: matchAll (month 5, REGEXP2) and normalize (the normalization tables are M1).
+//! normalize (6.48): its Unicode normalization is in `ep9_intl::normalize` (INTL W4).
 //!
 //! Strings are read as UTF-16 code units (the private `units` helper) and built in a
 //! `Vec<u16>` (no `Value` in a Rust heap list). A loop whose length is bounded by a string's
@@ -100,6 +100,7 @@ mod def {
     pub const STRIKE: u16 = 45;
     pub const SUB: u16 = 46;
     pub const SUP: u16 = 47;
+    pub const NORMALIZE: u16 = 48;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -152,6 +153,7 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("strike", 0, annex_b::strike), // 45
     BuiltinDef::method("sub", 0, annex_b::sub),   // 46
     BuiltinDef::method("sup", 0, annex_b::sup),   // 47
+    BuiltinDef::method("normalize", 0, proto::normalize), // 48
 ];
 
 /// The intrinsics this module makes.
@@ -237,6 +239,7 @@ pub const PROPS: &[ObjectProps] = &[
             method("strike", def::STRIKE),
             method("sub", def::SUB),
             method("sup", def::SUP),
+            method("normalize", def::NORMALIZE),
             PropDef::alias(
                 PropKey::Str("trimLeft"),
                 PropKey::Str("trimStart"),
@@ -303,9 +306,9 @@ fn units_range<'s>(
 ) -> JsResult<Vec<u16>> {
     debug_assert!(from <= to && to <= cx.string_len(s));
     let flat = cx.flatten(s)?;
-    Ok((from..to)
-        .map(|i| cx.code_unit_at(flat, i).expect("i < length"))
-        .collect())
+    let mut out = Vec::with_capacity(to - from); // one bulk copy, not a call per unit
+    cx.push_code_units(flat, from, to, &mut out);
+    Ok(out)
 }
 
 /// ToString(v) as code units.
@@ -364,8 +367,8 @@ impl SearchWork {
 }
 
 /// Whether the substring of `string` from `at` to `at + search.len()` is `search` (it must
-/// fit). A candidate whose first code unit differs counts 1 unit in `work`; any other is
-/// compared in chunks of [`SEARCH_POLL_UNITS`] code units, each counted in full.
+/// fit) and its first code unit already matched. It is compared in chunks of
+/// [`SEARCH_POLL_UNITS`] code units, each counted in full in `work`.
 fn matches_at<'s>(
     cx: &mut Cx<'s>,
     string: &[u16],
@@ -373,13 +376,6 @@ fn matches_at<'s>(
     at: usize,
     work: &mut SearchWork,
 ) -> JsResult<bool> {
-    let Some(&first) = search.first() else {
-        return Ok(true);
-    };
-    if string[at] != first {
-        work.add(cx, 1)?;
-        return Ok(false);
-    }
     for (k, chunk) in search.chunks(SEARCH_POLL_UNITS).enumerate() {
         work.add(cx, chunk.len())?;
         let start = at + k * SEARCH_POLL_UNITS;
@@ -390,9 +386,14 @@ fn matches_at<'s>(
     Ok(true)
 }
 
-/// StringIndexOf ( string, searchValue, fromIndex ) (§6.1.4.1), on code units. `None` for
-/// "not found" (the spec's -1). Polls per [`SEARCH_POLL_UNITS`] code units compared
-/// ([`SearchWork`]); `Err` only when the isolate terminates.
+/// StringIndexOf ( string, searchValue, fromIndex ) (§6.1.4.1), on code units already
+/// copied out (split, replace, replaceAll). indexOf, includes and lastIndexOf search the
+/// strings' own code units with no copy (`Cx::string_index_of`, `Cx::string_last_index_of`:
+/// a SIMD first-unit scan, the same poll count), and `units` copies with one bulk copy
+/// (`Cx::push_code_units`; OXC-PERF wave 2). `None` for "not found" (the spec's -1). The candidates are found
+/// by a scan for the first code unit, at most [`SEARCH_POLL_UNITS`] positions per pass, each
+/// position counted as 1 unit; polls per [`SEARCH_POLL_UNITS`] code units ([`SearchWork`]);
+/// `Err` only when the isolate terminates.
 fn string_index_of<'s>(
     cx: &mut Cx<'s>,
     string: &[u16],
@@ -402,9 +403,9 @@ fn string_index_of<'s>(
     // 1. Let len be the length of string.
     let len = string.len();
     // 2. If searchValue is the empty String and fromIndex ≤ len, return fromIndex.
-    if search.is_empty() {
+    let Some(&first) = search.first() else {
         return Ok((from <= len).then_some(from));
-    }
+    };
     // 3. Let searchLen be the length of searchValue.
     let search_len = search.len();
     // 4. For each integer i such that fromIndex ≤ i ≤ len - searchLen, in ascending order, do
@@ -415,10 +416,22 @@ fn string_index_of<'s>(
         return Ok(None);
     }
     let mut work = SearchWork::default();
-    for i in from..=len - search_len {
+    let (mut i, last) = (from, len - search_len);
+    while i <= last {
+        let end = (last + 1).min(i + SEARCH_POLL_UNITS);
+        let Some(d) = string[i..end].iter().position(|&u| u == first) else {
+            work.add(cx, end - i)?;
+            i = end;
+            continue;
+        };
+        if d > 0 {
+            work.add(cx, d)?;
+        }
+        i += d;
         if matches_at(cx, string, search, i, &mut work)? {
             return Ok(Some(i));
         }
+        i += 1;
     }
     Ok(None)
 }
@@ -596,6 +609,20 @@ fn char_code_at<'s>(
     args: Args<'s>,
     _new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    // Fast path (FASTDIFF row `char-code-at`): a String value `this` and an int32 `pos`.
+    // ToString(this) is `this` and ToIntegerOrInfinity(pos) is `pos`, so steps 1-3 run no
+    // user code and the result is the same. Every other shape takes the spec steps below.
+    if let (Some(s), Some(position)) = (this.as_string(), args.get(0).as_int32()) {
+        let size = cx.string_len(s);
+        if position < 0 || position as usize >= size {
+            return Ok(Local::number(f64::NAN));
+        }
+        let s = cx.flatten(s)?;
+        let unit = cx
+            .code_unit_at(s, position as usize)
+            .expect("position < size");
+        return Ok(Local::int32(i32::from(unit)));
+    }
     // 1. Let O be ? RequireObjectCoercible(this value).
     if this.is_undefined_or_null() {
         return Err(cx.throw_type_error("String.prototype.charCodeAt called on null or undefined"));

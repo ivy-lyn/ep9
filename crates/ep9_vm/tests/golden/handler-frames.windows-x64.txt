@@ -1,0 +1,61 @@
+# The hot ep9_vm handlers (name not ending in `_cold`; on x86-64 also disasm.rs HOT_COLD:
+# `Wide_cold`, `ExtraWide_cold`, `CallProperty0_cold`..`CallProperty2_cold`) that build a frame
+# or save a callee-saved register on entry, and the callee-saved registers each one saves: one
+# `<expansion> <handler> <saves>` row. Checked by `cargo xtask disasm-check --frames <this file>`
+# in the CI disasm job (rule 81: no new entry save on a hot x86 handler; docs/plan/10-quality.md,
+# 2026-11-16 note). A new row, a lost row or a changed count fails. A change that is meant
+# updates this file in the same PR: run that command with `--bless`, or copy the CI `frame` rows.
+target x86_64-pc-windows-msvc
+ics BadOpcode 0
+ics CallAnyReceiver 6
+ics CallProperty 6
+ics CallProperty0 4
+ics CallProperty1 4
+ics CallProperty2 6
+ics CallUndefinedReceiver 5
+ics CallUndefinedReceiver1 1
+ics CallUndefinedReceiver2 6
+ics CloneObject 6
+ics Construct 6
+ics CreateArrayLiteral 6
+ics CreateEmptyArrayLiteral 6
+ics CreateObjectLiteral 6
+ics DefineNamedOwnProperty 3
+ics GetKeyedProperty 0
+ics GetNamedPropertyFromSuper 0
+ics GetSuperConstructor 0
+ics SetKeyedProperty 6
+ics SetNamedProperty 3
+ics StaContextSlot 1
+ics StaCurrentContextSlot 0
+ics StaGlobal 4
+ics TestInstanceOf 4
+sib BadOpcode 0
+sib CallAnyReceiver 6
+sib CallProperty 6
+sib CallProperty0 4
+sib CallProperty0_cold 0
+sib CallProperty1 4
+sib CallProperty1_cold 0
+sib CallProperty2 6
+sib CallProperty2_cold 0
+sib CallUndefinedReceiver 5
+sib CallUndefinedReceiver1 1
+sib CallUndefinedReceiver2 6
+sib CloneObject 6
+sib Construct 6
+sib CreateArrayLiteral 6
+sib CreateEmptyArrayLiteral 6
+sib CreateObjectLiteral 6
+sib DefineNamedOwnProperty 3
+sib ExtraWide_cold 1
+sib GetKeyedProperty 0
+sib GetNamedPropertyFromSuper 0
+sib GetSuperConstructor 0
+sib SetKeyedProperty 6
+sib SetNamedProperty 3
+sib StaContextSlot 1
+sib StaCurrentContextSlot 0
+sib StaGlobal 4
+sib TestInstanceOf 4
+sib Wide_cold 1

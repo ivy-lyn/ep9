@@ -436,12 +436,30 @@ pub const POLL_DIGITS: usize = 4096;
 pub struct Work<'p> {
     poll: &'p mut dyn FnMut() -> bool,
     digits: usize,
+    text: bool,
 }
 
 impl<'p> Work<'p> {
     /// A counter at 0 that calls `poll`.
     pub fn new(poll: &'p mut dyn FnMut() -> bool) -> Work<'p> {
-        Work { poll, digits: 0 }
+        Work {
+            poll,
+            digits: 0,
+            text: false,
+        }
+    }
+
+    /// Marks the work as text only: the caller joins the parts and shows no part
+    /// (FormatNumeric), so the number formatter can write the integer digits and their group
+    /// separators into one part (a text sink; route INTL-TEXT-SINK).
+    pub fn text_sink(&mut self) -> &mut Self {
+        self.text = true;
+        self
+    }
+
+    /// Whether the work is text only ([`Work::text_sink`]).
+    pub fn is_text_sink(&self) -> bool {
+        self.text
     }
 
     /// Counts `n` digits of work and calls the poll once per [`POLL_DIGITS`] of them.
@@ -459,14 +477,16 @@ impl<'p> Work<'p> {
 }
 
 /// Runs `f` with a [`Work`] whose poll is `Cx::poll_interrupt`: the result of `f`, or the
-/// `Err` of the poll that stopped it (a termination).
+/// `Err` of the poll that stopped it (a termination). A poll after the stop (the polled drop
+/// of a parts list) calls `Cx::poll_interrupt` again and keeps the first `Err`.
 pub fn polled<'s, T>(
     cx: &mut Cx<'s>,
     f: impl FnOnce(&mut Work<'_>) -> Result<T, Interrupted>,
 ) -> JsResult<T> {
     let mut stop = Ok(());
     let r = f(&mut Work::new(&mut || {
-        stop = cx.poll_interrupt();
+        let now = cx.poll_interrupt();
+        stop = core::mem::replace(&mut stop, Ok(())).and(now);
         stop.is_ok()
     }));
     stop?;

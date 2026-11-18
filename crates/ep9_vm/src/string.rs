@@ -1321,3 +1321,95 @@ pub(crate) mod testing {
         new_seq_utf16(rt, units)
     }
 }
+
+// ---- search and bulk copy on the payload (OXC-PERF wave 2 STR-SEARCH-SIMD) -----------------
+
+pub(crate) mod search;
+
+/// The direction of a [`search_step`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Dir {
+    /// StringIndexOf: the first match at or after the cursor.
+    Forward,
+    /// The lastIndexOf scan: the last match at or before the cursor.
+    Backward,
+}
+
+/// One step of a search of the flat string `search` (not empty) in the flat string `s`, on
+/// their own code units (no copy). Not a GC point: it takes the views itself, and they end
+/// when it returns, so the caller may poll (a GC point) between two steps. The cursor must
+/// hold a valid start ([`search::index_of_step`], [`search::last_index_of_step`]).
+pub(crate) fn search_step(
+    k: search::Kernel,
+    dir: Dir,
+    s: u64,
+    search: u64,
+    c: &mut search::Cursor,
+) -> search::Step {
+    fn step<H: search::Unit, N: search::Unit>(
+        k: search::Kernel,
+        dir: Dir,
+        h: &[H],
+        n: &[N],
+        c: &mut search::Cursor,
+    ) -> search::Step {
+        match dir {
+            Dir::Forward => search::index_of_step(k, h, n, c),
+            Dir::Backward => search::last_index_of_step(h, n, c),
+        }
+    }
+    match (units(s), units(search)) {
+        (JsStr::Latin1(h), JsStr::Latin1(n)) => step(k, dir, h, n, c),
+        (JsStr::Latin1(h), JsStr::Utf16(n)) => step(k, dir, h, n, c),
+        (JsStr::Utf16(h), JsStr::Latin1(n)) => step(k, dir, h, n, c),
+        (JsStr::Utf16(h), JsStr::Utf16(n)) => step(k, dir, h, n, c),
+    }
+}
+
+/// Appends the code units `from..to` of the flat string `s` to `out` in one bulk copy (a
+/// UTF-16 payload is copied as is; a Latin-1 one is widened). Not a GC point. Panics on a
+/// range that is not inside `s`.
+pub(crate) fn push_units(s: u64, from: usize, to: usize, out: &mut Vec<u16>) {
+    match units(s) {
+        JsStr::Latin1(x) => out.extend(x[from..to].iter().map(|&b| u16::from(b))),
+        JsStr::Utf16(x) => out.extend_from_slice(&x[from..to]),
+    }
+}
+
+// ---- JSON.stringify text on the payload (OXC-PERF wave 3 W3-JSON-QUOTE) ---------------------
+
+pub(crate) mod json_quote;
+pub use json_quote::JsonText;
+
+/// Appends QuoteJSONString of the flat string `s` to `out` by the body of `k`. Not a GC point:
+/// it takes the view itself, and the view ends when it returns.
+pub(crate) fn json_quote(k: json_quote::Kernel, s: u64, out: &mut JsonText) {
+    match units(s) {
+        JsStr::Latin1(b) => json_quote::quote_latin1(k, b, out),
+        JsStr::Utf16(u) => json_quote::quote_utf16(k, u, out),
+    }
+}
+
+/// Appends the code units of the flat string `s` to `out` as they are. Not a GC point.
+pub(crate) fn json_push(s: u64, out: &mut JsonText) {
+    match units(s) {
+        JsStr::Latin1(b) => out.push_ascii(b),
+        JsStr::Utf16(u) => out.push_units(u),
+    }
+}
+
+/// The string of a JSON text (`text.len() <= MAX_STRING_LENGTH`): a one-byte text is one
+/// copy into a SEQ_LATIN1 cell (no scan); a two-byte text holds a unit above 0xFF (only such a
+/// unit widens it), so it is a SEQ_UTF16 cell. GC point.
+pub(crate) fn json_text_string(rt: &Runtime, text: JsonText) -> u64 {
+    match text.repr {
+        json_quote::Repr::One(v) => new_string_latin1(rt, &v),
+        json_quote::Repr::Two(v) => {
+            debug_assert!(
+                v.iter().any(|&u| u > 0xFF),
+                "a two-byte text holds a unit > 0xFF"
+            );
+            new_seq_utf16(rt, &v)
+        }
+    }
+}

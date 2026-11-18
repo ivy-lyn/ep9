@@ -54,7 +54,7 @@ mod private;
 pub(crate) mod property;
 mod runtime;
 
-pub(crate) use call::call;
+pub(crate) use call::{call, call_property};
 #[cfg(test)]
 pub(crate) use eval::PROLOGUE_DECODES;
 pub(crate) use generator::{resume_generator, suspend_generator, switch_on_generator_state};

@@ -44,6 +44,9 @@
 #   SB_HOST_FILE         tools/bench/hosts/m5max-macos.toml (the gate host, protocol §7)
 #   SB_GUARD=1           0 skips the load guard (the run is then provisional)
 #   SB_SETTLE_S=60  SB_WAIT_MIN=30  SB_AFTER_S=120   load guard timing (protocol §7)
+#   SB_LOAD_FAKE         tests only (bench-verdict-test.sh): the load guard reads this number, not
+#                        the load source of the host (no 60-s typeperf sample on Windows); the
+#                        guard lines say "fake load"
 #   SB_ALLOW_BUSY=0      1: a failed guard before does not stop the run; it is provisional
 #   SB_COMMIT            commit text when the tree has no git (the x86 sandbox)
 #   SB_SPD_BIN           sp-dispatch binary (spikes/sp-dispatch/target/release/sp-dispatch): its
@@ -206,6 +209,9 @@ const { pathToFileURL } = require("url");
 import(pathToFileURL(lib).href).then(async (h) => {
   const host = h.readHostFile(hostFile);
   const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
+  // SB_LOAD_FAKE (tests only): a fixed load reading in place of the host load source.
+  const fake = process.env.SB_LOAD_FAKE;
+  const deps = fake ? { sleep, load: () => Number(fake) } : { sleep };
   if (mode === "host") {
     const cpu = h.cpuModel(), plat = `${process.platform}-${process.arch}`;
     const ok = host.gate_host === true && cpu === host.cpu && plat === host.platform;
@@ -213,10 +219,11 @@ import(pathToFileURL(lib).href).then(async (h) => {
     return;
   }
   const c = mode === "before"
-    ? await h.guardBefore({ idleBaseline: host.idle_baseline_load1, settleS: Number(a), waitS: Number(b) * 60 }, { sleep })
-    : await h.guardAfter({ idleBaseline: host.idle_baseline_load1, afterS: Number(a) }, { sleep });
+    ? await h.guardBefore({ idleBaseline: host.idle_baseline_load1, settleS: Number(a), waitS: Number(b) * 60 }, deps)
+    : await h.guardAfter({ idleBaseline: host.idle_baseline_load1, afterS: Number(a) }, deps);
   const waited = mode === "before" ? `, settled ${c.settle_s} s, waited ${c.waited_s} s` : `, after ${c.after_s} s`;
-  console.log(`${c.pass ? "PASS" : "FAIL"} load ${c.load1}, limit ${c.limit}${waited}${c.why ? ` (${c.why})` : ""}`);
+  const src = fake ? " (fake load: SB_LOAD_FAKE)" : "";
+  console.log(`${c.pass ? "PASS" : "FAIL"} load ${c.load1}, limit ${c.limit}${waited}${c.why ? ` (${c.why})` : ""}${src}`);
 }).catch((e) => { console.log(`ERROR ${e.message}`); });'
 have_node=0
 command -v node >/dev/null && have_node=1

@@ -979,7 +979,9 @@ impl<'a, 's> FnGen<'a, 's> {
         self.init_holes(root);
         self.hoist_functions(root)?;
         self.statements(&program.body)?;
-        self.b.lda_undefined().return_();
+        // Undefined, or `.result` of a completion Script (`compile_script_with_completion`).
+        self.load_completion_value();
+        self.b.return_();
         Ok(())
     }
 

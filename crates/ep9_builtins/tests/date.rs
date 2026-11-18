@@ -96,7 +96,7 @@ for (var i = 0; i < times.length; i++) {
   if (Date.parse(d.toUTCString()) !== times[i]) bad.push('toUTCString ' + d.toUTCString());
   if (Date.parse(d.toISOString()) !== times[i]) bad.push('toISOString ' + d.toISOString());
   if (Date.parse(d.toGMTString()) !== times[i]) bad.push('toGMTString');
-  if (whole && Date.parse(d.toLocaleString()) !== times[i]) bad.push('toLocaleString');
+  // toLocaleString is ECMA-402's (Intl.DateTimeFormat, INTL W4): not a Date.parse form.
   var mid = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   // (Both NaN when the local midnight is before the first time value.)
   if (!Object.is(Date.parse(d.toDateString()), mid)) bad.push('toDateString ' + d.toDateString());

@@ -408,7 +408,7 @@ pub(crate) fn new_double_cell(rt: &Runtime, cap: usize) -> CellPtr {
     }
     c
 }
-
+#[cfg(test)]
 fn double_cell_size(c: CellPtr) -> usize {
     delems::DATA + 8 * object::rd_i32(c, delems::CAPACITY) as usize
 }
@@ -424,7 +424,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         kinds_::ELEMENTS_DOUBLE,
         CellKind {
             name: "elements-double",
-            size: CellSize::Dynamic(double_cell_size),
+            size: DOUBLE_CELL_SIZE,
             trace: trace_double_cell,
         },
     )
@@ -433,7 +433,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         kinds_::ELEMENTS_DICT,
         CellKind {
             name: "elements-dict",
-            size: CellSize::Dynamic(dict_cell_size),
+            size: DICT_CELL_SIZE,
             trace: trace_dict_cell,
         },
     )
@@ -1097,3 +1097,29 @@ const _: () = {
     assert!(join(kind::PACKED_ELEMENTS, kind::HOLEY_DOUBLE) == kind::HOLEY_ELEMENTS);
     assert!(holey(kind::PACKED_ELEMENTS) == kind::HOLEY_ELEMENTS);
 };
+
+// ---- size forms (V9 SWEEP-NOFNPTR) ---------------------------------------------------------
+
+/// `double_cell_size` (the test reference) with no call.
+const DOUBLE_CELL_SIZE: CellSize = CellSize::Field(ep9_heap::FieldSize::int32(
+    delems::CAPACITY,
+    delems::DATA,
+    8,
+));
+
+/// [`dict_cell_size`] with no call.
+const DICT_CELL_SIZE: CellSize = CellSize::Field(ep9_heap::FieldSize::int32(
+    dict::BUCKETS,
+    dict::DATA,
+    dict::ENTRY,
+));
+
+/// The size forms of this file's kinds and the size functions they replace (the size-form
+/// test, `tests/gc.rs`).
+#[cfg(test)]
+pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
+    vec![
+        ("elements-double", DOUBLE_CELL_SIZE, double_cell_size),
+        ("elements-dict", DICT_CELL_SIZE, dict_cell_size),
+    ]
+}

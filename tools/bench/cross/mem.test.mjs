@@ -5,14 +5,16 @@
 // scripts), as run.test.mjs.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { cpuModel } from "../lib/host.mjs";
-import { analyze, CAPS, checkMemRun, measureRss, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, renderMarkdown, rssTool, run, runGroup, SCHEMA } from "./mem.mjs";
+import { analyze, CAPS, checkMemRun, measureRss, MIN_RUNS, parseArgs, parseGnuM, parseTimeL, parseWinPeak, renderMarkdown, rssTool, run, runGroup, SCHEMA, WIN_PEAK_SCRIPT, winPeakCommand, winQuote, winTreeKill } from "./mem.mjs";
 import { platformId, Refusal, schedule } from "./run.mjs";
 import { SETS, V8V7_7, WORKLOADS } from "./workloads.mjs";
 
@@ -56,7 +58,41 @@ test("RSS tools: macOS time -l in bytes, GNU time %M in KiB", () => {
   assert.equal(rssTool("darwin", {}).name, "macos-time-l-maximum-resident-set-size");
   assert.deepEqual(rssTool("linux", {}).args("f"), ["-f", "%M", "-o", "f"]);
   assert.equal(rssTool("linux", { EP9_MEM_TIME: "/x/time" }).program, "/x/time");
-  assert.equal(rssTool("win32", {}), null);
+  // Windows: the PeakWorkingSetSize wrapper (plan v14 section 4.1 (5)); before, no tool, and
+  // the reader stopped with "no peak RSS tool for win32".
+  assert.equal(rssTool("win32", {}).name, "windows-peak-working-set-size");
+  assert.equal(rssTool("win32", {}).program, "powershell");
+  assert.equal(rssTool("win32", {}).unit, "bytes");
+  assert.equal(rssTool("freebsd", {}), null);
+});
+
+test("RSS tools: the Windows wrapper's command line, quoting and report", () => {
+  assert.equal(parseWinPeak("PeakWorkingSetSize 51462144\r\n"), 51462144);
+  assert.equal(parseWinPeak("PeakWorkingSetSize\n"), null);
+  assert.equal(parseWinPeak(""), null);
+  // The MSVCRT rules: quote when needed; a quote gets a backslash and the backslashes before
+  // it double; trailing backslashes in a quoted argument double.
+  assert.deepEqual(["a", "--jitless", "a b", "", 'x"y', "c:\\d\\", 'q \\"z', "c:\\w d\\"].map(winQuote), [
+    "a",
+    "--jitless",
+    '"a b"',
+    '""',
+    '"x\\"y"',
+    "c:\\d\\",
+    '"q \\\\\\"z"',
+    '"c:\\w d\\\\"',
+  ]);
+  const argv = winPeakCommand("C:\\t\\time.txt", ["C:\\a b\\ep9.exe", "--jitless", "C:\\w d\\x.js"], "C:\\t\\peak.ps1");
+  assert.deepEqual(argv.slice(0, 8), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "C:\\t\\peak.ps1", "C:\\t\\time.txt", "C:\\a b\\ep9.exe"]);
+  // The engine's command line goes in base64, so PowerShell cannot read "--jitless" as a name.
+  assert.equal(Buffer.from(argv[8], "base64").toString("utf8"), '--jitless "C:\\w d\\x.js"');
+  assert.equal(winPeakCommand("r", ["e"], "s")[8], "");
+  // The wrapper keeps the process handle, reads the counters after the exit and passes the
+  // exit code on.
+  for (const part of ["GetProcessMemoryInfo", "PeakWorkingSetSize", "$h = $p.Handle", "$p.WaitForExit()", "exit $p.ExitCode", "FromBase64String"]) {
+    assert.ok(WIN_PEAK_SCRIPT.includes(part), part);
+  }
+  assert.ok(WIN_PEAK_SCRIPT.indexOf("$h = $p.Handle") < WIN_PEAK_SCRIPT.indexOf("$p.WaitForExit()"));
 });
 
 test("options: the mem set is the 7 v8-v7 kernels; >= 5 runs; ep9-jitless needs its binary", () => {
@@ -197,6 +233,144 @@ test("runGroup: the signal handlers are on before the fork (M7-P0 Codex r3 C3-2)
   assert.deepEqual(count(), base, "the handlers after ENOENT");
   await assert.rejects(runGroup("/bin/sh", ["-c", "a\0b"], 10), { code: "ERR_INVALID_ARG_VALUE" });
   assert.deepEqual(count(), base, "the handlers after a spawn throw");
+});
+
+/** A fake Windows child for runGroup (deps.spawn): it closes only when `close()` is called. */
+function fakeWinChild(pid) {
+  const child = new EventEmitter();
+  Object.assign(child, { pid, stdout: new PassThrough(), stderr: new PassThrough(), killed: [] });
+  child.kill = (sig) => child.killed.push(sig);
+  child.close = (status) => setImmediate(() => child.emit("close", status, null));
+  return child;
+}
+
+// M9-P1 Codex r1 F2: on Windows the wrapper (PowerShell) starts the engine as its own child, and
+// there is no process group. A timeout must end the whole tree: taskkill /T /F on the wrapper's
+// pid. No Windows host here, so the platform, spawn and spawnSync are fakes: the test checks the
+// command that runGroup runs and when it runs it.
+test("runGroup on Windows: a timeout runs taskkill /T /F on the wrapper's pid (M9-P1 Codex r1 F2)", async () => {
+  assert.deepEqual(winTreeKill(4242), ["taskkill", ["/PID", "4242", "/T", "/F"]]);
+  const child = fakeWinChild(4242);
+  const calls = [];
+  const deps = {
+    platform: "win32",
+    spawn: (program, args, opts) => (calls.push(["spawn", program, args, opts.detached]), child),
+    // taskkill ends the tree, and the wrapper's pipes close.
+    spawnSync: (cmd, args) => (calls.push(["spawnSync", cmd, args]), child.close(1), { status: 0, error: null }),
+  };
+  const r = await runGroup("powershell", ["-File", "peak.ps1"], 0.05, deps);
+  assert.deepEqual(calls, [
+    ["spawn", "powershell", ["-File", "peak.ps1"], false],
+    ["spawnSync", "taskkill", ["/PID", "4242", "/T", "/F"]],
+  ]);
+  assert.match(r.error ?? "", /^timed out after 0\.05 s \(the process tree was killed\)$/);
+  assert.deepEqual(child.killed, [], "taskkill ended the tree: no wrapper kill");
+});
+
+// M9-P1 Codex r2 F1: when taskkill cannot start (ENOENT) or exits nonzero, the engine may still
+// run and hold the wrapper's pipes open, so no close comes. The fake child models that: it never
+// closes. The run must still end in bounded time, kill the wrapper, destroy its pipes and give
+// the error, so the reading is void. The old code waited for a close that never came.
+test("runGroup on Windows: a failed taskkill ends the run with an error (M9-P1 Codex r2 F1)", async () => {
+  for (const [result, code] of [
+    [{ status: 128, error: null }, "128"],
+    [{ status: null, error: Object.assign(new Error("spawnSync taskkill ENOENT"), { code: "ENOENT" }) }, "ENOENT"],
+  ]) {
+    const child = fakeWinChild(4242);
+    let sync = 0;
+    const deps = { platform: "win32", spawn: () => child, spawnSync: () => (sync++, result) };
+    let hang;
+    const r = await Promise.race([
+      runGroup("powershell", [], 0.05, deps),
+      new Promise((ok) => (hang = setTimeout(() => ok("hang"), 2000))),
+    ]);
+    clearTimeout(hang);
+    assert.notEqual(r, "hang", `taskkill ${code}: the run does not end`);
+    assert.equal(r.error, `timed out after 0.05 s; process tree kill failed (taskkill ${code}); the engine may still run`);
+    assert.deepEqual([r.status, sync, child.killed], [null, 1, ["SIGKILL"]]);
+    assert.ok(child.stdout.destroyed && child.stderr.destroyed, "the pipes are destroyed");
+    assert.throws(() => checkMemRun({ ...r, rss: 10 }, { engine: "e", workload: "w", expect: "" }), /process tree kill failed/);
+  }
+});
+
+// M9-P1 Codex r3: spawnSync blocks the event loop until taskkill exits. Without a deadline, a
+// stalled taskkill blocks the run for ever: no fallback, no finish, no cleanup report. taskkill
+// gets a deadline of 10 s and SIGKILL at the end of it.
+test("runGroup on Windows: taskkill gets a deadline of 10 s (M9-P1 Codex r3)", async () => {
+  const child = fakeWinChild(4242);
+  let opts;
+  const deps = { platform: "win32", spawn: () => child, spawnSync: (cmd, args, o) => ((opts = o), child.close(1), { status: 0, error: null }) };
+  await runGroup("powershell", [], 0.05, deps);
+  assert.deepEqual([opts?.timeout, opts?.killSignal], [10_000, "SIGKILL"]);
+});
+
+// M9-P1 Codex r3: at the deadline spawnSync kills taskkill and returns ETIMEDOUT with the signal
+// set (plain Node: { status: null, signal: "SIGKILL", error.code: "ETIMEDOUT" }). The engine may
+// still run, so the child never closes. The run must end in bounded time with the error.
+test("runGroup on Windows: a taskkill past its deadline ends the run with an error (M9-P1 Codex r3)", async () => {
+  const etimedout = () => Object.assign(new Error("spawnSync taskkill ETIMEDOUT"), { code: "ETIMEDOUT" });
+  for (const result of [
+    { status: null, signal: "SIGKILL", error: etimedout() },
+    { status: null, signal: "SIGKILL", error: null },
+  ]) {
+    const child = fakeWinChild(4242);
+    let sync = 0;
+    const deps = { platform: "win32", spawn: () => child, spawnSync: () => (sync++, result) };
+    let hang;
+    const r = await Promise.race([
+      runGroup("powershell", [], 0.05, deps),
+      new Promise((ok) => (hang = setTimeout(() => ok("hang"), 2000))),
+    ]);
+    clearTimeout(hang);
+    assert.notEqual(r, "hang", "the run does not end");
+    assert.equal(r.error, "timed out after 0.05 s; process tree kill failed (taskkill timed out after 10 s); the engine may still run");
+    assert.deepEqual([r.status, sync, child.killed], [null, 1, ["SIGKILL"]]);
+    assert.ok(child.stdout.destroyed && child.stderr.destroyed, "the pipes are destroyed");
+  }
+});
+
+test("runGroup on Windows: a run that ends in time runs no taskkill", async () => {
+  const child = fakeWinChild(7);
+  let sync = 0;
+  const p = runGroup("powershell", [], 30, { platform: "win32", spawn: () => child, spawnSync: () => (sync++, { status: 0 }) });
+  child.stdout.end("42\n");
+  child.close(0);
+  const r = await p;
+  assert.deepEqual([r.status, r.error, r.stdout, sync], [0, null, "42\n", 0]);
+});
+
+// M9-P1 Codex r2 F1: a failed taskkill (exit 1) on an interrupt goes to stderr.
+for (const status of [0, 1]) test(`runGroup on Windows: an interrupt of the runner runs taskkill /T /F first, taskkill exit ${status} (M9-P1 Codex r1 F2, r2 F1)`, { skip: !["darwin", "linux"].includes(process.platform) && "a POSIX signal to the runner" }, async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-mem-wintree-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const runner = path.join(dir, "runner.mjs");
+  const log = path.join(dir, "taskkill.txt");
+  writeFileSync(
+    runner,
+    `import { EventEmitter } from "node:events";
+import { appendFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
+const { runGroup } = await import(${JSON.stringify(new URL("./mem.mjs", import.meta.url).href)});
+const child = Object.assign(new EventEmitter(), { pid: 4242, stdout: new PassThrough(), stderr: new PassThrough(), kill() {} });
+const p = runGroup("powershell", [], 30, {
+  platform: "win32",
+  spawn: () => child,
+  spawnSync: (cmd, args) => (appendFileSync(process.argv[2], [cmd, ...args].join(" ") + "\\n"), { status: Number(process.argv[3]) }),
+});
+process.stdout.write("ready\\n");
+await p;
+`,
+  );
+  const r = spawn(process.execPath, [runner, log, String(status)], { stdio: ["ignore", "pipe", "pipe"] });
+  let err = "";
+  r.stderr.setEncoding("utf8").on("data", (d) => (err += d));
+  await new Promise((ok) => r.stdout.once("data", ok));
+  const ended = new Promise((ok) => r.on("exit", (code, signal) => ok(signal ?? code)));
+  r.kill("SIGINT");
+  assert.equal(await ended, "SIGINT", "the runner ends by the signal");
+  assert.equal(readFileSync(log, "utf8"), "taskkill /PID 4242 /T /F\n");
+  const report = "mem.mjs: the cleanup of process 4242 failed: process tree kill failed (taskkill 1); the engine may still run\n";
+  assert.equal(err, status ? report : "");
 });
 
 test("checkMemRun: a failed run, a wrong output or no RSS is refused", () => {

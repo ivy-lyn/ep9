@@ -15,14 +15,15 @@
 //! date/parse.rs        the ISO format and the toString/toUTCString forms; else NaN
 //! ```
 //!
-//! `toLocaleString`, `toLocaleDateString` and `toLocaleTimeString` give the `toString` forms
-//! (ECMA-402 replaces them later). Ids are append-only: definition `i` of [`DEFS`] is
-//! `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-date.txt`.
+//! `toLocaleString`, `toLocaleDateString` and `toLocaleTimeString` are ECMA-402's (§20.4, through
+//! `ep9_intl::date_time_format::to_locale_string`). Ids are append-only: definition `i` of
+//! [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-date.txt`.
 
 mod format;
 mod math;
 mod parse;
 
+use ep9_intl::date_time_format::{Defaults, Required};
 use ep9_vm::abi::ObjectClass;
 use ep9_vm::{
     Args, Atom, BuiltinDef, BuiltinModule, Cx, IntrinsicDef, IntrinsicId, IntrinsicValue, JsResult,
@@ -90,9 +91,9 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("getYear", 0, get_year),            // 43
     BuiltinDef::method("setYear", 1, set_year),            // 44
     BuiltinDef::method("toJSON", 1, to_json),              // 45
-    BuiltinDef::method("toLocaleString", 0, to_string),    // 46
-    BuiltinDef::method("toLocaleDateString", 0, to_date_string), // 47
-    BuiltinDef::method("toLocaleTimeString", 0, to_time_string), // 48
+    BuiltinDef::method("toLocaleString", 0, to_locale_string), // 46
+    BuiltinDef::method("toLocaleDateString", 0, to_locale_date_string), // 47
+    BuiltinDef::method("toLocaleTimeString", 0, to_locale_time_string), // 48
     BuiltinDef::method("[Symbol.toPrimitive]", 1, to_primitive), // 49
     // spec-temporal T3 (Temporal §14.1.1).
     BuiltinDef::method("toTemporalInstant", 0, to_temporal_instant), // 50
@@ -665,7 +666,7 @@ fn set_year<'s>(
 
 // ---- strings (§21.4.4.35-43) ----------------------------------------------------------------
 
-/// Date.prototype.toString ( ) (§21.4.4.41); toLocaleString in v0.
+/// Date.prototype.toString ( ) (§21.4.4.41).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -679,7 +680,7 @@ fn to_string<'s>(
     string(cx, &s)
 }
 
-/// Date.prototype.toDateString ( ) (§21.4.4.35); toLocaleDateString in v0.
+/// Date.prototype.toDateString ( ) (§21.4.4.35).
 fn to_date_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -698,7 +699,7 @@ fn to_date_string<'s>(
     string(cx, &format::date_string(t))
 }
 
-/// Date.prototype.toTimeString ( ) (§21.4.4.42); toLocaleTimeString in v0.
+/// Date.prototype.toTimeString ( ) (§21.4.4.42).
 fn to_time_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,
@@ -833,4 +834,61 @@ fn to_primitive<'s>(
         }
     }
     Err(cx.throw_type_error("Cannot convert object to primitive value"))
+}
+
+// ---- ECMA-402 toLocale* (§20.4.1-3) ---------------------------------------------------------
+
+/// The ECMA-402 toLocale* steps for `required` and `defaults`: tv = thisTimeValue(this);
+/// "Invalid Date" for NaN, else FormatDateTime of CreateDateTimeFormat(%Intl.DateTimeFormat%,
+/// locales, options, required, defaults) (the intrinsic: `globalThis.Intl` is not read).
+fn to_locale<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    required: Required,
+    defaults: Defaults,
+) -> JsResult<Local<'s>> {
+    // 1. Let x be ? thisTimeValue(this value).
+    let tv = this_time_value(cx, this)?;
+    // 2-4.
+    ep9_intl::date_time_format::to_locale_string(
+        cx,
+        tv,
+        args.get(0),
+        args.get(1),
+        required,
+        defaults,
+    )
+}
+
+/// Date.prototype.toLocaleString ( [ locales [ , options ] ] ) (ECMA-402 §20.4.1): any, all.
+fn to_locale_string<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    to_locale(cx, this, args, Required::Any, Defaults::All)
+}
+
+/// Date.prototype.toLocaleDateString ( [ locales [ , options ] ] ) (ECMA-402 §20.4.2): date,
+/// date.
+fn to_locale_date_string<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    to_locale(cx, this, args, Required::Date, Defaults::Date)
+}
+
+/// Date.prototype.toLocaleTimeString ( [ locales [ , options ] ] ) (ECMA-402 §20.4.3): time,
+/// time.
+fn to_locale_time_string<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    to_locale(cx, this, args, Required::Time, Defaults::Time)
 }

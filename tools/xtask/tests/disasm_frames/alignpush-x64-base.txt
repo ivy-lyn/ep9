@@ -1,0 +1,13 @@
+frames.o:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000000000 <ep9h__sib__tail__StaAlign>:
+       0:      	pushq	%rbx
+       1:      	subq	$0x10, %rsp
+       5:      	movsbq	0x1(%rsi), %rax
+       a:      	movq	(%rdx,%rax,8), %rbx
+       e:      	movzbl	0x3(%rsi), %eax
+      12:      	addq	$0x10, %rsp
+      16:      	popq	%rbx
+      17:      	jmpq	*(%rdi,%rax,8)

@@ -32,8 +32,13 @@
 //
 // Peak RSS. The OS reports the high-water resident set of the engine process when it exits:
 // macOS `/usr/bin/time -l` "maximum resident set size" (bytes); Linux GNU `/usr/bin/time -f %M`
-// (KiB; the `time` package on Debian and Ubuntu). EP9_MEM_TIME names another program of the same
-// form (tests use a fake). No other wrapper: valgrind or perf would add their own memory.
+// (KiB; the `time` package on Debian and Ubuntu); Windows the PeakWorkingSetSize of the engine
+// process (bytes), which a PowerShell wrapper reads with GetProcessMemoryInfo on the process
+// handle after the process exits (WIN_PEAK_SCRIPT; plan v14 section 4.1 (5)). The engine's
+// stdout and stderr pass through. EP9_MEM_TIME names another program of the same form (tests use
+// a fake; on Windows another PowerShell). No other wrapper: valgrind or perf would add their own
+// memory. On Windows (no process groups) a timeout or an interrupt ends the whole process tree
+// of the wrapper, the engine too, with `taskkill /T /F` (winTreeKill; M9-P1 Codex r1 F2).
 //
 // Order. A round runs every workload on every engine once. The workload order rotates by one per
 // round, and per workload the engine order rotates too (run.mjs `schedule`), so no engine always
@@ -51,7 +56,8 @@
 // Tests: node --test tools/bench/cross/mem.test.mjs
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -149,16 +155,102 @@ export function parseArgs(argv) {
   return o;
 }
 
-/** The peak RSS tool of this platform: { program, args(reportFile), parse(text) -> bytes, name }. */
+/**
+ * The peak RSS tool of this platform: { name, unit, program, command(reportFile, engineArgv) ->
+ * the program's arguments, parse(text) -> bytes }.
+ */
 export function rssTool(platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    const program = env.EP9_MEM_TIME || "powershell";
+    return { name: "windows-peak-working-set-size", unit: "bytes", program, command: winPeakCommand, parse: parseWinPeak };
+  }
   const program = env.EP9_MEM_TIME || "/usr/bin/time";
   if (platform === "darwin") {
-    return { name: "macos-time-l-maximum-resident-set-size", unit: "bytes", program, args: (f) => ["-l", "-o", f], parse: parseTimeL };
+    const args = (f) => ["-l", "-o", f];
+    return { name: "macos-time-l-maximum-resident-set-size", unit: "bytes", program, args, command: (f, argv) => [...args(f), ...argv], parse: parseTimeL };
   }
   if (platform === "linux") {
-    return { name: "gnu-time-f-M", unit: "KiB", program, args: (f) => ["-f", "%M", "-o", f], parse: parseGnuM };
+    const args = (f) => ["-f", "%M", "-o", f];
+    return { name: "gnu-time-f-M", unit: "KiB", program, args, command: (f, argv) => [...args(f), ...argv], parse: parseGnuM };
   }
   return null;
+}
+
+/**
+ * The PowerShell wrapper of the Windows tool: it starts the engine (`$Exe` with the command line
+ * `$ArgLine`, UTF-8 in base64 so that PowerShell never reads a leading `-` of it as a parameter
+ * name; stdio inherited), keeps its process handle, waits, reads PeakWorkingSetSize with
+ * GetProcessMemoryInfo (the counters stay readable while a handle is open), writes
+ * "PeakWorkingSetSize <bytes>" to `-Out` and exits with the engine's exit code.
+ */
+export const WIN_PEAK_SCRIPT = `param([string]$Out, [string]$Exe, [string]$ArgLine)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Ep9PeakRss {
+  [StructLayout(LayoutKind.Sequential)]
+  struct Counters {
+    public uint cb; public uint PageFaultCount;
+    public UIntPtr PeakWorkingSetSize; public UIntPtr WorkingSetSize;
+    public UIntPtr QuotaPeakPagedPoolUsage; public UIntPtr QuotaPagedPoolUsage;
+    public UIntPtr QuotaPeakNonPagedPoolUsage; public UIntPtr QuotaNonPagedPoolUsage;
+    public UIntPtr PagefileUsage; public UIntPtr PeakPagefileUsage;
+  }
+  [DllImport("psapi.dll", SetLastError = true)]
+  static extern bool GetProcessMemoryInfo(IntPtr process, out Counters counters, uint size);
+  public static ulong Peak(IntPtr process) {
+    Counters c;
+    if (!GetProcessMemoryInfo(process, out c, (uint)Marshal.SizeOf(typeof(Counters)))) {
+      throw new System.ComponentModel.Win32Exception();
+    }
+    return c.PeakWorkingSetSize.ToUInt64();
+  }
+}
+'@
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $Exe
+$psi.Arguments = if ($ArgLine) { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($ArgLine)) } else { '' }
+$psi.UseShellExecute = $false
+$p = [System.Diagnostics.Process]::Start($psi)
+$h = $p.Handle
+$p.WaitForExit()
+$peak = [Ep9PeakRss]::Peak($h)
+[System.IO.File]::WriteAllText($Out, "PeakWorkingSetSize $peak\n")
+exit $p.ExitCode
+`;
+
+/**
+ * One argument in a Windows command line (the MSVCRT rules that CommandLineToArgvW and the
+ * engines read): quoted when empty or when it holds a space, a tab or a quote; a quote gets a
+ * backslash, and the backslashes before a quote or the closing quote are doubled.
+ */
+export function winQuote(arg) {
+  if (arg !== "" && !/[\s"]/.test(arg)) return arg;
+  return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`;
+}
+
+let winScript = null;
+/** The wrapper script file (written once per process into the temp dir, named by its hash). */
+function winScriptFile() {
+  if (!winScript) {
+    const h = createHash("sha256").update(WIN_PEAK_SCRIPT).digest("hex").slice(0, 12);
+    winScript = path.join(os.tmpdir(), `ep9-mem-peak-${h}.ps1`);
+    writeFileSync(winScript, WIN_PEAK_SCRIPT);
+  }
+  return winScript;
+}
+
+/** The PowerShell arguments of one Windows run: the wrapper, the report file and the engine. */
+export function winPeakCommand(report, [exe, ...args], script = winScriptFile()) {
+  const line = Buffer.from(args.map(winQuote).join(" "), "utf8").toString("base64");
+  return ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, report, exe, line];
+}
+
+/** The Windows wrapper's report: "PeakWorkingSetSize <bytes>". */
+export function parseWinPeak(text) {
+  const m = (text ?? "").match(/^PeakWorkingSetSize (\d+)\s*$/m);
+  return m ? Number(m[1]) : null;
 }
 
 /** macOS `time -l`: the "maximum resident set size" line, in bytes. */
@@ -173,17 +265,29 @@ export function parseGnuM(text) {
   return lines.length ? Number(lines[lines.length - 1]) * 1024 : null;
 }
 
-// The process groups of runGroup that are still live. A group is not in the terminal's
-// foreground group, so Ctrl-C (or a SIGTERM or SIGHUP to the runner) does not reach it: while a
-// group is live, a handler kills every live group, then raises the signal again (M7-P0 Codex r2
-// C2-4). The handlers go when no group is live, so importers keep the default behaviour.
-const liveGroups = new Set();
+// The process groups (POSIX) and process trees (Windows) of runGroup that are still live: pid ->
+// the function that kills the group or tree. A group is not in the terminal's foreground group,
+// so Ctrl-C (or a SIGTERM or SIGHUP to the runner) does not reach it, and on Windows the engine
+// is a child of the PowerShell wrapper: while one is live, a handler kills every live one, then
+// raises the signal again (M7-P0 Codex r2 C2-4; M9-P1 Codex r1 F2). The handlers go when none
+// is live, so importers keep the default behaviour. A kill function returns null, or the text of
+// a failed kill; a failed cleanup goes to stderr (M9-P1 Codex r2 F1). On POSIX, ESRCH (the
+// group has already ended) is no failure.
+const liveGroups = new Map();
 const GROUP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 function killLiveGroups() {
-  for (const pid of liveGroups) {
+  for (const [pid, kill] of liveGroups) {
+    let failed = null;
     try {
-      process.kill(-pid, "SIGKILL");
-    } catch {}
+      failed = kill();
+    } catch (e) {
+      if (e.code !== "ESRCH") failed = e.message;
+    }
+    if (failed) {
+      try {
+        writeSync(2, `mem.mjs: the cleanup of process ${pid} failed: ${failed}\n`);
+      } catch {}
+    }
   }
   liveGroups.clear();
 }
@@ -207,28 +311,72 @@ function unhookGroups() {
 }
 
 /**
- * Runs `program args` with its own process group (POSIX): after `timeoutS` the whole group gets
- * SIGKILL, so the engine under the RSS tool stops too, not only the tool (M7-P0 Codex r1
- * BENCH10-2); a SIGINT, SIGTERM or SIGHUP of the runner kills the group too (M7-P0 Codex r2
- * C2-4). Resolves to { status, signal, error, stdout, stderr } when the process closes.
+ * The deadline for taskkill. spawnSync blocks the event loop until taskkill exits, so a stalled
+ * taskkill gets SIGKILL at this deadline, and the run ends through the failed-kill path
+ * (M9-P1 Codex r3).
  */
-export function runGroup(program, args, timeoutS) {
+export const TASKKILL_TIMEOUT_S = 10;
+
+/** The Windows command that ends `pid` and every process it started (the engine under the wrapper). */
+export function winTreeKill(pid) {
+  return ["taskkill", ["/PID", String(pid), "/T", "/F"]];
+}
+
+/**
+ * Runs `program args` and kills it with everything it started when `timeoutS` ends or the
+ * runner gets a SIGINT, SIGTERM or SIGHUP. POSIX: the process has its own process group, and
+ * the whole group gets SIGKILL, so the engine under the RSS tool stops too, not only the tool
+ * (M7-P0 Codex r1 BENCH10-2, r2 C2-4). Windows: `taskkill /T /F` on the wrapper's pid ends its
+ * tree, the engine too (winTreeKill; M9-P1 Codex r1 F2). taskkill has a deadline of
+ * TASKKILL_TIMEOUT_S (M9-P1 Codex r3). If taskkill cannot start, exits nonzero or passes its
+ * deadline, the engine may still run and hold the pipes open, so no close may come: the wrapper
+ * is killed, its stdout and stderr are destroyed, and the run ends at once with the error
+ * "process tree kill failed (taskkill <code>); the engine may still run" (<code> is the exit
+ * code, the spawn error code or "timed out after <N> s"), so the reading is void
+ * (M9-P1 Codex r2 F1). Resolves to { status, signal, error, stdout, stderr } when the process
+ * closes. `deps` (platform, spawn, spawnSync) is for tests.
+ */
+export function runGroup(program, args, timeoutS, deps = {}) {
+  const platform = deps.platform ?? process.platform;
+  const spawnFn = deps.spawn ?? spawn;
+  const spawnSyncFn = deps.spawnSync ?? spawnSync;
   return new Promise((resolve) => {
-    const group = process.platform !== "win32";
+    const group = platform !== "win32";
     // Hook before spawn: the child exists before spawn returns, and a signal handler (a JS
     // callback) runs only after this synchronous part, so it sees the pid (M7-P0 Codex r3 C3-2).
-    if (group && !liveGroups.size) hookGroups();
+    if (!liveGroups.size) hookGroups();
     let child;
     try {
-      child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
+      child = spawnFn(program, args, { stdio: ["ignore", "pipe", "pipe"], detached: group });
     } catch (e) {
-      if (group && !liveGroups.size) unhookGroups();
+      if (!liveGroups.size) unhookGroups();
       throw e;
     }
-    if (group) {
-      if (child.pid !== undefined) liveGroups.add(child.pid);
-      else if (!liveGroups.size) unhookGroups();
-    }
+    let killError = null;
+    // Returns null, or the text of a failed tree kill (killLiveGroups reports it). It runs only
+    // from the timer or a handler, after `finish` is set.
+    const kill = () => {
+      if (group) {
+        process.kill(-child.pid, "SIGKILL");
+        return null;
+      }
+      const [cmd, cmdArgs] = winTreeKill(child.pid);
+      const r = spawnSyncFn(cmd, cmdArgs, { stdio: "ignore", windowsHide: true, timeout: TASKKILL_TIMEOUT_S * 1000, killSignal: "SIGKILL" });
+      if (!r.error && r.status === 0) return null;
+      // At the deadline spawnSync kills taskkill: error.code ETIMEDOUT, and the signal is set.
+      const expired = r.error ? r.error.code === "ETIMEDOUT" : r.signal != null;
+      const code = expired ? `timed out after ${TASKKILL_TIMEOUT_S} s` : r.error ? (r.error.code ?? r.error.message) : (r.status ?? r.signal);
+      killError = `process tree kill failed (taskkill ${code}); the engine may still run`;
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish(null, null);
+      return killError;
+    };
+    if (child.pid !== undefined) liveGroups.set(child.pid, kill);
+    else if (!liveGroups.size) unhookGroups();
     let stdout = "";
     let stderr = "";
     let error = null;
@@ -239,13 +387,14 @@ export function runGroup(program, args, timeoutS) {
       done = true;
       clearTimeout(timer);
       if (liveGroups.delete(child.pid) && !liveGroups.size) unhookGroups();
-      resolve({ status, signal, error: timedOut ? `timed out after ${timeoutS} s (the process group was killed)` : error, stdout, stderr });
+      const timeout = `timed out after ${timeoutS} s`;
+      const why = timedOut ? (killError ? `${timeout}; ${killError}` : `${timeout} (the process ${group ? "group" : "tree"} was killed)`) : (killError ?? error);
+      resolve({ status, signal, error: why, stdout, stderr });
     };
     const timer = setTimeout(() => {
       timedOut = true;
       try {
-        if (group) process.kill(-child.pid, "SIGKILL");
-        else child.kill("SIGKILL");
+        kill();
       } catch {}
     }, timeoutS * 1000);
     child.stdout.setEncoding("utf8").on("data", (d) => (stdout += d));
@@ -264,7 +413,8 @@ export async function measureRss(tool, engine, file, timeoutS) {
   try {
     const report = path.join(tmp, "time.txt");
     const t0 = process.hrtime.bigint();
-    const r = await runGroup(tool.program, [...tool.args(report), engine.bin, ...engine.args, file], timeoutS);
+    const argv = [engine.bin, ...engine.args, file];
+    const r = await runGroup(tool.program, tool.command ? tool.command(report, argv) : [...tool.args(report), ...argv], timeoutS);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     let text = "";
     try {

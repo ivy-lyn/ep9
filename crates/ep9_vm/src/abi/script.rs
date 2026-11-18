@@ -54,8 +54,8 @@ impl<'s> Cx<'s> {
     /// Runs `source` as a sloppy Script (ScriptEvaluation, §16.1.6) through the compiler hook
     /// `compile_script`: the unit is loaded as [`Cx::run_script`](crate::Cx::run_script)
     /// loads one, and runs with `this` = the global object. `file` names the unit in stack
-    /// traces. The result is the value the script's entry function returns (undefined for a
-    /// script).
+    /// traces. The result is the value the script's entry function returns (the completion
+    /// value if the hook compiles with `ep9_frontend::compile_script_with_completion`).
     ///
     /// # Errors
     ///

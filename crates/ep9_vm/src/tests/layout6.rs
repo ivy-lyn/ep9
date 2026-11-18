@@ -13,7 +13,7 @@ use super::{Asm, config, isolate, meta, on_big_stack, unit};
 use crate::builtins::{self, IntrinsicId};
 use crate::frame::{UNDEFINED, int32_bits, int32_of};
 use crate::object::{cell, realmf};
-use crate::runtime::{REALM_ROOT_COUNT, ROOT_COUNT, Root, Runtime};
+use crate::runtime::{A2_ROOT_COUNT, REALM_ROOT_COUNT, Root, Runtime};
 use crate::{Dispatch, IsolateConfig, kinds, layout, object, props, shape, versions};
 
 fn no_trace(_: ep9_heap::CellPtr, _: &mut ep9_heap::Tracer<'_>) {}
@@ -442,7 +442,7 @@ fn the_fuse_layout_and_the_realm_fuses_root() {
     // The root: the last realm root, before the isolate-wide RealmKey (V11-D21, MC-w22-17).
     assert_eq!(Root::RealmFuses as usize + 1, Root::RealmKey as usize);
     assert_eq!(Root::RealmFuses as usize, REALM_ROOT_COUNT - 1);
-    assert_eq!(REALM_ROOT_COUNT + 1, ROOT_COUNT);
+    assert_eq!(REALM_ROOT_COUNT + 1, A2_ROOT_COUNT);
     assert_eq!(IntrinsicId::RealmFuses as usize, 72);
     assert_eq!(IntrinsicId::ALL[72], IntrinsicId::RealmFuses);
     assert_eq!(IntrinsicId::RealmFuses.root(), Some(Root::RealmFuses));

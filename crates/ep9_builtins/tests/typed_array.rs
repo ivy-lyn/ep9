@@ -921,3 +921,326 @@ try { other.Int8Array(1); } catch (e) { print(e.constructor === other.TypeError)
     assert_eq!(plain, want);
     assert_eq!(run_realms_eval(src, true), plain, "GC stress");
 }
+
+// ---- (f) M9-P4 SPEC-LISTS: toString identity and the spread fast path -------------------------
+
+/// `sec-%typedarray%.prototype.tostring`: the initial value of `%TypedArray.prototype%.toString`
+/// is `%Array.prototype.toString%`, the same function object (route TA-TOSTRING-IDENTITY), in
+/// each realm, with the attributes {w, c}. The group install takes the intrinsic, not the live
+/// `Array.prototype.toString`: a realm that replaces it before its first TypedArray use still
+/// gets the original. A call across realms runs the same steps.
+#[test]
+fn to_string_is_array_prototype_to_string_in_each_realm() {
+    let src = r#"
+const TA = Object.getPrototypeOf(Int8Array.prototype);
+const d = Object.getOwnPropertyDescriptor(TA, "toString");
+print(TA.toString === Array.prototype.toString, d.writable, d.enumerable, d.configurable,
+  TA.toString.name, TA.toString.length, String(new Int8Array([1, 2])));
+const other = createRealm();
+const OTA = Object.getPrototypeOf(other.Uint8Array.prototype);
+print(OTA.toString === other.Array.prototype.toString, OTA.toString === TA.toString);
+print(other.Array.prototype.toString.call(new Int8Array([3, 4])), TA.toString.call(new other.Uint8Array([5, 6])));
+const third = createRealm();
+evalIn(third, "var orig = Array.prototype.toString; Array.prototype.toString = function () { return 'x'; };" +
+  "var T = Object.getPrototypeOf(Float64Array.prototype);" +
+  "var r = [T.toString === orig, T.toString === Array.prototype.toString, String(new Float64Array([0.5]))].join();");
+print(third.r, third.orig === OTA.toString);
+"#;
+    let want = lines(&[
+        "true true false true toString 0 1,2",
+        "true false",
+        "3,4 5,6",
+        "true,false,0.5 false",
+    ]);
+    let plain = run_realms_eval(src, false);
+    assert_eq!(plain, want);
+    assert_eq!(run_realms_eval(src, true), plain, "GC stress");
+}
+
+/// `[...ta]`, `f(...ta)` and `Array.from(ta)` of each element type (route TA-SPREAD-FAST; the
+/// fast path of `interp/slow/iter.rs` copies the elements when `@@iterator` is this realm's
+/// `%TypedArray.prototype.values%`): the values of %ArrayIteratorPrototype%.next, -0 and NaN
+/// kept, BigInts for the 2 BigInt types; a length-tracking view reads the length of its
+/// resized buffer; an out-of-bounds view throws the TypeError of `values`; a subclass; a view of
+/// another realm (its `values` is not this realm's) and a spread inside the other realm.
+#[test]
+fn spread_copies_each_element_type_in_each_realm() {
+    let src = r#"
+const T = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array,
+  Uint32Array, Float16Array, Float32Array, Float64Array];
+for (const C of T) {
+  const a = [...new C([1.5, -2, 300, NaN, -0])];
+  print(C.name, Array.isArray(a), a.length, a.join(), 1 / a[4]);
+}
+for (const C of [BigInt64Array, BigUint64Array]) {
+  const a = [...new C([1n, -2n, 2n ** 63n])];
+  print(C.name, a.join(), typeof a[0]);
+}
+print([...new Int8Array(0)].length, Math.max(...new Uint8Array([3, 9, 4])),
+  Array.from(new Int16Array([7, 8])).join());
+const rab = new ArrayBuffer(4, { maxByteLength: 8 });
+const lt = new Uint8Array(rab);
+lt.set([1, 2, 3, 4]);
+rab.resize(6);
+print([...lt].join());
+rab.resize(1);
+const fx = new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 }), 1, 2);
+fx.buffer.resize(2);
+try { [...fx]; } catch (e) { print(e.name); }
+class X extends Int16Array {}
+print([...new X([5, 6])].join(), [...lt].join());
+const other = createRealm();
+evalIn(other, "var s = [...new Uint8Array([3, 4])].join();");
+print([...new other.Int8Array([1, 2])].join(), other.s,
+  Object.getPrototypeOf([...new other.Int8Array(1)]) === Array.prototype);
+"#;
+    let want = lines(&[
+        "Int8Array true 5 1,-2,44,0,0 Infinity",
+        "Uint8Array true 5 1,254,44,0,0 Infinity",
+        "Uint8ClampedArray true 5 2,0,255,0,0 Infinity",
+        "Int16Array true 5 1,-2,300,0,0 Infinity",
+        "Uint16Array true 5 1,65534,300,0,0 Infinity",
+        "Int32Array true 5 1,-2,300,0,0 Infinity",
+        "Uint32Array true 5 1,4294967294,300,0,0 Infinity",
+        "Float16Array true 5 1.5,-2,300,NaN,0 -Infinity",
+        "Float32Array true 5 1.5,-2,300,NaN,0 -Infinity",
+        "Float64Array true 5 1.5,-2,300,NaN,0 -Infinity",
+        "BigInt64Array 1,-2,-9223372036854775808 bigint",
+        "BigUint64Array 1,18446744073709551614,9223372036854775808 bigint",
+        "0 9 7,8",
+        "1,2,3,4,0,0",
+        "TypeError",
+        "5,6 1",
+        "1,2 3,4 true",
+    ]);
+    let plain = run_realms_eval(src, false);
+    assert_eq!(plain, want);
+    assert_eq!(run_realms_eval(src, true), plain, "GC stress");
+}
+
+/// The heap bytes that the sloppy script `src` allocates (`GcStats::allocated_bytes` after the
+/// run less before it; no GC stress, so the heap hands out whole allocation buffers).
+fn allocated_by(src: &'static str) -> u64 {
+    common::on_big_stack(move || {
+        let unit = ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("the script compiles");
+        let mut iso = common::isolate(false);
+        let before = iso.gc_stats().allocated_bytes;
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()))
+            .expect("no exception");
+        let bytes = iso.gc_stats().allocated_bytes - before;
+        iso.verify_heap().expect("a valid heap");
+        bytes
+    })
+}
+
+/// The spread fast path (route TA-SPREAD-FAST) makes no iterator and no iterator result: a
+/// spread of N int32 elements allocates the new Array (8 bytes per element) and not the N
+/// result objects of the generic IteratorStep loop (more than 24 bytes per element with the
+/// growing Array). With an own `@@iterator` (the guard fails) the loop runs, so the bound is
+/// shown to tell the two paths apart.
+#[test]
+fn spread_of_a_typed_array_makes_no_iterator_results() {
+    const N: u64 = 100_000;
+    let base = allocated_by("var t = new Int32Array(100000); t.fill(7);");
+    let fast = allocated_by("var t = new Int32Array(100000); t.fill(7); var a = [...t];");
+    let slow = allocated_by(
+        "var t = new Int32Array(100000); t.fill(7);\n\
+         t[Symbol.iterator] = function () { return Object.getPrototypeOf(Int8Array.prototype).values.call(this); };\n\
+         var a = [...t];",
+    );
+    let (fast, slow) = (fast.saturating_sub(base), slow.saturating_sub(base));
+    eprintln!("a spread of {N} int32 elements: {fast} bytes; the generic loop: {slow} bytes");
+    assert!(
+        slow > 24 * N,
+        "the generic loop allocates {slow} bytes for {N} elements: the bound tells nothing"
+    );
+    assert!(
+        fast < 24 * N,
+        "the spread allocates {fast} bytes for {N} elements (the generic loop: {slow})"
+    );
+}
+
+/// The `tests/iterator.rs` form: runs `setup`, then a loop that a termination stops at its
+/// first poll (a poll sets the interrupt budget to at least 10,000 units), then requests
+/// termination again and runs `call` in a third script, on a thread with a 60 s wait (it only
+/// stops a hung test). True if the call ended terminated and the isolate kept working.
+fn terminates_in(setup: &'static str, call: &'static str) -> bool {
+    fn compile(src: &str) -> ep9_bytecode::VerifiedUnit {
+        ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("compiles")
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let mut iso = common::isolate(false);
+            iso.with_cx_checkpoint(|cx| cx.run_script(compile(setup), "setup.js").map(|_| ()))
+                .expect("the setup runs");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile("for (;;) {}"), "fill.js").map(|_| ())
+            });
+            assert!(
+                r.is_err_and(|e| e.terminated),
+                "the budget fill loop ends terminated"
+            );
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached';"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
+            let terminated = r.is_err_and(|e| e.terminated);
+            let stage = common::global_text(&mut iso, "stage");
+            // The isolate keeps working.
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
+            let _ = tx.send((terminated, stage, again));
+        })
+        .expect("a thread");
+    let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+    got == Ok((true, Some("before".to_string()), Some("again".to_string())))
+}
+
+/// The spread fast path (route TA-SPREAD-FAST) takes one interrupt budget unit per step, as
+/// the generic IteratorStep loop does (Codex M9-P4 r1): an element read runs no JS, so without
+/// the poll a termination waits for the whole copy. Each view has 20,000 elements, more than
+/// the 10,128 units that the budget holds at most, so only a poll in the copy loop stops it.
+#[test]
+fn termination_stops_the_typed_array_spread() {
+    const INT8: &str = "var t = new Int8Array(20000);";
+    const BIG: &str = "var t = new BigInt64Array(20000);";
+    let not_stopped = [
+        (INT8, "[...t].length"),
+        (INT8, "Math.max(...t)"),
+        (BIG, "[...t].length"),
+    ]
+    .into_iter()
+    .filter(|&(setup, call)| !terminates_in(setup, call))
+    .map(|(_, call)| call)
+    .collect::<Vec<_>>();
+    assert_eq!(
+        not_stopped,
+        Vec::<&str>::new(),
+        "calls that a termination did not stop"
+    );
+}
+
+/// The near-limit calls of the heap-limited isolates of
+/// `a_pending_termination_stops_the_spread_before_the_result_allocation`.
+static NEAR_LIMIT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts the call and raises the limit by 1 GiB, so a request past the limit does not end the
+/// process (a kept limit is the fatal "ep9: heap limit reached" panic).
+fn count_and_raise(_committed: usize, limit: usize) -> usize {
+    NEAR_LIMIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    limit.saturating_add(1 << 30)
+}
+
+/// A pending termination stops the spread fast path before it allocates the result (Codex
+/// M9-P4 r2): the first step's poll comes before `object::new_array` and also runs when the
+/// interrupt word is set, not only when the budget runs out. The view has 4,000,000 elements,
+/// so the result needs 32 MB (8 bytes per element); the heap limit is 8 MiB above what the
+/// isolate commits after the setup. An allocation of the result goes past the limit and calls
+/// the near-limit callback (it counts the call and raises the limit, so the test process goes
+/// on). The form of `terminates_in`: a loop that a termination stops at its first poll fills
+/// the budget, so a poll that only reads the budget comes too late.
+#[test]
+fn a_pending_termination_stops_the_spread_before_the_result_allocation() {
+    const SETUP: &str = "var t = new Uint8Array(4000000);";
+    const CALLS: [&str; 2] = ["[...t].length", "Math.max(...t)"];
+    fn compile(src: &str) -> ep9_bytecode::VerifiedUnit {
+        ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("compiles")
+    }
+    fn limited(max_heap_bytes: usize) -> Isolate {
+        Isolate::new(IsolateConfig {
+            heap: HeapConfig {
+                max_heap_bytes,
+                near_limit: Some(count_and_raise),
+                ..HeapConfig::default()
+            },
+            builtins: Some(&ep9_builtins::TABLE),
+            ..IsolateConfig::default()
+        })
+        .expect("an isolate")
+    }
+    /// The setup, then the termination of the budget fill loop. True if it ended terminated.
+    fn set_up(iso: &mut Isolate) -> bool {
+        iso.with_cx_checkpoint(|cx| cx.run_script(compile(SETUP), "setup.js").map(|_| ()))
+            .expect("the setup runs");
+        iso.terminate_handle().terminate();
+        let r = iso
+            .with_cx_checkpoint(|cx| cx.run_script(compile("for (;;) {}"), "fill.js").map(|_| ()));
+        r.is_err_and(|e| e.terminated)
+    }
+    let got = common::on_big_stack(|| {
+        // The bytes that an isolate with no limit commits after the same setup.
+        let committed = {
+            let mut iso = limited(usize::MAX);
+            assert!(set_up(&mut iso), "the budget fill loop ends terminated");
+            iso.gc_stats().committed_bytes
+        };
+        let mut got = Vec::new();
+        for call in CALLS {
+            let mut iso = limited(committed + (8 << 20));
+            let before = NEAR_LIMIT_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(set_up(&mut iso), "the budget fill loop ends terminated");
+            iso.terminate_handle().terminate();
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached';"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
+            let terminated = r.is_err_and(|e| e.terminated);
+            let near = NEAR_LIMIT_CALLS.load(std::sync::atomic::Ordering::SeqCst) - before;
+            let stage = common::global_text(&mut iso, "stage");
+            // The isolate keeps working.
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
+            iso.verify_heap().expect("a valid heap");
+            got.push((call, terminated, near, stage, again));
+        }
+        got
+    });
+    let want = CALLS
+        .iter()
+        .map(|&call| {
+            let (before, again) = (Some("before".to_string()), Some("again".to_string()));
+            (call, true, 0, before, again)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        got, want,
+        "(call, terminated, near-limit calls, stage, stage after): the result allocation ran"
+    );
+}

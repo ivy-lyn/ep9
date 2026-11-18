@@ -1,6 +1,6 @@
 # Research artifacts
 
-These are the research harnesses that the plan uses again, and the decision inputs that later steps need. All other harnesses stayed in a session scratchpad and were not kept. The reports in `../` describe their results.
+These are the research harnesses that the plan uses again, the decision inputs that later steps need, and the raw evidence of one round (`vm-lessons/`). All other harnesses stayed in a session scratchpad and were not kept. The reports in `../` describe their results.
 
 | Directory | What it does | Used by |
 |---|---|---|
@@ -8,6 +8,7 @@ These are the research harnesses that the plan uses again, and the decision inpu
 | `tsrs-conformance/` | Runs the tsrs parser and oxc on test262 and scores early errors | Re-check after each `third_party/tsrs.commit` bump ([../02-tsrs-conformance.md](../02-tsrs-conformance.md)) |
 | `sound-regions/` | Region finder (tsrs-based, `region-facts/` + `finder/`), hot-time mapper for V8 CPU profiles (`hot/`), breaker probes B01-B28c and the interrupt probe (`probes/`), and the results that [../18-sound-regions.md](../18-sound-regions.md) cites (`results/`). See [sound-regions/README.md](sound-regions/README.md) | SP-RegionCoverage (A1h), SP-RegionBound (M7) |
 | `decide/` | Inputs of the 2026-10-20 decision round that later steps reuse: CI scope script, `deny.toml` and `clippy.toml` drafts, the upstream README draft, the H11 barrier models and the H36 math tables. See [decide/README.md](decide/README.md) | CI scope job, licence check, fp-check, H11 model test port, H36 ([../../decisions-log.md §5](../../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)) |
+| `vm-lessons/` | Raw findings, per-system lessons and verify verdicts of the 2026-11-18 VM-lessons round (.NET, Kotlin, Dart; `findings.json`). See [vm-lessons/README.md](vm-lessons/README.md) | [../19-vm-aot-jit-lessons.md](../19-vm-aot-jit-lessons.md) Appendix A; the LRN-* follow-ups of R19 |
 
 ## Build
 

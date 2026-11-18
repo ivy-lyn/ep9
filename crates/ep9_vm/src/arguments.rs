@@ -244,6 +244,11 @@ fn create_slow(rt: &Runtime, f: FrameRef, mapped: bool, map: &[Option<u32>]) -> 
 /// function on its first use, the `callee` accessor pair, the elements list), then the
 /// object, then only init stores (E2: no GC point between the object's allocation and its
 /// last store). GC point.
+///
+/// M9-P2 LEVER-9 (V8 ARGS-CREATE part (2); S0 C3: 8.33% of raytrace Ir, about 296 Ir per
+/// object): it is inlined into each [`create_kind`] copy (no call, no second register save,
+/// `mapped` a constant), and each new cell reads the E2 check mode once ([`InitStores`]).
+#[inline(always)]
 fn create_fast(rt: &Runtime, f: FrameRef, s: u64, mapped: bool, map: &[Option<u32>]) -> u64 {
     #[cfg(test)]
     FAST_PATH_OBJECTS.with(|n| n.set(n.get() + 1));
@@ -269,22 +274,65 @@ fn create_fast(rt: &Runtime, f: FrameRef, s: u64, mapped: bool, map: &[Option<u3
     // SAFETY: header slots of a live frame.
     let (callee, context) = unsafe { (*f.0.offset(slot::CALLEE), *f.0.offset(slot::CONTEXT)) };
     let mc = map.len();
-    init(o, obj::ELEMENTS, e);
-    init(o, argsf::MAP, if mc > 0 { context } else { UNDEFINED });
-    init(o, argsf::MAPPED_COUNT, int32_bits(mc as i32));
     let fields = [
         int32_bits(argc as i32),
         values,
         if mapped { callee } else { callee_v },
     ];
-    let first = obj::FIXED + 8 * argsf::FIXED;
-    for (i, v) in fields.into_iter().enumerate() {
+    for (i, &v) in fields.iter().enumerate() {
         // The field store hook of `props::field_set` (C-02 representation and const bits):
         // it widens the field to `v` and clears const, as a second store (safe for a first store).
+        // The hooks run before the stores: they change only the shape (not a GC point; no slot
+        // of `o` is read), so the 6 stores below are one run with one E2 mode test.
         crate::field_rep::before_field_store(rt, s, i, v);
-        init(o, first + 8 * i, v);
+    }
+    let put = InitStores::new();
+    put.init(o, obj::ELEMENTS, e);
+    put.init(o, argsf::MAP, if mc > 0 { context } else { UNDEFINED });
+    put.init(o, argsf::MAPPED_COUNT, int32_bits(mc as i32));
+    let first = obj::FIXED + 8 * argsf::FIXED;
+    for (i, v) in fields.into_iter().enumerate() {
+        put.init(o, first + 8 * i, v);
     }
     o.to_value().to_bits()
+}
+
+/// The init stores of one new cell (E2: no barrier; the cell was made since the last GC point
+/// and has not escaped). [`object::init`] reads the process-wide E2 check mode (a relaxed
+/// atomic, `ep9_heap::e2_check_on`) at each store, and LLVM keeps every one of those loads (12
+/// in the x86-64 `create_fast` of the m9-p1 release `ep9`); this reads it once per cell. While
+/// the check is on (a GC-stress heap exists, or a test set it), each store is
+/// [`object::init`], so every claim is still checked. The mode changes only when a heap with
+/// GC stress is made, `Heap::set_gc_stress` turns stress on or a test sets it, never inside an
+/// allocation, so the value read after the cell's allocation holds for its stores (another
+/// thread that turns it on meanwhile misses at most the stores of this one cell). Not a GC
+/// point.
+#[derive(Clone, Copy)]
+struct InitStores {
+    check: bool,
+}
+
+impl InitStores {
+    /// Reads the E2 check mode. Call it after the allocation of the cells it stores into.
+    #[inline(always)]
+    fn new() -> InitStores {
+        InitStores {
+            check: ep9_heap::e2_check_on(),
+        }
+    }
+
+    /// [`object::init`] of `v` into the slot at byte `off` of the new cell `c`.
+    #[inline(always)]
+    #[track_caller]
+    fn init(self, c: CellPtr, off: usize, v: u64) {
+        if self.check {
+            init(c, off, v);
+        } else {
+            // SAFETY: as in `object::init`: `c` is a live cell (just made) and `off` is the
+            // offset of a Value slot inside its layout.
+            unsafe { c.slot(off) }.init(crate::runtime::val(v));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -308,27 +356,51 @@ fn new_elements(rt: &Runtime, f: FrameRef, map: &[Option<u32>]) -> u64 {
     let c = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * len);
     // No GC point from here on: the stores are init stores into the new list, and the
     // argument values are read from the frame after the allocation.
-    init(c, elems::CAPACITY, int32_bits(len as i32));
+    let put = InitStores::new();
+    put.init(c, elems::CAPACITY, int32_bits(len as i32));
     let attrs = int32_bits(attr::DEFAULT);
     for i in 0..n {
-        init(c, elems::DATA + 8 * i, f.arg(i as u32));
-        init(c, elems::DATA + 8 * (n + i), attrs);
+        put.init(c, elems::DATA + 8 * i, f.arg(i as u32));
+        put.init(c, elems::DATA + 8 * (n + i), attrs);
     }
     for (j, s) in map.iter().enumerate() {
         let v = s.map_or(HOLE, |s| int32_bits(s as i32));
-        init(c, elems::DATA + 8 * (2 * n + j), v);
+        put.init(c, elems::DATA + 8 * (2 * n + j), v);
     }
     c.to_value().to_bits()
 }
 
 /// %Array.prototype.values% for the @@iterator property (§10.4.4.6 step 7, §10.4.4.7 step
-/// 20), made on its first use (a GC point then).
-#[inline]
+/// 20): the isolate-wide root [`Root::ArrayValues`] (slot 327; M9-P2 LEVER-9, V8 ARGS-CREATE),
+/// one load and a compare. [`fill_array_values`] fills it on the first use (a GC point then).
+#[inline(always)]
 fn array_values(rt: &Runtime) -> u64 {
-    builtins::function_object(
+    let v = rt.root(Root::ArrayValues);
+    if v != UNDEFINED {
+        return v;
+    }
+    fill_array_values(rt)
+}
+
+/// The first use of [`array_values`] in the isolate: the function object that
+/// [`builtins::function_object`] gives (made then: a GC point), kept in [`Root::ArrayValues`].
+///
+/// The root is isolate-wide (an `Appended::root` item, as `Root::RealmKey`), not a realm root:
+/// `realm::switch` writes only the `IntrinsicId` values into the realm roots, so a realm root
+/// with no `IntrinsicId` would keep the caller realm's value across a cross-realm call
+/// (H22 Rules: "a cross-realm call switches them"). Each realm gets the value it got before the
+/// root: outside a realm install, `builtins::function_object` gives the module-slot function
+/// in every realm, and no JS code runs (so no arguments object is made) inside an install.
+#[cold]
+#[inline(never)]
+fn fill_array_values(rt: &Runtime) -> u64 {
+    let v = builtins::function_object(
         rt,
         BuiltinId::new(natives::VM_BLOCK, natives::vm::ARRAY_VALUES),
-    )
+    );
+    // E3: a store into a root slot takes no barrier.
+    rt.set_root(Root::ArrayValues, v);
+    v
 }
 
 /// The current realm's %ThrowTypeError% (§10.2.4.1), or `None` before a table makes it. On

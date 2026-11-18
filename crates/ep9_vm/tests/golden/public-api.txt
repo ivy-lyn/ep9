@@ -366,6 +366,9 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_shared_array_buffer(&self, impl core::con
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn is_strictly_equal(&self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> bool
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn iterator_close<T>(&mut self, &IteratorRecord<'s>, ep9_value::JsResult<T>) -> ep9_value::JsResult<T>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn iterator_step_value(&mut self, &mut IteratorRecord<'s>) -> ep9_value::JsResult<core::option::Option<Local<'s>>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn json_push_flat(&self, Local<'s, FlatStr>, &mut JsonText)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn json_quote_into(&self, Local<'s, FlatStr>, &mut JsonText)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn json_text_finish(&mut self, JsonText) -> ep9_value::JsResult<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn key(&mut self, &str) -> Local<'s, JsKey>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn key_for(&self, Local<'s, JsSymbol>) -> core::option::Option<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn local_tz_offset_ms(&mut self, f64, bool) -> f64
@@ -408,6 +411,7 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn promise_state(&mut self, impl core::convert:
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn prototype_walk_step(&mut self, impl core::convert::Into<Local<'s, JsObject>>, &mut u32) -> ep9_value::JsResult<Local<'s>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn proxy_create(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn proxy_revoke(&mut self, impl core::convert::Into<Local<'s>>)
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn push_code_units(&self, Local<'s, FlatStr>, usize, usize, &mut alloc::vec::Vec<u16>)
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_create(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>) -> ep9_value::JsResult<Local<'s, JsObject>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_disable_legacy_features(&mut self, impl core::convert::Into<Local<'s>>)
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn regexp_exec(&mut self, impl core::convert::Into<Local<'s>>, impl core::convert::Into<Local<'s, JsString>>, usize) -> ep9_value::JsResult<core::option::Option<MatchRecord>>
@@ -437,6 +441,8 @@ ep9_vm::Cx :: impl<'s> Cx<'s> :: fn set_with_receiver(&mut self, impl core::conv
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn shared_array_buffer_block(&mut self, impl core::convert::Into<Local<'s>>) -> ep9_value::JsResult<SharedBlockRef>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn shared_array_buffer_grow(&mut self, impl core::convert::Into<Local<'s>>, u64) -> ep9_value::JsResult<()>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn slot(&mut self, impl core::convert::Into<Local<'s>>, ObjectClass, usize) -> ep9_value::JsResult<Local<'s>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_index_of(&mut self, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>, usize) -> ep9_value::JsResult<core::option::Option<usize>>
+ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_last_index_of(&mut self, impl core::convert::Into<Local<'s, JsString>>, impl core::convert::Into<Local<'s, JsString>>, usize) -> ep9_value::JsResult<core::option::Option<usize>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn string_len(&self, impl core::convert::Into<Local<'s, JsString>>) -> usize
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn substring(&mut self, impl core::convert::Into<Local<'s, JsString>>, usize, usize) -> ep9_value::JsResult<Local<'s, JsString>>
 ep9_vm::Cx :: impl<'s> Cx<'s> :: fn symbol_description(&self, Local<'s, JsSymbol>) -> Local<'s>
@@ -625,7 +631,7 @@ ep9_vm::IntrinsicDef :: impl core::marker::Sync for IntrinsicDef (auto)
 ep9_vm::IntrinsicDef :: struct IntrinsicDef {}
 ep9_vm::IntrinsicId :: #[repr(u16)] enum IntrinsicId
 ep9_vm::IntrinsicId :: impl IntrinsicId
-ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 156]
+ep9_vm::IntrinsicId :: impl IntrinsicId :: const ALL: [IntrinsicId; 164]
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn is_core(self) -> bool
 ep9_vm::IntrinsicId :: impl IntrinsicId :: const fn name(self) -> &'static str
 ep9_vm::IntrinsicId :: impl core::clone::Clone for IntrinsicId
@@ -645,6 +651,7 @@ ep9_vm::IntrinsicId :: variant ArrayBuffer
 ep9_vm::IntrinsicId :: variant ArrayBufferPrototype
 ep9_vm::IntrinsicId :: variant ArrayIteratorPrototype
 ep9_vm::IntrinsicId :: variant ArrayPrototype
+ep9_vm::IntrinsicId :: variant ArrayPrototypeToString
 ep9_vm::IntrinsicId :: variant ArrayUnscopables
 ep9_vm::IntrinsicId :: variant AsyncDisposableStack
 ep9_vm::IntrinsicId :: variant AsyncDisposableStackPrototype
@@ -700,8 +707,13 @@ ep9_vm::IntrinsicId :: variant Int8ArrayPrototype
 ep9_vm::IntrinsicId :: variant Intl
 ep9_vm::IntrinsicId :: variant IntlCollator
 ep9_vm::IntrinsicId :: variant IntlCollatorPrototype
+ep9_vm::IntrinsicId :: variant IntlDateTimeFormat
+ep9_vm::IntrinsicId :: variant IntlDateTimeFormatPrototype
 ep9_vm::IntrinsicId :: variant IntlDisplayNames
 ep9_vm::IntrinsicId :: variant IntlDisplayNamesPrototype
+ep9_vm::IntrinsicId :: variant IntlDurationFormat
+ep9_vm::IntrinsicId :: variant IntlDurationFormatPrototype
+ep9_vm::IntrinsicId :: variant IntlFallbackSymbolHolder
 ep9_vm::IntrinsicId :: variant IntlListFormat
 ep9_vm::IntrinsicId :: variant IntlListFormatPrototype
 ep9_vm::IntrinsicId :: variant IntlLocale
@@ -716,6 +728,7 @@ ep9_vm::IntrinsicId :: variant IntlSegmentIteratorPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmenter
 ep9_vm::IntrinsicId :: variant IntlSegmenterPrototype
 ep9_vm::IntrinsicId :: variant IntlSegmentsPrototype
+ep9_vm::IntrinsicId :: variant IntlTemporalToLocaleString
 ep9_vm::IntrinsicId :: variant Iterator
 ep9_vm::IntrinsicId :: variant IteratorHelperPrototype
 ep9_vm::IntrinsicId :: variant IteratorPrototype
@@ -777,6 +790,7 @@ ep9_vm::IntrinsicId :: variant TypeError
 ep9_vm::IntrinsicId :: variant TypeErrorPrototype
 ep9_vm::IntrinsicId :: variant TypedArray
 ep9_vm::IntrinsicId :: variant TypedArrayPrototype
+ep9_vm::IntrinsicId :: variant TypedArrayPrototypeValues
 ep9_vm::IntrinsicId :: variant Uint16Array
 ep9_vm::IntrinsicId :: variant Uint16ArrayPrototype
 ep9_vm::IntrinsicId :: variant Uint32Array
@@ -913,6 +927,17 @@ ep9_vm::JsValue :: enum JsValue
 ep9_vm::JsValue :: impl Downcast for JsValue
 ep9_vm::JsValue :: impl core::marker::Send for JsValue (auto)
 ep9_vm::JsValue :: impl core::marker::Sync for JsValue (auto)
+ep9_vm::JsonText :: impl JsonText
+ep9_vm::JsonText :: impl JsonText :: const fn new() -> JsonText
+ep9_vm::JsonText :: impl JsonText :: fn is_empty(&self) -> bool
+ep9_vm::JsonText :: impl JsonText :: fn len(&self) -> usize
+ep9_vm::JsonText :: impl JsonText :: fn push_ascii(&mut self, &[u8])
+ep9_vm::JsonText :: impl JsonText :: fn push_units(&mut self, &[u16])
+ep9_vm::JsonText :: impl core::default::Default for JsonText
+ep9_vm::JsonText :: impl core::fmt::Debug for JsonText
+ep9_vm::JsonText :: impl core::marker::Send for JsonText (auto)
+ep9_vm::JsonText :: impl core::marker::Sync for JsonText (auto)
+ep9_vm::JsonText :: struct JsonText { .. }
 ep9_vm::Local :: #[repr(transparent)] struct Local<'s, T = JsValue> { .. }
 ep9_vm::Local :: impl<'s, T = JsValue> !core::marker::Send for Local<'s, T> (auto)
 ep9_vm::Local :: impl<'s, T = JsValue> !core::marker::Sync for Local<'s, T> (auto)
@@ -1001,7 +1026,9 @@ ep9_vm::ObjectClass :: variant Date
 ep9_vm::ObjectClass :: variant DisposableStack
 ep9_vm::ObjectClass :: variant FinalizationRegistry
 ep9_vm::ObjectClass :: variant IntlCollator
+ep9_vm::ObjectClass :: variant IntlDateTimeFormat
 ep9_vm::ObjectClass :: variant IntlDisplayNames
+ep9_vm::ObjectClass :: variant IntlDurationFormat
 ep9_vm::ObjectClass :: variant IntlListFormat
 ep9_vm::ObjectClass :: variant IntlLocale
 ep9_vm::ObjectClass :: variant IntlNumberFormat

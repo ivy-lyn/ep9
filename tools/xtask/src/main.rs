@@ -3,7 +3,7 @@
 //!
 //! | Task | Module | What it checks |
 //! |---|---|---|
-//! | `disasm-check` | `disasm.rs` | tail-call disassembly and handler argument count (H15) |
+//! | `disasm-check` | `disasm.rs` | tail-call disassembly and handler argument count (H15); `--frames`: the hot handler frame golden (plan rule 81) |
 //! | `fp-check` | `fpcheck.rs` | no banned libm symbol, no FMA instruction outside `ep9_math`, no second math crate, in post-LTO objects for 5 targets (H36) |
 //! | `feature-matrix` | `features.rs` | default, jitless and `aot` builds: build, clippy and test, per package (H27) |
 //! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |

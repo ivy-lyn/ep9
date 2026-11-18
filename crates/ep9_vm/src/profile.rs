@@ -62,7 +62,7 @@
 //! | [`record_typeof`] | the `TypeOf` cold body (its fast body is only `Flow::Cold`) | slot, operand |
 //! | [`record_call`], [`record_call_pushed`] | every `Call*` site except `CallRuntime`: after the frame push of `call_fast`, or in the cold body (`call_record_cold`: every cold exit, `CallWithSpread`, a `CallProperty`/`CallAnyReceiver` list without a receiver) | slot, callee |
 //! | [`record_keyed`] | `GetKeyedProperty` (before the array path), `SetKeyedProperty`, `DefineKeyedOwnProperty`, `DefineKeyedOwnPropertyInLiteral` (its fast body is only this hook and `Flow::Cold`), `StaInArrayLiteral`, `TestIn` (records nothing, see below) | slot, receiver, key |
-//! | [`keyed_hit_kind`] | the `GetKeyedProperty` array path and the `keyed_ic::fast_set` store, after the hit: the IC_LAYOUT 3 kinds-set bit, in the sampled window only, as `Flow::Record` (M5-P1 ELEM1) | the receiver |
+//! | [`keyed_hit_kind`] | the `GetKeyedProperty` array path (not in the `ics_only` handler tables: `interp::dsl::fast_body`, M9-P4 LEVER-11) and the `keyed_ic::fast_set` store, after the hit: the IC_LAYOUT 3 kinds-set bit, in the sampled window only, as `Flow::Record` (M5-P1 ELEM1) | the receiver |
 //! | [`record_keyed_cold`] | their cold bodies (out of bounds, a hole, a non-array receiver; every execution of `DefineKeyedOwnPropertyInLiteral`) | slot, receiver, key |
 //! | [`record_jump_loop`] | `JumpLoop` | slot |
 //! | [`record_closure`] | the `CreateClosure` cold body, after the closure exists (0 = an exception is pending) | slot, the closure bits |
@@ -884,7 +884,7 @@ pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 /// executions ([`record_keyed_cold`]) and the kinds of its sampled hits: a kind that only
 /// hits outside every window see is missing, as a sampled call target is (M5-P1 BENCH-SET:
 /// recording on every hit cost t0-prop +3%, crypto +10%, navier-stokes +13%). No IC hit reads
-/// these bits, so a T0 table without profile records (`ics_only`, MODES-D19) hits the same.
+/// these bits, so `ics_only` (MODES-D19) hits the same; its `GetKeyedProperty` handler skips this test.
 #[inline(always)]
 pub(crate) fn keyed_hit_kind(st: &St<'_>, o: u64) -> u32 {
     debug_assert!(kinds::is_array(o));

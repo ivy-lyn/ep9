@@ -9,8 +9,9 @@
 //!   property    Get, toJSON, the replacer, unwrap ├─ object -> serialize_object ─┐
 //!               primitives -> the text            └─ array  -> serialize_array  ─┴─ property
 //!               a raw JSON object -> its `rawJSON` string, as it is (json-parse-with-source)
-//! state       out: the text so far (Vec<u16>, no Values), indent depth, the cycle stack
-//!             (a ScratchList: the objects being serialized, innermost last)
+//! state       out: the text so far (a JsonText: one-byte until the first code unit above
+//!             0xFF, then two-byte; no Values), indent depth, the cycle stack (a ScratchList:
+//!             the objects being serialized, innermost last)
 //! ```
 //!
 //! The text is written into one buffer as it is made, not as the spec's list of partial
@@ -20,8 +21,15 @@
 //! throws and the cycle TypeError come first), and the RangeError is thrown at the end, as
 //! V8 does. Each object or array level checks the native stack (a RangeError at the limit,
 //! as in V8) and every loop over properties polls.
+//!
+//! A string is quoted by `Cx::json_quote_into` (OXC-PERF wave 3 W3-JSON-QUOTE): the VM reads
+//! the flat payload in place and writes the escapes into the text with a SIMD body (no call
+//! per code unit); numbers and raw JSON text go in with `Cx::json_push_flat`, and the result
+//! is one copy of the one-byte text (`Cx::json_text_finish`).
 
-use ep9_vm::{Args, Cx, JsKey, JsObject, JsResult, JsString, Local, ObjectClass, ScratchList};
+use ep9_vm::{
+    Args, Cx, JsKey, JsObject, JsResult, JsString, JsonText, Local, ObjectClass, ScratchList,
+};
 
 use crate::array::{index_key, length_of_array_like};
 
@@ -53,7 +61,7 @@ struct State<'s, 'l> {
     /// The key `rawJSON`.
     raw_json: Local<'s, JsKey>,
     /// The text.
-    out: Vec<u16>,
+    out: JsonText,
     /// The text grew longer than MAX_STRING_LENGTH (`out` is then dropped). It stays set;
     /// `stringify` throws the RangeError at the end.
     overflow: bool,
@@ -178,7 +186,7 @@ pub(super) fn stringify<'s>(
         gap,
         to_json,
         raw_json,
-        out: Vec::new(),
+        out: JsonText::new(),
         overflow: false,
     };
     // 13. Return ? SerializeJSONProperty(state, the empty String, wrapper).
@@ -188,7 +196,7 @@ pub(super) fn stringify<'s>(
     if state.overflow {
         return Err(cx.throw_range_error("Invalid string length"));
     }
-    Ok(cx.new_string_utf16(&state.out)?.value())
+    Ok(cx.json_text_finish(state.out)?.value())
 }
 
 /// The name of a property: a key, or an array index (made into a key only when JS sees it).
@@ -341,12 +349,8 @@ fn write_value<'s>(
         // a. If value is finite, return ! ToString(value). b. Return "null".
         if n.is_finite() {
             let s = cx.to_string(value)?;
-            let len = cx.string_len(s);
             let flat = cx.flatten(s)?;
-            for i in 0..len {
-                let u = cx.code_unit_at(flat, i).expect("i < length");
-                state.out.push(u);
-            }
+            cx.json_push_flat(flat, &mut state.out);
         } else {
             push_ascii(cx, state, "null")?;
         }
@@ -403,7 +407,7 @@ fn enter<'s>(
 
 /// A newline and `[[Indent]]` (the gap `depth` times), for a non-empty gap.
 fn newline_indent<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, depth: usize) -> JsResult<()> {
-    state.out.push(0x0A);
+    state.out.push_ascii(b"\n");
     for _ in 0..depth {
         let gap = core::mem::take(&mut state.gap);
         let r = push_units(cx, state, &gap);
@@ -437,7 +441,7 @@ fn serialize_object<'s>(
         (None, None) => unreachable!("K is one of the two"),
     };
     // 7. Let partial be a new empty List.
-    state.out.push(0x7B);
+    state.out.push_ascii(b"{");
     let mut any = false;
     // 8. For each element P of K, do
     for i in 0..count {
@@ -469,16 +473,16 @@ fn serialize_object<'s>(
             continue;
         }
         if any {
-            state.out.push(0x2C);
+            state.out.push_ascii(b",");
         }
         if !state.gap.is_empty() {
             newline_indent(cx, state, indent)?;
         }
         let s = p.value().as_string().expect("a key of K is a string");
         quote(cx, state, s)?;
-        state.out.push(0x3A);
+        state.out.push_ascii(b":");
         if !state.gap.is_empty() {
-            state.out.push(0x20);
+            state.out.push_ascii(b" ");
         }
         let wrote = write_value(cx, state, v)?;
         debug_assert!(wrote, "has_text and write_value agree");
@@ -491,7 +495,7 @@ fn serialize_object<'s>(
     if any && !state.gap.is_empty() {
         newline_indent(cx, state, indent - 1)?;
     }
-    state.out.push(0x7D);
+    state.out.push_ascii(b"}");
     // 12. Remove the last element of state.[[Stack]]. 13. Set state.[[Indent]] to stepback.
     state.depth -= 1;
     check_length(cx, state)
@@ -510,12 +514,12 @@ fn serialize_array<'s>(
     // 5. Let partial be a new empty List.
     // 6. Let len be ? LengthOfArrayLike(value).
     let len = length_of_array_like(cx, value)?;
-    state.out.push(0x5B);
+    state.out.push_ascii(b"[");
     // 7. Let index be 0. 8. Repeat, while index < len,
     for index in 0..len {
         cx.poll_interrupt()?;
         if index > 0 {
-            state.out.push(0x2C);
+            state.out.push_ascii(b",");
         }
         if !state.gap.is_empty() {
             newline_indent(cx, state, indent)?;
@@ -534,74 +538,35 @@ fn serialize_array<'s>(
     if len > 0 && !state.gap.is_empty() {
         newline_indent(cx, state, indent - 1)?;
     }
-    state.out.push(0x5D);
+    state.out.push_ascii(b"]");
     // 12. Remove the last element of state.[[Stack]]. 13. Set state.[[Indent]] to stepback.
     state.depth -= 1;
     check_length(cx, state)
 }
 
-/// QuoteJSONString ( value ) (§25.5.2.3), appended to the text.
+/// QuoteJSONString ( value ) (§25.5.2.3), appended to the text: `"`, the code units of
+/// `value` with the escapes of Table 77 (`\u00xx` for the other units below 0x20, `\udxxx`
+/// for a lone surrogate, lowercase hex; a valid surrogate pair as it is), `"`. The VM does the
+/// steps on the flat payload (`Cx::json_quote_into`; not a GC point, no user code).
 fn quote<'s>(
     cx: &mut Cx<'s>,
     state: &mut State<'s, '_>,
     value: Local<'s, ep9_vm::JsString>,
 ) -> JsResult<()> {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     // The text is already too long: nothing to add (and no long copy of a long string).
     if state.overflow {
         return Ok(());
     }
-    let len = cx.string_len(value);
-    let flat = cx.flatten(value)?;
-    let out = &mut state.out;
-    // 1. Let product be the String value consisting solely of the code unit 0x0022
-    //    (QUOTATION MARK).
-    out.push(0x22);
-    // 2. For each code point C of StringToCodePoints(value), do
-    let mut i = 0;
-    while i < len {
-        let c = cx.code_unit_at(flat, i).expect("i < length");
-        i += 1;
-        // a. If C is listed in the "Code Point" column of Table 77, use its escape.
-        let escape = match c {
-            0x08 => Some(b'b'),
-            0x09 => Some(b't'),
-            0x0A => Some(b'n'),
-            0x0C => Some(b'f'),
-            0x0D => Some(b'r'),
-            0x22 => Some(b'"'),
-            0x5C => Some(b'\\'),
-            _ => None,
-        };
-        if let Some(e) = escape {
-            out.extend_from_slice(&[0x5C, u16::from(e)]);
-            continue;
-        }
-        // A surrogate pair is one code point: copied as it is.
-        if (0xD800..0xDC00).contains(&c)
-            && let Some(next) = cx.code_unit_at(flat, i)
-            && (0xDC00..0xE000).contains(&next)
-        {
-            out.extend_from_slice(&[c, next]);
-            i += 1;
-            continue;
-        }
-        // b. Else if C has a numeric value less than 0x0020 (SPACE) or C has the same
-        //    numeric value as a leading surrogate or trailing surrogate, then
-        //    UnicodeEscape(C): "\u" and 4 lowercase hex digits.
-        if c < 0x20 || (0xD800..0xE000).contains(&c) {
-            out.extend_from_slice(&[0x5C, u16::from(b'u')]);
-            for shift in [12, 8, 4, 0] {
-                out.push(u16::from(HEX[usize::from((c >> shift) & 0xF)]));
-            }
-            continue;
-        }
-        // c. Else, append UTF16EncodeCodePoint(C).
-        out.push(c);
+    // The quoted form has at least len + 2 units: a text that it makes too long overflows
+    // now, with no reserve for the escapes of a long string.
+    if state.out.len() + cx.string_len(value) + 2 > MAX_STRING_LENGTH {
+        state.overflow = true;
+        state.out = JsonText::new();
+        return Ok(());
     }
-    // 3. Set product to the string-concatenation of product and the code unit 0x0022.
-    out.push(0x22);
-    // 4. Return product.
+    // The only GC point, before the steps.
+    let flat = cx.flatten(value)?;
+    cx.json_quote_into(flat, &mut state.out);
     check_length(cx, state)
 }
 
@@ -615,24 +580,20 @@ fn push_string<'s>(
     if state.overflow {
         return Ok(());
     }
-    let len = cx.string_len(s);
     let flat = cx.flatten(s)?;
-    for i in 0..len {
-        let u = cx.code_unit_at(flat, i).expect("i < length");
-        state.out.push(u);
-    }
+    cx.json_push_flat(flat, &mut state.out);
     check_length(cx, state)
 }
 
 /// Appends ASCII text.
 fn push_ascii<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, text: &str) -> JsResult<()> {
-    state.out.extend(text.bytes().map(u16::from));
+    state.out.push_ascii(text.as_bytes());
     check_length(cx, state)
 }
 
 /// Appends code units.
 fn push_units<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, units: &[u16]) -> JsResult<()> {
-    state.out.extend_from_slice(units);
+    state.out.push_units(units);
     check_length(cx, state)
 }
 
@@ -642,7 +603,7 @@ fn push_units<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, units: &[u16]) -> 
 fn check_length<'s>(_cx: &mut Cx<'s>, state: &mut State<'s, '_>) -> JsResult<()> {
     if state.out.len() > MAX_STRING_LENGTH {
         state.overflow = true;
-        state.out = Vec::new();
+        state.out = JsonText::new();
     }
     Ok(())
 }
@@ -724,6 +685,53 @@ print(JSON.stringify({ a: 1, b: undefined, c: 'x' }, null, 1).split('\n').join('
                 "sentinel",
                 "TypeError RangeError RangeError",
                 "{| \"a\": 1,| \"c\": \"x\"|}",
+            ]
+        );
+    }
+
+    /// W3-JSON-QUOTE: the quote's length check before the escapes (MAX_STRING_LENGTH is 64
+    /// here). A text of 64 units is a string; one more unit, from the quotes or from an
+    /// escape, is the RangeError; a key or a value, a Latin-1 or a two-byte string; an
+    /// overflow in a quote of a long string does not reserve its escapes.
+    #[test]
+    fn quote_checks_the_length_before_the_escapes() {
+        let src = r#"
+function t(f) { try { var s = f(); return s.length + ':' + s.charCodeAt(s.length - 2); } catch (e) { return e.name; } }
+var a = function (n) { return 'a'.repeat(n); }, w62 = '\u4e2d'.repeat(62);
+print(t(function () { return JSON.stringify(a(62)); }), t(function () { return JSON.stringify(a(62) + 'b'); }));
+print(t(function () { return JSON.stringify(a(60) + '\n'); }), t(function () { return JSON.stringify(a(61) + '\n'); }));
+print(t(function () { return JSON.stringify(a(56) + '\u0001'); }), t(function () { return JSON.stringify(a(57) + '\u0001'); }));
+print(t(function () { return JSON.stringify(w62); }), t(function () { return JSON.stringify(w62 + '\u4e2d'); }));
+var o = {}; o['k'.repeat(56)] = 1;
+print(t(function () { return JSON.stringify(o); }), t(function () { return JSON.stringify([o]); }));
+print(t(function () { return JSON.stringify('\u0001'.repeat(10000)); }));
+"#;
+        let unit = ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("compiles");
+        let mut iso = Isolate::new(IsolateConfig {
+            builtins: Some(&crate::TABLE),
+            ..IsolateConfig::default()
+        })
+        .expect("an isolate");
+        iso.register_host_function("print", 1, print);
+        OUT.with(|o| o.borrow_mut().clear());
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "t.js").map(|_| ()))
+            .map_err(|e| e.message)
+            .expect("no uncaught exception");
+        let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+        assert_eq!(
+            out,
+            [
+                "64:97 RangeError",
+                "64:110 RangeError",
+                "64:49 RangeError",
+                "64:20013 RangeError",
+                "62:49 64:125",
+                "RangeError",
             ]
         );
     }

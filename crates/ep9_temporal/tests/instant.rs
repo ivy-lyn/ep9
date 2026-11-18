@@ -10,13 +10,13 @@ fn constructor_getters_and_to_string() {
     assert_eq!(
         run_both(
             r#"var i = new Temporal.Instant(1_000_000_000_123_456_789n);
-            print(i.epochNanoseconds, i.epochMilliseconds, i.toString(), i.toJSON(), i.toLocaleString());
+            print(i.epochNanoseconds, i.epochMilliseconds, i.toString(), i.toJSON(), i.toLocaleString("en-US", { timeZone: "UTC" }));
             print(new Temporal.Instant(-1n).toString(), new Temporal.Instant(-1n).epochMilliseconds, new Temporal.Instant(0n).toString());
             print(Object.prototype.toString.call(i), Temporal.Instant.length, Temporal.Instant.prototype.constructor === Temporal.Instant);
             print(i.toString({ smallestUnit: "second" }), i.toString({ fractionalSecondDigits: 4, roundingMode: "ceil" }), i.toString({ timeZone: "+01:00" }));"#
         ),
         lines(&[
-            "1000000000123456789 1000000000123 2001-09-09T01:46:40.123456789Z 2001-09-09T01:46:40.123456789Z 2001-09-09T01:46:40.123456789Z",
+            "1000000000123456789 1000000000123 2001-09-09T01:46:40.123456789Z 2001-09-09T01:46:40.123456789Z 9/9/2001, 1:46:40 AM",
             "1969-12-31T23:59:59.999999999Z -1 1970-01-01T00:00:00Z",
             "[object Temporal.Instant] 1 true",
             "2001-09-09T01:46:40Z 2001-09-09T01:46:40.1235Z 2001-09-09T02:46:40.123456789+01:00",

@@ -722,37 +722,61 @@ fn zip_next_work(n: usize) -> u64 {
 /// The open inputs of a zip in longest mode are counted once per `next`, not once per done
 /// input (Codex r1 SPEC-ITER2 1): N empty inputs that are all done in the first `next` take
 /// one pass over the list. The old scan from index 0 at each done input took about N^2 / 2
-/// list reads. The test compares the CPU work of that `next` for 4,000 and 16,000 inputs (the
-/// least of 3 runs of each): linear work grows about 4 times, the old scan about 16 times;
-/// the bound is 8. It measures the CPU work of its thread, not wall time: the old 30 s wall
-/// wait failed under load (FLAKE-ZIP, M6-ORCH-264). The wait of 900 s only stops a test that
-/// hangs.
+/// list reads. The test compares the CPU work of that `next` for 4,000 and 16,000 inputs:
+/// linear work grows about 4 times, the old scan about 16 times; the bound is 8. It measures
+/// the CPU work of its thread, not wall time: the old 30 s wall wait failed under load
+/// (FLAKE-ZIP, M6-ORCH-264). The wait of 900 s only stops a test that hangs.
+///
+/// The test measures 7 pairs, each a small run and then a large run on the same thread, and
+/// asserts that the median of the 7 pair ratios (large / small) is less than 8. The two runs
+/// of a pair are about 2 ms apart, so they see the same CPU speed. The old form measured all
+/// small runs first and then all large runs: a CPU speed step between the 2 windows (an
+/// E-core, or a loaded vCPU of a CI VM) also went into the ratio, and a 2x step doubled the
+/// ratio of the linear code to more than 8 (M9-P4 ZIP-RATIO). A step in the middle of the
+/// pairs changes only one pair, and the median does not use it. A higher bound is not a fix:
+/// it would also hide a part of a quadratic regression. All 7 ratios and the median go to
+/// stderr, so a CI log has them.
 #[cfg(any(unix, windows))]
 #[test]
 fn a_zip_of_many_done_inputs_is_linear() {
     const N: usize = 4_000;
+    const PAIRS: usize = 7;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
-            let least = |n| (0..3).map(|_| zip_next_work(n)).min().expect("3 runs");
-            let small = least(N);
-            let large = least(4 * N);
-            let _ = tx.send((small, large));
+            let pairs: Vec<(u64, u64)> = (0..PAIRS)
+                .map(|_| {
+                    let small = zip_next_work(N);
+                    let large = zip_next_work(4 * N);
+                    (small, large)
+                })
+                .collect();
+            let _ = tx.send(pairs);
         })
         .expect("a thread");
-    let (small, large) = rx
+    let pairs = rx
         .recv_timeout(std::time::Duration::from_secs(900))
         .expect("the runs end");
-    let ratio = large as f64 / small.max(1) as f64;
+    let ratios: Vec<f64> = pairs
+        .iter()
+        .map(|&(small, large)| large as f64 / small.max(1) as f64)
+        .collect();
+    let mut sorted = ratios.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median = sorted[PAIRS / 2];
+    let shown: Vec<String> = ratios.iter().map(|r| format!("{r:.2}")).collect();
     eprintln!(
-        "zip next work: {N} inputs {small}, {} inputs {large}, ratio {ratio:.2}",
-        4 * N
+        "zip next work: {PAIRS} pairs of {N} and {} inputs: pairs {pairs:?}, ratios [{}], median {median:.2}",
+        4 * N,
+        shown.join(", ")
     );
     assert!(
-        ratio < 8.0,
-        "the next of {} inputs took {ratio:.1} times the work of {N} inputs ({large} / {small})",
-        4 * N
+        median < 8.0,
+        "the next of {} inputs took a median of {median:.1} times the work of {N} inputs \
+         (ratios [{}]; pairs {pairs:?})",
+        4 * N,
+        shown.join(", ")
     );
 }
 

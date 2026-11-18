@@ -50,7 +50,7 @@ use ep9_vm::{Cx, JsResult, Local, ToPrimitiveHint};
 use crate::cache::{self, Service};
 use crate::cldr;
 use crate::digits::{
-    DecimalValue, DigitOptions, Interrupted, WIDE_DIGITS, WideDecimal, Work,
+    DecimalValue, DigitOptions, Interrupted, POLL_DIGITS, WIDE_DIGITS, WideDecimal, Work,
     format_numeric_to_string, polled,
 };
 use crate::tag::icu_locale;
@@ -528,7 +528,10 @@ fn group_after(
 }
 
 /// The parts of the unsigned number `x` (integer, group, decimal, fraction) with the digits
-/// of `nu` and the separators of `icu`.
+/// of `nu` and the separators of `icu`. For a text-only `work` ([`Work::text_sink`]) the
+/// integer digits and their group separators are one integer part, made at its full size
+/// (route INTL-TEXT-SINK: a huge BigInt made one part per group, up to about 215 M parts).
+/// A stop drops the parts of `out` with polls ([`drop_parts`]).
 fn number_parts<D: DecimalValue>(
     x: &D,
     nu: &str,
@@ -544,9 +547,33 @@ fn number_parts<D: DecimalValue>(
     let sizes = symbols.grouping_sizes;
     let (lower, upper) = x.shown();
     let (lower, upper) = (lower.min(0), upper.max(0));
+    let text = work.is_text_sink();
+    let separator = symbols.grouping_separator();
     let mut int = String::new();
+    if text {
+        // The digits, and at most one separator per `min(primary, secondary)` digits.
+        let n = usize::try_from(upper)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1);
+        let every = usize::from(match sizes.secondary {
+            0 => sizes.primary,
+            s => s.min(sizes.primary),
+        });
+        let groups = match grouping {
+            Grouping::Never => 0,
+            _ => n.checked_div(every).unwrap_or(0),
+        };
+        let size = n
+            .saturating_mul(digits[0].len_utf8())
+            .saturating_add(groups.saturating_mul(separator.len()));
+        // A failed reservation only leaves the growth to `push`.
+        let _ = int.try_reserve_exact(size);
+    }
     for m in (0..=upper).rev() {
-        work.add(1)?;
+        if let Err(stop) = work.add(1) {
+            drop_parts(out, work);
+            return Err(stop);
+        }
         int.push(digits[usize::from(x.digit_at(m))]);
         if group_after(
             upper,
@@ -556,8 +583,12 @@ fn number_parts<D: DecimalValue>(
             sizes.secondary,
             sizes.min_grouping,
         ) {
-            out.push((PartType::Integer, core::mem::take(&mut int)));
-            out.push((PartType::Group, symbols.grouping_separator().to_string()));
+            if text {
+                int.push_str(separator);
+            } else {
+                out.push((PartType::Integer, core::mem::take(&mut int)));
+                out.push((PartType::Group, separator.to_string()));
+            }
         }
     }
     out.push((PartType::Integer, int));
@@ -955,14 +986,41 @@ fn push_sign(out: &mut Parts, t: PartType, affix: &str) {
     push_text(out, PartType::Literal, &affix[start + core.len()..]);
 }
 
-/// The text of `parts` (each part counts its length in `work`).
+/// The text of `parts`, made at its full size. Each part counts its length in `work` in
+/// steps of at most [`POLL_DIGITS`] bytes, each after its copy (a long part polls inside its
+/// copy).
 pub fn join(parts: &Parts, work: &mut Work) -> Result<String, Interrupted> {
-    let mut out = String::new();
+    let mut size = 0usize;
     for (_, s) in parts {
-        out.push_str(s);
-        work.add(s.len())?;
+        size = size.saturating_add(s.len());
+    }
+    let mut out = String::new();
+    // A failed reservation only leaves the growth to `push_str`.
+    let _ = out.try_reserve_exact(size);
+    for (_, s) in parts {
+        let mut rest = s.as_str();
+        while !rest.is_empty() {
+            let mut end = rest.len().min(POLL_DIGITS);
+            while !rest.is_char_boundary(end) {
+                end += 1;
+            }
+            out.push_str(&rest[..end]);
+            work.add(end)?;
+            rest = &rest[end..];
+        }
     }
     Ok(out)
+}
+
+/// Drops the parts of `parts` from its end in steps of [`POLL_DIGITS`] parts, each step with
+/// one call of the poll of `work` (H23: the drop of a long parts list after a stop polls, so
+/// the embedder callbacks run in it). A poll that stops does not end the drop: the parts
+/// must go.
+pub(crate) fn drop_parts(parts: &mut Parts, work: &mut Work) {
+    while !parts.is_empty() {
+        parts.truncate(parts.len().saturating_sub(POLL_DIGITS));
+        let _ = work.add(POLL_DIGITS);
+    }
 }
 
 #[cfg(test)]
@@ -1099,5 +1157,105 @@ mod tests {
         assert!(group_after(5, 5, Grouping::Auto, 3, 2, 1));
         assert!(!group_after(5, 4, Grouping::Auto, 3, 2, 1));
         assert!(!group_after(9, 9, Grouping::Never, 3, 3, 1));
+    }
+
+    /// The decimal Format of `data_locale` and `nu` (the options of
+    /// `the_cached_data_has_the_t1_row`).
+    fn format_of<'a>(data_locale: &'a str, nu: &'a str) -> Format<'a> {
+        Format {
+            data_locale,
+            numbering_system: nu,
+            digits: crate::digits::DigitOptions {
+                minimum_integer_digits: 1,
+                minimum_fraction_digits: 0,
+                maximum_fraction_digits: 3,
+                minimum_significant_digits: 1,
+                maximum_significant_digits: 21,
+                rounding_increment: 1,
+                rounding_mode: crate::digits::RoundingMode::HalfExpand,
+                rounding_type: crate::digits::RoundingType::FractionDigits,
+                computed_rounding_priority: "auto",
+                strip_if_integer: false,
+            },
+            compact: None,
+            exponent: None,
+            grouping: Grouping::Auto,
+            sign_display: SignDisplay::Auto,
+            plural: None,
+        }
+    }
+
+    /// 10^100000 (100,001 digits).
+    fn ten_to_100000(sign: &str) -> IntlMv {
+        unpolled(|w| mv_of_integer(&format!("{sign}1{}", "0".repeat(100_000)), w))
+    }
+
+    /// A text-only work (FormatNumeric) makes one integer part for the digits and their
+    /// group separators, at its full size, with the text of the parts (route
+    /// INTL-TEXT-SINK). The parts of 10^100000 in en are 33,334 integer and 33,333 group
+    /// parts.
+    #[test]
+    fn a_text_sink_makes_one_integer_part() {
+        let x = ten_to_100000("");
+        for (l, nu) in [
+            ("en", "latn"),
+            ("en-IN", "latn"),
+            ("de", "latn"),
+            ("fr", "latn"),
+            ("ar", "arab"),
+        ] {
+            let f = format_of(l, nu);
+            let parts = unpolled(|w| partition(&f, &x, w));
+            assert!(parts.len() > 60_000, "{l}: {}", parts.len());
+            let sink = unpolled(|w| partition(&f, &x, w.text_sink()));
+            assert_eq!(sink.len(), 1, "{l}");
+            assert_eq!(sink[0].0, PartType::Integer, "{l}");
+            assert_eq!(
+                unpolled(|w| join(&sink, w)),
+                unpolled(|w| join(&parts, w)),
+                "{l}"
+            );
+            if matches!(l, "en" | "fr") {
+                // One separator per 3 digits: the reserved size is the text size.
+                assert_eq!(sink[0].1.capacity(), sink[0].1.len(), "{l}");
+            }
+        }
+        let text = unpolled(|w| join(&partition(&format_of("en", "latn"), &x, w)?, w));
+        assert_eq!(text, format!("10{}", ",000".repeat(33_333)));
+        let f = format_of("en", "latn");
+        let neg = ten_to_100000("-");
+        let sink = unpolled(|w| partition(&f, &neg, w.text_sink()));
+        assert_eq!(sink.len(), 2);
+        assert_eq!(sink[0], (PartType::MinusSign, "-".to_string()));
+        assert_eq!(sink[1].1, text);
+    }
+
+    /// A stop in the integer digits drops the parts made so far in steps of
+    /// [`POLL_DIGITS`] parts, one poll each (H23; route INTL-TEXT-SINK). The 10th poll stops
+    /// at digit 40,960 of 10^100000: 13,653 integer and 13,653 group parts, so 7 steps.
+    #[test]
+    fn a_stop_drops_the_parts_with_polls() {
+        let f = format_of("en", "latn");
+        let icu = icu_for(&f).expect("data");
+        let IntlMv::Wide(d) = ten_to_100000("") else {
+            panic!("not wide");
+        };
+        let calls = core::cell::Cell::new(0usize);
+        let mut poll = || {
+            calls.set(calls.get() + 1);
+            calls.get() < 10
+        };
+        let mut out = Parts::new();
+        let r = number_parts(
+            &d,
+            "latn",
+            &icu,
+            Grouping::Auto,
+            &mut out,
+            &mut Work::new(&mut poll),
+        );
+        assert_eq!(r, Err(Interrupted));
+        assert!(out.is_empty(), "{} parts left", out.len());
+        assert_eq!(calls.get(), 10 + 7);
     }
 }

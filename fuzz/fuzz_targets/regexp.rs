@@ -18,7 +18,10 @@
 //!      unescaped / outside a class, no trailing \, not empty, no * first)
 //!        check_early_errors("/<text>/<flags>") as a sloppy script
 //!        Ok -> valid; Syntax -> invalid; Range (the depth caps) -> no check
-//!        valid != RX1 valid -> panic
+//!        valid != RX1 valid -> panic, except the known front-end difference below (front
+//!        end valid, RX1 InvalidCaptureGroupName at a group name that has a listed code
+//!        point; a group-name code point that the two take differently outside the list is a
+//!        crash)
 //!   2. RX0: ep9_regexp::Rx0::compile(text, flags)
 //!        valid != RX1 valid -> panic, except the known RX0 differences below
 //!        both valid: exec on the pattern text as the subject, at most POLLS polls;
@@ -183,7 +186,36 @@
 //! `\A`, `\z`, `\Z` in Unicode mode; a braced number above 2^53 - 1) are fixed in the front
 //! end in M7-P5 (regex_check.rs, routes FE-RX-BUFBOUND and FE-RX-BIGQUANT), so a
 //! disagreement on them is a crash now.
+//!
+//! Known front-end difference (check 1; DL M9-PRE-FUZZRX-FORM, route FUZZ-RX-M8P5):
+//! - Validity: a code point that the front end and RX1 take differently in a group name, raw,
+//!   as `\u{..}`, as a `\uHHHH` escape or as a `\uHHHH\uHHHH` surrogate-pair escape, for
+//!   example `/(?<\u{3D000}>a)/u` (the seed `named-groups-ucd18-u`) and `/(?<\u0558>a)/u`. The
+//!   front end (oxc_regular_expression with `unicode-id-start` 1.5.0, Unicode 18.0.0) and RX1
+//!   (UCD 17, DL M9-PRE-UNICODE) have different ID_Start and ID_Continue tables: at the M9-P1
+//!   merge, 12,860 code points in 38 ranges are ID_Continue for the front end and not for
+//!   RX1 (12,823 in 27 ranges also ID_Start; U+3D000..U+3FC3F is 11,328 of them), and 0 the
+//!   other way. These 38 ranges are a reviewed list (`KNOWN_ID_DIFFERENCE`). Check 1 compares
+//!   validity first. It accepts a difference only when the front end takes the text, RX1
+//!   says InvalidCaptureGroupName, the RX1 error position (a UTF-16 unit index) is in a group
+//!   name of the text (`(?<..>`, and `\k<..>` with `u`, `v` or a named group; from the unit
+//!   after `<` to the `>` or the text end), and that name has a code point that the two
+//!   parsers take differently (`id_differs`; the name is decoded: raw, `\u{..}` with hex
+//!   digits only, so `\u{+558}` is no code point, `\uHHHH` and a `\uHHHH\uHHHH` surrogate
+//!   pair). Such a code point in a literal or elsewhere outside a group name gives no skip
+//!   (M9-P1 Codex r2 F2), and an RX1 InvalidCaptureGroupName at another name gives no skip
+//!   either (M9-P1 fixer r5). A group-name code point that they take differently and that is
+//!   not in the list is a crash ("new front-end/RX1 identifier difference at U+XXXX"): a new
+//!   find, for example after an oxc or RX1 update. Check 2 does not compare an RX0 refusal
+//!   with `v` (the RX0 row above); this skip needs an RX1 refusal, so check 1 still compares
+//!   every text that RX1 takes with `v`. At start (`fuzz_target!` init), the target probes a
+//!   sample of the list (the first, middle and last code point of each range must differ, the
+//!   code point before and after each range must not), so a stale list stops the run. The
+//!   move of RX1 to Unicode 18 is in the M2-exit G8 batch; that change must make the list
+//!   again (the start check stops the run until it does).
 #![no_main]
+
+use std::cell::RefCell;
 
 use ep9_frontend::{CompileError, SourceOpts, Strictness};
 use ep9_regexp::{Backend, ExecResult, Input, Rx0, Rx0Scratch};
@@ -208,6 +240,170 @@ const FIXED_PROBES: [u32; 26] = [
 /// The most pattern characters and RX1 ranges that give probes (a bound on the work of one
 /// input).
 const MAX_PROBE_SOURCES: usize = 48;
+
+/// The reviewed front-end/RX1 identifier difference of check 1 (the module doc): the
+/// code points, as inclusive ranges in order, that are ID_Continue for the front end
+/// (oxc_regular_expression 0.158.0 with `unicode-id-start` 1.5.0, Unicode 18.0.0) and not for
+/// RX1 (`ep9_rx1` unicode_tables.rs, UCD 17.0.0): 12,860 code points in 38 ranges (12,823 of
+/// them in 27 ranges are also ID_Start; the other way, 0). Made at the M9-P1 merge from a
+/// probe of every code point U+0080..U+10FFFF with a copy of [`probe_id_differs`],
+/// against the real `ep9_frontend` and `ep9_rx1`: the probe set is equal to the difference of
+/// the two tables. Make it again after an oxc or RX1 Unicode update.
+const KNOWN_ID_DIFFERENCE: [(u32, u32); 38] = [
+    (0x558, 0x558),
+    (0x58b, 0x58c),
+    (0x5c8, 0x5c9),
+    (0xb53, 0xb54),
+    (0x1ade, 0x1adf),
+    (0x1aec, 0x1af0),
+    (0x208f, 0x208f),
+    (0x209d, 0x209f),
+    (0xa7dd, 0xa7dd),
+    (0xa7e2, 0xa7e2),
+    (0xab6c, 0xab6d),
+    (0x107bb, 0x107bf),
+    (0x10ecb, 0x10ecf),
+    (0x10ed9, 0x10eee),
+    (0x10ef0, 0x10ef9),
+    (0x11b0a, 0x11b0a),
+    (0x11df0, 0x11df1),
+    (0x1246f, 0x1246f),
+    (0x12475, 0x1247f),
+    (0x12550, 0x12686),
+    (0x18cd6, 0x18cda),
+    (0x18d1f, 0x18d20),
+    (0x18e00, 0x19191),
+    (0x191a0, 0x191d2),
+    (0x1b123, 0x1b128),
+    (0x1b168, 0x1b168),
+    (0x1d127, 0x1d128),
+    (0x1d250, 0x1d252),
+    (0x1d25b, 0x1d25c),
+    (0x1d25f, 0x1d25f),
+    (0x1d280, 0x1d281),
+    (0x1d6a6, 0x1d6a6),
+    (0x1df1f, 0x1df24),
+    (0x1df2b, 0x1df81),
+    (0x1df90, 0x1df96),
+    (0x1dfcd, 0x1dfff),
+    (0x2b81e, 0x2b81e),
+    (0x3d000, 0x3fc3f),
+];
+
+/// True if `c` is in [`KNOWN_ID_DIFFERENCE`].
+fn is_known_id_difference(c: u32) -> bool {
+    KNOWN_ID_DIFFERENCE
+        .binary_search_by(|&(from, to)| {
+            if to < c {
+                std::cmp::Ordering::Less
+            } else if from > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// True if the front end and RX1 take `c` differently in a group name. Each parser is asked
+/// about `c` as the first character of a name (`(?<c>a)`, ID_Start) and as a later one
+/// (`(?<ac>a)`, ID_Continue), with `u`. ASCII is not asked (the two tables agree on it, and
+/// `>`, `\` or `/` would break the probe), and a surrogate is no character.
+fn probe_id_differs(c: u32) -> bool {
+    let Some(ch) = char::from_u32(c).filter(|ch| !ch.is_ascii()) else {
+        return false;
+    };
+    [format!("(?<{ch}>a)"), format!("(?<a{ch}>a)")]
+        .iter()
+        .any(|name| {
+            let front = ep9_frontend::check_early_errors(
+                &format!("/{name}/u"),
+                SourceOpts::script(Strictness::Sloppy),
+            )
+            .is_ok();
+            front != ep9_rx1::parse_str(name, Flags::UNICODE).is_ok()
+        })
+}
+
+/// The number of `u64` words of one bit per code point U+0000..U+10FFFF.
+const SCALAR_WORDS: usize = 0x11_0000 / 64;
+
+/// The kept answers of [`probe_id_differs`]: one `known` and one `differs` bit per code point,
+/// a fixed size (2 x 136 KiB) for the whole process (M9-P1 Codex r2 F3).
+struct IdAnswers {
+    known: Box<[u64; SCALAR_WORDS]>,
+    differs: Box<[u64; SCALAR_WORDS]>,
+}
+
+impl IdAnswers {
+    fn new() -> Self {
+        let zero = || -> Box<[u64; SCALAR_WORDS]> {
+            vec![0; SCALAR_WORDS]
+                .into_boxed_slice()
+                .try_into()
+                .expect("SCALAR_WORDS words")
+        };
+        IdAnswers {
+            known: zero(),
+            differs: zero(),
+        }
+    }
+}
+
+/// True if [`probe_id_differs`] for `c`. ASCII, a surrogate and a value above U+10FFFF are
+/// never asked (false); the answer of each other code point is kept for the process in
+/// [`IdAnswers`]. Panics if the two parsers take `c` differently and `c` is not in
+/// [`KNOWN_ID_DIFFERENCE`]: a new difference (the module doc).
+fn id_differs(c: u32) -> bool {
+    if c < 0x80 || (0xd800..=0xdfff).contains(&c) || c > 0x10_ffff {
+        return false;
+    }
+    thread_local! {
+        static ANSWERS: RefCell<IdAnswers> = RefCell::new(IdAnswers::new());
+    }
+    let (word, bit) = (c as usize / 64, 1_u64 << (c % 64));
+    let differs = ANSWERS.with_borrow_mut(|a| {
+        if a.known[word] & bit == 0 {
+            a.known[word] |= bit;
+            if probe_id_differs(c) {
+                a.differs[word] |= bit;
+            }
+        }
+        a.differs[word] & bit != 0
+    });
+    assert!(
+        !differs || is_known_id_difference(c),
+        "new front-end/RX1 identifier difference at U+{c:04X}"
+    );
+    differs
+}
+
+/// The start check of [`KNOWN_ID_DIFFERENCE`] (the module doc): the ranges are in order and
+/// do not touch; the first, middle and last code point of each range differ; the code point
+/// before and after each range does not (if it is not ASCII and not a surrogate).
+fn check_known_id_difference() {
+    for pair in KNOWN_ID_DIFFERENCE.windows(2) {
+        assert!(
+            pair[0].0 <= pair[0].1 && pair[0].1 + 1 < pair[1].0,
+            "KNOWN_ID_DIFFERENCE is not in order at U+{:04X}",
+            pair[1].0
+        );
+    }
+    for &(from, to) in &KNOWN_ID_DIFFERENCE {
+        for c in [from, from + (to - from) / 2, to] {
+            assert!(
+                probe_id_differs(c),
+                "KNOWN_ID_DIFFERENCE is stale: no front-end/RX1 identifier difference at U+{c:04X}"
+            );
+        }
+        for c in [from - 1, to + 1] {
+            assert!(
+                !probe_id_differs(c),
+                "new front-end/RX1 identifier difference at U+{c:04X}"
+            );
+        }
+    }
+}
 
 /// True if `text` is a RegularExpressionBody (ECMA-262 12.9.5): `/<text>/` lexes as one
 /// regexp literal.
@@ -236,8 +432,74 @@ fn is_literal_body(text: &str) -> bool {
     true
 }
 
-/// Check 1: the front end and RX1 agree on "valid or not".
-fn check_front_end(text: &str, flags: Flags, rx1_valid: bool) {
+/// True if the group name of the text that holds the unit `pos` (the RX1 error position, a
+/// UTF-16 unit index; `start <= pos <= end`, so the `>` and the text end count; the names do
+/// not overlap) has a code point that [`id_differs`]. The names are those of
+/// [`group_names`]: `(?<..>`, and `\k<..>` with `u` or `v` or when the text has a group name.
+/// The name is decoded with [`name_char`].
+fn group_name_has_id_difference(units: &[u16], flags: Flags, pos: usize) -> bool {
+    let with_k = flags.either_unicode() || !group_names(units, false).is_empty();
+    let Some((start, end)) = group_names(units, with_k)
+        .into_iter()
+        .find(|&(start, end)| start <= pos && pos <= end)
+    else {
+        return false;
+    };
+    let name = &units[start..end];
+    let mut i = 0;
+    while i < name.len() {
+        let (c, len) = name_char(name, i);
+        if c.is_some_and(id_differs) {
+            return true;
+        }
+        i += len;
+    }
+    false
+}
+
+/// The code point at `name[i]` of a group name, and its length in units: raw (a surrogate
+/// pair is one code point), `\u{..}` (hex digits only: `u32::from_str_radix` takes a `+`
+/// sign, so `\u{+558}` is no code point), a `\uHHHH\uHHHH` surrogate pair or one `\uHHHH`.
+/// None for a malformed `\u`, another escape (2 units) or a lone surrogate.
+fn name_char(name: &[u16], i: usize) -> (Option<u32>, usize) {
+    if !unit_is(name, i, b'\\') {
+        return match char::decode_utf16(name[i..].iter().copied()).next() {
+            Some(Ok(ch)) => (Some(u32::from(ch)), ch.len_utf16()),
+            _ => (None, 1),
+        };
+    }
+    if !unit_is(name, i + 1, b'u') {
+        return (None, 2);
+    }
+    if unit_is(name, i + 2, b'{') {
+        let Some(close) = (i + 3..name.len()).find(|&j| unit_is(name, j, b'}')) else {
+            return (None, 2);
+        };
+        let value = String::from_utf16(&name[i + 3..close])
+            .ok()
+            .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|d| u32::from_str_radix(&d, 16).ok());
+        return (value, close + 1 - i);
+    }
+    match (hex4(name, i + 2), hex4(name, i + 8)) {
+        (Some(lead), Some(trail))
+            if unit_is(name, i + 6, b'\\')
+                && unit_is(name, i + 7, b'u')
+                && surrogate_pair(Some(lead), Some(trail)) =>
+        {
+            let c = 0x1_0000 + ((u32::from(lead) - 0xd800) << 10) + (u32::from(trail) - 0xdc00);
+            (Some(c), 12)
+        }
+        (Some(unit), _) => (Some(u32::from(unit)), 6),
+        _ => (None, 2),
+    }
+}
+
+/// Check 1: the front end and RX1 agree on "valid or not". The one known difference (the
+/// module doc): the front end takes the text, RX1 says InvalidCaptureGroupName, and the group
+/// name at the RX1 error position has a code point that [`id_differs`] (a difference outside
+/// [`KNOWN_ID_DIFFERENCE`] panics there).
+fn check_front_end(text: &str, units: &[u16], flags: Flags, rx1_error: Option<&ParseError>) {
     if !is_literal_body(text) {
         return;
     }
@@ -248,10 +510,17 @@ fn check_front_end(text: &str, flags: Flags, rx1_valid: bool) {
             Err(CompileError::Syntax(_)) => false,
             Err(CompileError::Range(_)) => return,
         };
-    assert!(
-        rx1_valid == oxc_valid,
-        "RX1 and the front end disagree: rx1 valid {rx1_valid}, oxc valid {oxc_valid}"
-    );
+    let rx1_valid = rx1_error.is_none();
+    if rx1_valid == oxc_valid {
+        return;
+    }
+    if rx1_error.is_some_and(|e| {
+        e.error == Error::InvalidCaptureGroupName
+            && group_name_has_id_difference(units, flags, e.pos)
+    }) {
+        return;
+    }
+    panic!("RX1 and the front end disagree: rx1 valid {rx1_valid}, oxc valid {oxc_valid}");
 }
 
 /// One RX0 exec of `program` on `subject` from 0, stopped after [`POLLS`] polls.
@@ -790,7 +1059,7 @@ fn check_class_set(units: &[u16], flags: Flags, rx1: &Pattern) {
     }
 }
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| {
+libfuzzer_sys::fuzz_target!(init: check_known_id_difference(), |data: &[u8]| {
     let Some((&bits, rest)) = data.split_first() else {
         return;
     };
@@ -807,7 +1076,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         Err(e) if e.error.is_stack_overflow() => return,
         Err(e) => Err(e),
     };
-    check_front_end(text, flags, rx1.is_ok());
+    check_front_end(text, &units, flags, rx1.as_ref().err());
     let rx0 = Rx0::compile(&units, ep9_regexp::Flags::from_bits(bits));
     match (&rx1, &rx0) {
         (Ok(p), Ok(program)) => {

@@ -1,0 +1,40 @@
+# The hot ep9_vm handlers (name not ending in `_cold`; on x86-64 also disasm.rs HOT_COLD:
+# `Wide_cold`, `ExtraWide_cold`, `CallProperty0_cold`..`CallProperty2_cold`) that build a frame
+# or save a callee-saved register on entry, and the callee-saved registers each one saves: one
+# `<expansion> <handler> <saves>` row. Checked by `cargo xtask disasm-check --frames <this file>`
+# in the CI disasm job (rule 81: no new entry save on a hot x86 handler; docs/plan/10-quality.md,
+# 2026-11-16 note). A new row, a lost row or a changed count fails. A change that is meant
+# updates this file in the same PR: run that command with `--bless`, or copy the CI `frame` rows.
+target aarch64-apple-darwin
+ics BadOpcode 2
+ics CallAnyReceiver 4
+ics CallProperty 4
+ics CallProperty2 2
+ics CallUndefinedReceiver 2
+ics CallUndefinedReceiver2 2
+ics CloneObject 12
+ics Construct 12
+ics CreateArrayLiteral 12
+ics CreateEmptyArrayLiteral 10
+ics CreateObjectLiteral 12
+ics DefineNamedOwnProperty 6
+ics SetKeyedProperty 2
+ics SetNamedProperty 2
+ics StaContextSlot 2
+ics TestInstanceOf 2
+sib BadOpcode 2
+sib CallAnyReceiver 4
+sib CallProperty 4
+sib CallProperty2 2
+sib CallUndefinedReceiver 2
+sib CallUndefinedReceiver2 2
+sib CloneObject 12
+sib Construct 12
+sib CreateArrayLiteral 12
+sib CreateEmptyArrayLiteral 10
+sib CreateObjectLiteral 12
+sib DefineNamedOwnProperty 6
+sib SetKeyedProperty 2
+sib SetNamedProperty 2
+sib StaContextSlot 2
+sib TestInstanceOf 2

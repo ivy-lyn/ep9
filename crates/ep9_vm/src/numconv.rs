@@ -2,65 +2,194 @@
 //!
 //! | Function | Spec | v0 status |
 //! |---|---|---|
-//! | [`number_to_string`] | Number::toString(x, 10) (ECMA-262 §6.1.6.1.20) | digits from `core::fmt` `{:e}` (shortest round trip), then the even one of two closest (step 5, `even_tie`). v0: `ep9_numconv` (dragonbox_ecma) replaces it |
+//! | [`number_to_string`], [`number_to_ascii`] (no heap allocation) | Number::toString(x, 10) (ECMA-262 §6.1.6.1.20) | digits from `core::fmt` `{:e}` (shortest round trip), then the even one of two closest (step 5, `even_tie`). v0: `ep9_numconv` (dragonbox_ecma) replaces it |
 //! | [`string_to_number`] | StringToNumber (§7.1.4.1.1) | decimal through `str::parse::<f64>` after a JS grammar check (correctly rounded); hex/octal/binary exact up to 2^128 |
 //! | [`fmod`] | Number::remainder (§6.1.6.1.6) | `ep9_math::fmod`: exact, bit-level (musl `fmod.c`, MIT). H36: never the platform libm |
 //! | [`exponentiate`] | Number::exponentiate (§6.1.6.1.3) | `ep9_math::pow_js`: every special case and exact result, else the correctly rounded pow (CORE-MATH `cr_pow` port, M4-P1, H36) |
 
-/// Number::toString(x) in radix 10.
+/// Number::toString(x) in radix 10, as a new `String`. One allocation of the exact length;
+/// the text comes from [`number_to_ascii`].
 pub fn number_to_string(x: f64) -> String {
+    let mut buf = [0u8; NUMBER_TEXT_CAP];
+    String::from(number_to_ascii(x, &mut buf))
+}
+
+/// The buffer size for [`number_to_ascii`]. The longest Number::toString text is 25 bytes:
+/// "-0.0000012345678901234567" (a sign, "0.", 5 zeros and 17 digits). The other forms are
+/// shorter: the exponent form is at most 24 ("-1.2345678901234567e-308"), the integer form
+/// at most 22 (a sign and 21 digits), the fraction form at most 19 (a sign, 17 digits and a
+/// point).
+pub const NUMBER_TEXT_CAP: usize = 32;
+
+/// ASCII text in a fixed stack buffer. A write past the end is an error (`core::fmt`) or a
+/// panic (`push`); the length bound above makes both unreachable.
+struct AsciiBuf<'a, const N: usize> {
+    buf: &'a mut [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> AsciiBuf<'_, N> {
+    fn push(&mut self, b: u8) {
+        self.buf[self.len] = b;
+        self.len += 1;
+    }
+
+    fn push_bytes(&mut self, b: &[u8]) {
+        self.buf[self.len..self.len + b.len()].copy_from_slice(b);
+        self.len += b.len();
+    }
+
+    fn push_zeros(&mut self, n: usize) {
+        self.buf[self.len..self.len + n].fill(b'0');
+        self.len += n;
+    }
+
+    /// The decimal digits of `v`, most significant first.
+    fn push_u32(&mut self, mut v: u32) {
+        let mut tmp = [0u8; 10];
+        let mut at = tmp.len();
+        loop {
+            at -= 1;
+            tmp[at] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        self.push_bytes(&tmp[at..]);
+    }
+}
+
+impl<const N: usize> core::fmt::Write for AsciiBuf<'_, N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let b = s.as_bytes();
+        if b.len() > N - self.len {
+            return Err(core::fmt::Error);
+        }
+        self.push_bytes(b);
+        Ok(())
+    }
+}
+
+/// Number::toString(x) in radix 10, written into `buf` with no heap allocation. Returns the
+/// ASCII text (a part of `buf`). The same text as [`number_to_string`].
+///
+/// The one heap allocation left is in `even_tie`, and only when the exact decimal value of
+/// `x` has exactly one digit more than its shortest form and that digit is 5 (a possible
+/// tie). A double with a binary exponent below -26 or a value of 10^18 or more never reaches
+/// it; for example no `Math.random()` result with a nonzero bit below 2^-26 does.
+pub fn number_to_ascii(x: f64, buf: &mut [u8; NUMBER_TEXT_CAP]) -> &str {
+    let len = {
+        let mut out = AsciiBuf { buf, len: 0 };
+        write_number(x, &mut out);
+        out.len
+    };
+    debug_assert!(len <= 25, "Number::toString text of {len} bytes");
+    core::str::from_utf8(&buf[..len]).expect("Number::toString text is ASCII")
+}
+
+/// A new heap string of Number::toString(d) (one Latin-1 cell). The text goes through a
+/// stack buffer ([`number_to_ascii`]), so no temporary Rust `String`. GC point. For
+/// `conv::number_string` (the ToString cache miss).
+pub(crate) fn number_cell(rt: &crate::runtime::Runtime, d: f64) -> u64 {
+    let mut buf = [0u8; NUMBER_TEXT_CAP];
+    crate::string::new_string_latin1(rt, number_to_ascii(d, &mut buf).as_bytes())
+}
+
+/// The atom of Number::toString(d), interned from a stack buffer ([`number_to_ascii`]), so
+/// no temporary Rust `String`. GC point. For `key::number_key` (a non-index number key).
+pub(crate) fn intern_number(rt: &crate::runtime::Runtime, d: f64) -> u64 {
+    let mut buf = [0u8; NUMBER_TEXT_CAP];
+    crate::atoms::intern_latin1(rt, number_to_ascii(d, &mut buf).as_bytes())
+}
+
+fn write_number(mut x: f64, out: &mut AsciiBuf<'_, NUMBER_TEXT_CAP>) {
     if x.is_nan() {
-        return "NaN".into();
+        out.push_bytes(b"NaN");
+        return;
     }
     if x == 0.0 {
-        return "0".into();
+        out.push(b'0');
+        return;
     }
     if x < 0.0 {
-        let mut s = String::from("-");
-        s.push_str(&number_to_string(-x));
-        return s;
+        out.push(b'-');
+        x = -x;
     }
     if x.is_infinite() {
-        return "Infinity".into();
+        out.push_bytes(b"Infinity");
+        return;
     }
     if x < 2_147_483_648.0 && x.fract() == 0.0 {
-        return (x as u32).to_string();
+        out.push_u32(x as u32);
+        return;
     }
-    // v0: shortest round-trip digits from core::fmt. Format: "d[.ddd]e[-]x".
-    let e = format!("{x:e}");
-    let (mant, exp) = e.split_once('e').expect("{:e} has an exponent");
-    let mut digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let mut exp: i32 = exp.parse().expect("{:e} exponent");
-    // Step 5's last rule: of two closest digit strings, the even one.
-    if let Some((even, even_exp)) = even_tie(x, digits.len(), exp) {
-        digits = even;
+    // v0: shortest round-trip digits from core::fmt. Format: "d[.ddd]e[-]x", at most 23
+    // bytes (17 digits, a point, 'e', '-' and 3 exponent digits).
+    let mut ebuf = [0u8; NUMBER_TEXT_CAP];
+    let mut e = AsciiBuf {
+        buf: &mut ebuf,
+        len: 0,
+    };
+    core::fmt::Write::write_fmt(&mut e, format_args!("{x:e}")).expect("{:e} fits 32 bytes");
+    let e = &e.buf[..e.len];
+    let at = e
+        .iter()
+        .position(|&c| c == b'e')
+        .expect("{:e} has an exponent");
+    let (mant, exp_text) = (&e[..at], &e[at + 1..]);
+    // The digits of the mantissa without the point: at most 17.
+    let mut dbuf = [0u8; NUMBER_TEXT_CAP];
+    let mut k = 0;
+    for &c in mant {
+        if c != b'.' {
+            dbuf[k] = c;
+            k += 1;
+        }
+    }
+    let (neg, abs) = match exp_text {
+        [b'-', rest @ ..] => (true, rest),
+        _ => (false, exp_text),
+    };
+    let mut exp: i32 = 0;
+    for &c in abs {
+        debug_assert!(c.is_ascii_digit(), "{{:e}} exponent");
+        exp = exp * 10 + i32::from(c - b'0');
+    }
+    if neg {
+        exp = -exp;
+    }
+    // Step 5's last rule: of two closest digit strings, the even one. The rare path that
+    // allocates (see `number_to_ascii`).
+    if let Some((even, even_exp)) = even_tie(x, k, exp) {
+        k = even.len();
+        dbuf[..k].copy_from_slice(even.as_bytes());
         exp = even_exp;
     }
-    let k = digits.len() as i32;
+    let digits = &dbuf[..k];
+    let k = k as i32;
     let n = exp + 1;
-    let mut out = String::new();
     if k <= n && n <= 21 {
-        out.push_str(&digits);
-        out.extend(core::iter::repeat_n('0', (n - k) as usize));
+        out.push_bytes(digits);
+        out.push_zeros((n - k) as usize);
     } else if 0 < n && n <= 21 {
-        out.push_str(&digits[..n as usize]);
-        out.push('.');
-        out.push_str(&digits[n as usize..]);
+        out.push_bytes(&digits[..n as usize]);
+        out.push(b'.');
+        out.push_bytes(&digits[n as usize..]);
     } else if -6 < n && n <= 0 {
-        out.push_str("0.");
-        out.extend(core::iter::repeat_n('0', (-n) as usize));
-        out.push_str(&digits);
+        out.push_bytes(b"0.");
+        out.push_zeros((-n) as usize);
+        out.push_bytes(digits);
     } else {
-        out.push_str(&digits[..1]);
+        out.push(digits[0]);
         if k > 1 {
-            out.push('.');
-            out.push_str(&digits[1..]);
+            out.push(b'.');
+            out.push_bytes(&digits[1..]);
         }
-        out.push('e');
-        out.push(if n > 0 { '+' } else { '-' });
-        out.push_str(&(n - 1).abs().to_string());
+        out.push(b'e');
+        out.push(if n > 0 { b'+' } else { b'-' });
+        out.push_u32((n - 1).unsigned_abs());
     }
-    out
 }
 
 /// The tie rule of Number::toString (§6.1.6.1.20 step 5): "If there are two such possible
@@ -263,6 +392,171 @@ mod tests {
 
     fn u(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    /// The body of `number_to_string` before PREALLOC K1 (temporary Strings), kept as the
+    /// oracle of `number_to_ascii`.
+    fn old_number_to_string(x: f64) -> String {
+        if x.is_nan() {
+            return "NaN".into();
+        }
+        if x == 0.0 {
+            return "0".into();
+        }
+        if x < 0.0 {
+            let mut s = String::from("-");
+            s.push_str(&old_number_to_string(-x));
+            return s;
+        }
+        if x.is_infinite() {
+            return "Infinity".into();
+        }
+        if x < 2_147_483_648.0 && x.fract() == 0.0 {
+            return (x as u32).to_string();
+        }
+        // v0: shortest round-trip digits from core::fmt. Format: "d[.ddd]e[-]x".
+        let e = format!("{x:e}");
+        let (mant, exp) = e.split_once('e').expect("{:e} has an exponent");
+        let mut digits: String = mant.chars().filter(|c| *c != '.').collect();
+        let mut exp: i32 = exp.parse().expect("{:e} exponent");
+        // Step 5's last rule: of two closest digit strings, the even one.
+        if let Some((even, even_exp)) = even_tie(x, digits.len(), exp) {
+            digits = even;
+            exp = even_exp;
+        }
+        let k = digits.len() as i32;
+        let n = exp + 1;
+        let mut out = String::new();
+        if k <= n && n <= 21 {
+            out.push_str(&digits);
+            out.extend(core::iter::repeat_n('0', (n - k) as usize));
+        } else if 0 < n && n <= 21 {
+            out.push_str(&digits[..n as usize]);
+            out.push('.');
+            out.push_str(&digits[n as usize..]);
+        } else if -6 < n && n <= 0 {
+            out.push_str("0.");
+            out.extend(core::iter::repeat_n('0', (-n) as usize));
+            out.push_str(&digits);
+        } else {
+            out.push_str(&digits[..1]);
+            if k > 1 {
+                out.push('.');
+                out.push_str(&digits[1..]);
+            }
+            out.push('e');
+            out.push(if n > 0 { '+' } else { '-' });
+            out.push_str(&(n - 1).abs().to_string());
+        }
+        out
+    }
+
+    /// xorshift64* (fixed seed): the same inputs on every run.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+    }
+
+    fn same_as_old(x: f64) {
+        let mut buf = [0u8; NUMBER_TEXT_CAP];
+        let new = number_to_ascii(x, &mut buf);
+        let old = old_number_to_string(x);
+        assert_eq!(new, old, "{x:e} (bits {:#018x})", x.to_bits());
+        assert!(new.len() <= 25, "{new}");
+        assert_eq!(number_to_string(x), old, "{x:e}");
+    }
+
+    /// PREALLOC K1: the buffer form gives the same text as the old body, for 1,000,000 seeded
+    /// random doubles (random bit patterns, `Math.random`-like [0, 1), integers near 2^31 and
+    /// 2^53) and the edge cases.
+    #[test]
+    #[allow(clippy::excessive_precision)]
+    fn number_to_ascii_matches_the_old_body() {
+        let mut fixed: Vec<f64> = vec![
+            0.0,
+            -0.0,
+            f64::NAN,
+            -f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN,
+            f64::MIN_POSITIVE,
+            f64::EPSILON,
+            5e-324,
+            -5e-324,
+            f64::from_bits(0x000F_FFFF_FFFF_FFFF),
+            f64::from_bits(0x0008_0000_0000_0000),
+            1e21,
+            -1e21,
+            1e21 * (1.0 + f64::EPSILON),
+            999999999999999900000.0,
+            1e20,
+            1e-7,
+            -1e-7,
+            1e-6,
+            0.000001234567890123456,
+            -0.0000012345678901234567,
+            9.999999999999999e-7,
+            1.0000000000000001e-7,
+            -1.2345678901234567e-308,
+            2147483647.0,
+            2147483648.0,
+            2147483649.0,
+            4294967295.0,
+            4294967296.0,
+            9007199254740991.0,
+            9007199254740992.0,
+            9007199254740993.0,
+            0.1 + 0.2,
+            // The even-tie cases (`number_to_string_ties_go_to_even`).
+            900719925474099.25,
+            0.185214996337890625,
+            1.82361602783203125,
+            104.471893310546875,
+            156512588.544921875,
+            1071568155368862.75,
+            0.74469757080078125,
+            249274520119823.375,
+            -900719925474099.25,
+            0.5,
+            2.5e-7,
+        ];
+        for p in -330..=310 {
+            let t: f64 = format!("1e{p}").parse().unwrap();
+            fixed.extend([t, -t, t * 1.5, t * 0.999_999_999_999_999_9]);
+        }
+        for i in 0..4096u64 {
+            fixed.push(f64::from_bits(i)); // subnormals near 0
+            fixed.push(f64::from_bits(0x000F_FFFF_FFFF_FFFF - i)); // near the normal limit
+        }
+        for &x in &fixed {
+            same_as_old(x);
+        }
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        for i in 0..1_000_000u32 {
+            let r = rng.next();
+            let half = r >> 63 == 1;
+            let x = match i % 4 {
+                // Any bit pattern: subnormals, NaNs, infinities, every exponent.
+                0 => f64::from_bits(r),
+                // Math.random: 53 random bits in [0, 1).
+                1 => (r >> 11) as f64 / (1u64 << 53) as f64,
+                // Integers (and halves) near 2^31: both sides of the integer fast path.
+                2 => 2_147_483_648.0 + ((r % 4096) as f64 - 2048.0) * if half { 0.5 } else { 1.0 },
+                // Integers (and quarters) at and below 2^53.
+                _ => {
+                    9_007_199_254_740_992.0 - (r % 1_000_000) as f64 / if half { 4.0 } else { 1.0 }
+                }
+            };
+            same_as_old(x);
+        }
     }
 
     #[test]

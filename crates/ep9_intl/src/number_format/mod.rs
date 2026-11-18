@@ -711,10 +711,12 @@ fn partition_numeric_as(
     }
 }
 
-/// FormatNumeric ( numberFormat, x ) (16.5.5). The passes over the digits poll the
-/// interrupt (`Cx::poll_interrupt`, one budget unit per 4,096 digits).
+/// FormatNumeric ( numberFormat, x ) (16.5.5), with a text-only [`Work::text_sink`]. The
+/// passes over the digits poll (`Cx::poll_interrupt`, one budget unit per 4,096 digits).
 pub fn format_numeric(cx: &mut Cx<'_>, r: &Resolved, x: &IntlMv) -> JsResult<String> {
-    polled(cx, |w| decimal::join(&partition_numeric(r, x, w)?, w))
+    polled(cx, |w| {
+        decimal::join(&partition_numeric(r, x, w.text_sink())?, w)
+    })
 }
 
 /// The resolved options of the NumberFormat that `toLocaleString` makes as
@@ -758,11 +760,11 @@ pub fn to_locale_string<'s>(
 // ---- the JS functions -------------------------------------------------------------------------
 
 /// Intl.NumberFormat ( [ locales [ , options ] ] ) (16.1.1). NewTarget undefined is allowed
-/// (step 1 uses the active function object). The legacy constructor path of ChainNumberFormat
-/// (normative optional, `Intl.FallbackSymbol`) is W4's.
+/// (step 1 uses the active function object), with the legacy constructor path of
+/// ChainNumberFormat (normative optional, `%Intl%.[[FallbackSymbol]]`; INTL W4).
 fn constructor<'s>(
     cx: &mut Cx<'s>,
-    _this: Local<'s>,
+    this: Local<'s>,
     args: Args<'s>,
     new_target: Local<'s>,
 ) -> JsResult<Local<'s>> {
@@ -779,8 +781,16 @@ fn constructor<'s>(
     // 3. Perform ? InitializeNumberFormat(numberFormat, locales, options).
     let r = initialize(cx, args.get(0), args.get(1))?;
     store(cx, nf, &r)?;
-    // 5. Return numberFormat.
-    Ok(nf.into())
+    // 4. If the implementation supports the normative optional constructor mode of 4.3
+    //    Note 1, return ? ChainNumberFormat(numberFormat, NewTarget, this).
+    crate::intl::chain_legacy_constructed(cx, IntrinsicId::IntlNumberFormat, nf, new_target, this)
+}
+
+/// UnwrapNumberFormat ( nf ) (16.5.1): the object that holds the slots (the legacy
+/// `%Intl%.[[FallbackSymbol]]` property of an instance with no slots).
+fn unwrap<'s>(cx: &mut Cx<'s>, nf: Local<'s>) -> JsResult<Local<'s>> {
+    let has_slots = cx.object_class(nf) == Some(CLASS);
+    crate::intl::unwrap_legacy_constructed(cx, IntrinsicId::IntlNumberFormat, nf, has_slots)
 }
 
 /// Intl.NumberFormat.supportedLocalesOf ( locales [ , options ] ) (16.2.2).
@@ -803,15 +813,16 @@ fn get_format<'s>(
     _args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    // 1-3. Let nf be ? UnwrapNumberFormat(this value) (RequireInternalSlot).
-    let bound = cx.slot(this, CLASS, SLOT_BOUND_FORMAT)?;
+    // 1-3. Let nf be ? UnwrapNumberFormat(this value) (then RequireInternalSlot).
+    let nf = unwrap(cx, this)?;
+    let bound = cx.slot(nf, CLASS, SLOT_BOUND_FORMAT)?;
     // 4. If nf.[[BoundFormat]] is undefined, then
     if bound.is_undefined() {
         // a-b. Let F be a new built-in function object from the Number Format Function
         //      closure of this getter (16.3.3; length 1, name ""), with F.[[NumberFormat]] nf (the closure data).
-        let f = cx.new_builtin_closure(number_format_function, "", 1, this);
+        let f = cx.new_builtin_closure(number_format_function, "", 1, nf);
         // c. Set nf.[[BoundFormat]] to F.
-        cx.set_slot(this, CLASS, SLOT_BOUND_FORMAT, f)?;
+        cx.set_slot(nf, CLASS, SLOT_BOUND_FORMAT, f)?;
         return Ok(f.into());
     }
     // 5. Return nf.[[BoundFormat]].
@@ -941,8 +952,9 @@ fn resolved_options<'s>(
     _args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    // 1-2. Let nf be ? UnwrapNumberFormat(this value).
-    let r = read(cx, this)?;
+    // 1-2. Let nf be ? UnwrapNumberFormat(this value) (then RequireInternalSlot).
+    let nf = unwrap(cx, this)?;
+    let r = read(cx, nf)?;
     // 3. Let options be OrdinaryObjectCreate(%Object.prototype%).
     let o = cx.new_object();
     // 4. For each row of Table 26, in table order: the slots that are not undefined.
@@ -1036,6 +1048,28 @@ fn resolved_options<'s>(
     )?;
     // 5. Return options.
     Ok(o.into())
+}
+
+// ---- INTL W4 DURATION: the NumberFormat of a duration unit ------------------------------------
+
+/// The resolved options of the NumberFormat that PartitionDurationFormatPattern (ECMA-402
+/// §13.5) makes for a unit with a long, short or narrow style: `new Intl.NumberFormat(locale,
+/// { numberingSystem, style: "unit", unit, unitDisplay })`, so the NumberFormat defaults with
+/// `[[Style]]` "unit" (0 to 3 fraction digits, the defaults of a style that is not "currency"
+/// or "percent"). `unit` is a sanctioned simple unit ("hour"), `unit_display` one of
+/// "short", "narrow", "long". The caller sets the fraction digits, the rounding mode and the
+/// sign display that the duration needs.
+pub(crate) fn unit_defaults(
+    locale: &str,
+    numbering_system: &str,
+    unit: &str,
+    unit_display: &str,
+) -> Resolved {
+    let mut r = decimal_defaults(locale, numbering_system);
+    r.style = index_of(&STYLES, &"unit");
+    r.unit = Some(unit.to_string());
+    r.unit_display = index_of(&UNIT_DISPLAYS, &unit_display);
+    r
 }
 
 #[cfg(test)]

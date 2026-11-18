@@ -383,7 +383,7 @@ fn ctx_store(st: &mut St<'_>, c: u64, i: CSlot, depth: u32) -> Flow {
     let rt = st.rt();
     let v = st.acc;
     match ctx_walk(c, depth) {
-        Some(c) if object::context_set(rt, c, i.0, v) => Flow::Next,
+        Some(c) if super::keepcall::context_set(rt, c, i.0, v) => Flow::Next,
         _ => Flow::Cold,
     }
 }
@@ -772,9 +772,8 @@ op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { scaled_cold::<S4>(st) });
 /// opcodes of [`prefix_runs_fast`] (the prefixed forms in the large functions of the TS
 /// workload), at scale `S` ([`prefixed_fast`]). Anything else (another opcode, an
 /// accumulator that is not an int32, an overflow, a `%` that is not exact in int32) takes the
-/// cold block, which runs the whole instruction in `interp::scaled::step`; nothing is changed
-/// before that. These int32 cases record nothing (implicit, `profile::int32_pair_bits`;
-/// H16-Q2), so the feedback slot is not read.
+/// cold block ([`scaled_cold`]), with nothing changed. These int32 cases record nothing
+/// (implicit, `profile::int32_pair_bits`; H16-Q2), so the feedback slot is not read.
 #[inline(always)]
 fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
     use ep9_bytecode::Opcode as O;
@@ -789,7 +788,7 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
         return Flow::Jump(unsafe { st.pc.add(len) });
     }
     if !(O::AddSmi as u8..=O::BitwiseAndSmi as u8).contains(&op) {
-        return prefixed_fast::<S>(st, op);
+        return prefixed_fast::<S, PREFIXED_FAST>(st, op);
     }
     let a = st.acc;
     if !is_i32(a) {
@@ -830,42 +829,41 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
     }
 }
 
-/// True for the opcodes whose prefixed form the `Wide` and `ExtraWide` fast body runs with the
-/// opcode's own fast body ([`prefixed_fast`]; M7-P4 TSPASS2), on aarch64 only
-/// ([`PREFIXED_FAST`]): `JumpLoop`, `Jump` to `JumpIfJSReceiver` (one jump operand that needs a
-/// prefix past 255 bytes) and `GetNamedProperty` (a name constant or a feedback slot past
-/// 255). On the TS workload (`octane-typescript`, mac a64 counts at m7-p3) these are 31.6 M of
-/// the 39.2 M prefixed instructions; before, each ran in `interp::scaled::step` through the
-/// cold block.
-///
-/// The cold block reads the same set ([`scaled_cold`]): for these opcodes the fast body has
-/// run once and returned `Flow::Cold`, so the cold block runs only the opcode's cold body
-/// (`interp::scaled::step_cold`). A second run of the fast body would count the budget unit
-/// and the loop record of `JumpLoop` twice. Every opcode of the set takes no record flow in
-/// its fast body (it records inline, `JumpLoop`, or not at all), and none writes a register
-/// or the accumulator before it returns `Flow::Cold`. `SetNamedProperty` and the calls are
-/// not in it: their hit paths call out (the write barrier, the frame push), and inline here
-/// they would give the `Wide` handler register saves on entry, also on its `LdaSmi` path.
+/// True for the opcodes whose prefixed form runs the opcode's own fast body at scale `S`
+/// ([`prefixed_fast`]; M7-P4 TSPASS2): `JumpLoop`, `Jump` to `JumpIfJSReceiver` (a jump past
+/// 255 bytes) and `GetNamedProperty` (a name constant or a feedback slot past 255): 31.6 M of
+/// the 39.2 M prefixed instructions of `octane-typescript` (mac a64 counts at m7-p3). aarch64
+/// runs them in the `Wide` fast body ([`prefix_runs_fast`]), x86-64 in its cold block (a tail
+/// jump) through `interp::tails::wide` (M9-P1 X86-WIDE-FAST), not in `interp::scaled::step`.
+/// After their fast body returned `Flow::Cold`, the cold block runs only the cold body
+/// (`interp::scaled::step_cold`): a second run would count the budget unit and the `JumpLoop`
+/// record twice. No fast body of the set takes a record flow (it records inline, `JumpLoop`,
+/// or not at all) or writes a register or the accumulator before it returns `Flow::Cold`.
+/// `SetNamedProperty` and the calls are not in it: their hit paths call out.
 #[inline(always)]
-pub(crate) const fn prefix_runs_fast(op: u8) -> bool {
+pub(crate) const fn prefix_set(op: u8) -> bool {
     use ep9_bytecode::Opcode as O;
     let jump = op >= O::JumpLoop as u8 && op <= O::JumpIfJSReceiver as u8;
-    PREFIXED_FAST && (jump || op == O::GetNamedProperty as u8)
+    jump || op == O::GetNamedProperty as u8
 }
 
-/// True if the `Wide` and `ExtraWide` fast body runs the opcodes of [`prefix_runs_fast`]: on
-/// aarch64 only (M7-P4 fixer r3, DL M6-ORCH-317). On x86-64 the inlined fast bodies made the
-/// `Wide` handler 181 instructions, not 53 (`cargo xtask disasm-check -v`, SysV), and the
-/// prefixed `LdaSmi` and Smi paths paid for it (x86-64 Ir: `t0-loop` +4.2%, `crypto` +1.6%).
-/// There every other prefixed opcode runs in `interp::scaled::step` again, as at the base.
+/// True if the `Wide` and `ExtraWide` fast body runs `op`: [`prefix_set`] where [`PREFIXED_FAST`].
+#[inline(always)]
+pub(crate) const fn prefix_runs_fast(op: u8) -> bool {
+    PREFIXED_FAST && prefix_set(op)
+}
+
+/// True if the `Wide` and `ExtraWide` fast body runs [`prefix_set`]: on aarch64 only (M7-P4
+/// fixer r3, DL M6-ORCH-317). On x86-64 the inlined fast bodies made the `Wide` handler 181
+/// instructions, not 53 (`disasm-check -v`, SysV), and the prefixed `LdaSmi` and Smi paths
+/// paid for it (x86-64 Ir: `t0-loop` +4.2%, `crypto` +1.6%).
 pub(crate) const PREFIXED_FAST: bool = cfg!(target_arch = "aarch64");
 
-/// The prefixed (scale `S`) forms of the opcodes of [`prefix_runs_fast`] (or `Flow::Cold` for
-/// any other `op`): the operands at scale `S`, `st.next` set to the end of the prefixed
-/// instruction, then the opcode's fast body as its handler runs it. `st.pc` stays at the
-/// prefix, the base of a jump offset (as in `interp::scaled::step`).
+/// The prefixed (scale `S`) forms of [`prefix_set`] (`Flow::Cold` for another `op`, or if not
+/// `RUN`): the operands at scale `S`, `st.next` at the end of the prefixed instruction, then
+/// the opcode's fast body. `st.pc` stays at the prefix, the base of a jump offset (as in `step`).
 #[inline(always)]
-fn prefixed_fast<S: dsl::Scale>(st: &mut St<'_>, op: u8) -> Flow {
+pub(crate) fn prefixed_fast<S: dsl::Scale, const RUN: bool>(st: &mut St<'_>, op: u8) -> Flow {
     use ep9_bytecode::Opcode as O;
     #[inline(always)]
     fn flow(d: Done) -> Flow {
@@ -874,7 +872,7 @@ fn prefixed_fast<S: dsl::Scale>(st: &mut St<'_>, op: u8) -> Flow {
             Done::Jump(t) => Flow::Jump(t),
         }
     }
-    if !prefix_runs_fast(op) {
+    if !(RUN && prefix_set(op)) {
         return Flow::Cold;
     }
     if op == O::GetNamedProperty as u8 {
@@ -912,15 +910,17 @@ fn prefixed_fast<S: dsl::Scale>(st: &mut St<'_>, op: u8) -> Flow {
     }
 }
 
-/// The cold block of `Wide` and `ExtraWide`: for an opcode of [`prefix_runs_fast`] its cold
-/// body only (its fast body ran in [`prefixed_fast`] and returned `Flow::Cold`), for any other
-/// opcode the whole prefixed instruction (`interp::scaled::step`).
+/// The cold block of `Wide` and `ExtraWide`: for [`prefix_runs_fast`] the cold body only (the
+/// fast body ran), for the rest of [`prefix_set`] `interp::tails::wide`, else the whole
+/// prefixed instruction (`interp::scaled::step`).
 #[inline(always)]
 fn scaled_cold<S: dsl::Scale>(st: &mut St<'_>) -> Done {
     // SAFETY: verified code: a prefix is followed by an opcode byte.
     let op = unsafe { *st.pc.add(1) };
     if prefix_runs_fast(op) {
         st.scaled_cold::<S>()
+    } else if prefix_set(op) {
+        super::tails::wide::<S>(st, op)
     } else {
         st.scaled::<S>()
     }
@@ -1164,17 +1164,17 @@ op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
     st.result(r)
 });
 op!(GetKeyedProperty(st, object: R, s: FSlot) {
-    let (o, k) = (st.reg(object), st.acc);
-    profile::record_keyed(st, s, o, k);
-    if is_i32(k)
-        && i32_of(k) >= 0
-        && object::is_array(o)
-        && let Some(v) = object::array_get(o, i32_of(k) as u32)
-    {
-        st.acc = v;
-        return next_or_record(s, profile::keyed_hit_kind(st, o));
-    }
-    keyed_ic::fast_get(st, o, k, s)
+    // The fast body is `get_keyed` (after `for_in_prepare_cold`): a fn with the per-table const
+    // `RECORDS`, which an `op!` fast body cannot take (M9-P4 LEVER-11, V10 KEYED-NAVIER; DL
+    // M9-P4-WPRE-1, -2). `RECORDS` is true here: the `full` handler tables, the match loop and
+    // the prefixed step run this `fast`, so they keep the sampled kinds-set record of an Array
+    // hit (`profile::keyed_hit_kind`). The `ics_only` handler tables call `get_keyed::<false>`
+    // (`interp::dsl::fast_body`): they record nothing, so their hit runs no window test (a load
+    // of `Cx::budget`, a compare and a branch on every hit; x86-64 jitless navier-stokes makes
+    // about 40.9 M such hits). The body is not here, so that no line below moves: they are cited
+    // (`cargo xtask adr-lint`, path:line drift). Arrays of any elements kind take the same path;
+    // the other keys and receivers go to `keyed_ic::fast_get` and the cold body, as before.
+    get_keyed::<true>(st, object, s)
 } cold {
     let (o, k) = (st.reg(object), st.acc);
     profile::record_keyed_cold(st, s, o, k);
@@ -1636,20 +1636,20 @@ op!(CallProperty0(st, callee: R, receiver: R, s: FSlot) {
     let (f, this) = (st.reg(callee), call_operand(st, receiver));
     call_fast::<false, false>(st, s, f, this, 0, |_, _| UNDEFINED)
 } cold {
-    call_receiver_cold(st, callee, s, Some(receiver))
+    call_property_cold::<0>(st, callee, s, receiver)
 });
 op!(CallProperty1(st, callee: R, receiver: R, a0: R, s: FSlot) {
     let (f, this, v0) = (st.reg(callee), call_operand(st, receiver), call_operand(st, a0));
     call_fast::<false, true>(st, s, f, this, 1, move |_, _| v0)
 } cold {
-    call_receiver_cold(st, callee, s, Some(receiver))
+    call_property_cold::<1>(st, callee, s, receiver)
 });
 op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
     let (f, this) = (st.reg(callee), call_operand(st, receiver));
     let (v0, v1) = (call_operand(st, a0), call_operand(st, a1));
     call_fast::<false, true>(st, s, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold {
-    call_receiver_cold(st, callee, s, Some(receiver))
+    call_property_cold::<2>(st, callee, s, receiver)
 });
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
@@ -2316,6 +2316,48 @@ fn call_record_out_or_cold(st: &mut St<'_>) -> Done {
     call_cold(st)
 }
 
+/// The cold body of `CallProperty0`, `CallProperty1` and `CallProperty2` (`N` arguments) on
+/// x86-64 (not spike-native): [`call_receiver_cold`] with the call of `slow::call_property`
+/// in place of `slow::call` at its end (M9 OXC-W2-HOSTCALL), where a call with a receiver
+/// that is not a FUNCTION and no record due arrives (a host method of a String, an Array,
+/// `Math`). `slow::call_property` runs a host callee with `N` known and gives every other
+/// call to `slow::call`, so the tests, the record and the forward run as before, and the
+/// handler keeps one call and the state of the base cold body.
+#[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+#[inline(always)]
+fn call_property_cold<const N: u32>(st: &mut St<'_>, callee: R, s: FSlot, receiver: R) -> Done {
+    let this = st.reg(receiver);
+    if object::is_function(this) {
+        return call_receiver_cold(st, callee, s, Some(receiver));
+    }
+    if st.cx.budget > crate::interp::BUDGET - profile::CALL_WINDOW {
+        // SAFETY: as in `call_receiver_cold`.
+        let v = unsafe { record_call_out(st.cx, st.pc, st.fp) };
+        return st.switch(v);
+    }
+    // SAFETY: the cold handler's state: `fp` is the live top frame (bytecode runs with no
+    // scratch area) and `pc` its current `CallProperty<N>` instruction (or its prefix) of
+    // verified code, and `this` its receiver register.
+    let v = unsafe { slow::call_property::<N>(st.cx, st.fp, st.pc, this, st.acc) };
+    st.switch(v)
+}
+
+/// The cold body of `CallProperty0`-`2` on the other targets and builds: [`call_record_cold`]
+/// with the call of `slow::call_property` in place of `slow::call` after the record (as the
+/// x86-64 form).
+#[cfg(not(all(not(feature = "spike-native"), target_arch = "x86_64")))]
+#[inline(always)]
+fn call_property_cold<const N: u32>(st: &mut St<'_>, callee: R, s: FSlot, receiver: R) -> Done {
+    let f = st.reg(callee);
+    profile::record_call(st, s, f);
+    let this = st.reg(receiver);
+    // SAFETY: the cold handler's state: `fp` is the live top frame (bytecode runs with no
+    // scratch area) and `pc` its current `CallProperty<N>` instruction (or its prefix) of
+    // verified code, and `this` its receiver register.
+    let v = unsafe { slow::call_property::<N>(st.cx, st.fp, st.pc, this, st.acc) };
+    st.switch(v)
+}
+
 /// The callee of the call at `pc` read at its fixed place (operand 0 of the 5 opcodes of
 /// [`call_receiver_cold`] at single scale, `pc + 1`), or `None` for a prefixed call (`pc` at
 /// its `Wide` or `ExtraWide` byte).
@@ -2672,6 +2714,26 @@ fn for_in_prepare_cold(st: &mut St<'_>, cache: R) -> Done {
         ErrorKind::Error,
         "ep9 internal error: ForInPrepare without a key array",
     )
+}
+
+/// The `GetKeyedProperty` fast body (see its `op!`). `RECORDS` is false only in the `ics_only`
+/// handler tables (`interp::dsl::fast_body`): their Array hit then runs no window test.
+#[inline(always)]
+pub(crate) fn get_keyed<const RECORDS: bool>(st: &mut St<'_>, object: R, s: FSlot) -> Flow {
+    let (o, k) = (st.reg(object), st.acc);
+    profile::record_keyed(st, s, o, k);
+    if is_i32(k)
+        && i32_of(k) >= 0
+        && object::is_array(o)
+        && let Some(v) = object::array_get(o, i32_of(k) as u32)
+    {
+        st.acc = v;
+        if !RECORDS {
+            return Flow::Next;
+        }
+        return next_or_record(s, profile::keyed_hit_kind(st, o));
+    }
+    keyed_ic::fast_get(st, o, k, s)
 }
 
 /// `number_bits` against `Value::number`: the int32 edges, -0, NaN payloads, infinities,

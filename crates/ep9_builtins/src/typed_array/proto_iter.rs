@@ -16,7 +16,7 @@
 //! join                  ToString(separator) once, then ToString per element (undefined: "")
 //! toLocaleString        Invoke(element, "toLocaleString", « locales, options ») per element
 //!                       (undefined, null: "")
-//! toString              the steps of Array.prototype.toString (route TA-TOSTRING-IDENTITY)
+//! toString              def 42.30 only; the property is %Array.prototype.toString%
 //! get @@toStringTag     [[TypedArrayName]], else undefined (no throw)
 //! ```
 //!
@@ -607,9 +607,9 @@ pub(super) fn reduce_right<'s>(
     reduce_in(cx, this, args, false, "reduceRight")
 }
 
-/// `%TypedArray%.prototype.toString ( )` (`sec-%typedarray%.prototype.tostring`). The spec
-/// makes it the same function object as `Array.prototype.toString`; here it is a function of
-/// its own (route TA-TOSTRING-IDENTITY) that runs the same steps (`sec-array.prototype.tostring`)
+/// `%TypedArray%.prototype.toString ( )` (`sec-%typedarray%.prototype.tostring`). The property
+/// holds `%Array.prototype.toString%` itself (proto.rs; TA-TOSTRING-IDENTITY, M9-P4). This
+/// definition (42.30) stays for the id order, no property names it, and it runs the same steps (`sec-array.prototype.tostring`)
 /// through `Cx::array_prototype_to_string`: a `join` that is not callable gives the intrinsic
 /// `%Object.prototype.toString%`, not the live property.
 pub(super) fn to_string<'s>(

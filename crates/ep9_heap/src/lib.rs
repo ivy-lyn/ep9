@@ -51,7 +51,7 @@ pub use barrier::{
     threshold,
 };
 pub use cell::{
-    CellKind, CellPtr, CellSize, HeapLayout, KindError, KindId, SizeFn, Space, TraceFn,
+    CellKind, CellPtr, CellSize, FieldSize, HeapLayout, KindError, KindId, SizeFn, Space, TraceFn,
 };
 pub use ep9_platform::CageConfig;
 pub use heap::{AllocError, GcStats, Heap, HeapConfig, VerifyMode};
