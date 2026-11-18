@@ -100,7 +100,7 @@ pub(crate) fn site_text(rt: &Runtime, s: Site) -> String {
     }
 }
 
-/// Appends "\n    at <site>" or "\n    at <name> (<site>)"; site: `site_text` or `<anonymous>`.
+/// Appends `"\n    at <site>"` or `"\n    at <name> (<site>)"`; site: `site_text` or `<anonymous>`.
 fn push_stack_line(rt: &Runtime, out: &mut String, name: &str, site: Option<Site>) {
     use core::fmt::Write as _;
     out.push_str("\n    at ");
