@@ -312,13 +312,21 @@ pub(crate) fn init(rt: &Runtime) {
 }
 
 /// The atom for the string `s`: the existing atom of its text, or `s` itself, which becomes
-/// the atom (see the module docs for THIN cells). Not a GC point. A CONS or SLICED `s` whose
-/// text has no atom yet becomes a rope or slice atom; [`atomize`] makes a flat one instead.
+/// the atom (see the module docs for THIN cells). Not a GC point. Slow part: [`intern_slow`].
+#[inline(always)]
 pub(crate) fn intern(rt: &Runtime, s: u64) -> u64 {
     debug_assert!(is_string(s));
     if string::is_atom(s) {
         return s;
     }
+    intern_slow(rt, s)
+}
+
+/// [`intern`] of a string that is not an atom yet. BESTFIT B2: it stays out of line, so only
+/// the `is_atom` guard above inlines into the callers. A CONS or SLICED `s` whose text has no
+/// atom yet becomes a rope or slice atom; [`atomize`] makes a flat one instead.
+#[inline(never)]
+fn intern_slow(rt: &Runtime, s: u64) -> u64 {
     if let Some(a) = string::thin_target(s) {
         return a;
     }
@@ -337,14 +345,6 @@ pub(crate) fn intern(rt: &Runtime, s: u64) -> u64 {
     string::set_atom(s);
     rt.atoms.borrow_mut().insert(hash, s);
     s
-}
-
-/// Makes the CONS or SLICED string `s` a THIN cell forwarding to its atom `a` when `a` is a
-/// SEQ atom (H19-Q4); any other pair stays as it is. Not a GC point.
-fn forward(rt: &Runtime, s: u64, a: u64) {
-    if s != a && string::is_rope_or_slice(s) && string::is_seq(a) {
-        string::make_thin(rt, s, a);
-    }
 }
 
 /// The atom for the string `s`, always a SEQ atom unless one of another kind already holds
@@ -403,6 +403,14 @@ fn intern_text(rt: &Runtime, text: JsStr<'_>, make: impl FnOnce(&Runtime) -> u64
     string::set_atom(s);
     rt.atoms.borrow_mut().insert(hash, s);
     s
+}
+
+/// Makes the CONS or SLICED string `s` a THIN cell forwarding to its atom `a` when `a` is a
+/// SEQ atom (H19-Q4); any other pair stays as it is. Not a GC point.
+fn forward(rt: &Runtime, s: u64, a: u64) {
+    if s != a && string::is_rope_or_slice(s) && string::is_seq(a) {
+        string::make_thin(rt, s, a);
+    }
 }
 
 /// The atom for the Rust text `s`. GC point.
