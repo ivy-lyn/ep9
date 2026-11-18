@@ -1840,3 +1840,63 @@ fn a_slice_keeps_its_parent_and_a_gc_frees_both_after_its_last_use() {
         });
     }
 }
+
+// ---- BESTFIT B1: a static atom's text gives its root ------------------------------------------
+
+#[test]
+fn a_static_atom_text_gives_its_root() {
+    for &a in Atom::ALL {
+        assert_eq!(Atom::from_text(a.text()), Some(a), "{a:?}");
+    }
+    assert_eq!(Atom::from_text(""), Some(Atom::Empty));
+    for text in [
+        "lengt",
+        "lengthx",
+        "Length",
+        "a",
+        "0",
+        "__proto__",
+        "callee ",
+    ] {
+        assert_eq!(Atom::from_text(text), None, "{text:?}");
+    }
+    // The match is a const fn.
+    const LENGTH: Option<Atom> = Atom::from_text("length");
+    assert_eq!(LENGTH, Some(Atom::Length));
+    // Same bits as the root, under a GC between the calls too.
+    for stress in [false, true] {
+        let iso = isolate(config(Dispatch::DEFAULT, stress));
+        let rt = &*iso.rt;
+        let n = atoms::verify(rt).unwrap();
+        for &a in Atom::ALL {
+            assert_eq!(atoms::intern_str(rt, a.text()), rt.atom(a), "{a:?}");
+            rt.heap.collect();
+            assert_eq!(atoms::intern_str(rt, a.text()), rt.atom(a), "{a:?}");
+        }
+        assert_eq!(atoms::verify(rt).unwrap(), n, "no new atom");
+    }
+}
+
+#[test]
+fn intern_str_before_init_static_takes_the_table_path() {
+    // A runtime with no realm: `init_static` has not run, so every root is UNDEFINED.
+    let heap = ep9_heap::Heap::new(crate::shape::heap_config(HeapConfig::default())).unwrap();
+    let rt = Runtime::new(heap, 1 << 12, 0, 10, None);
+    let rt = &*rt;
+    assert_eq!(rt.atom(Atom::Length), crate::frame::UNDEFINED);
+    assert_eq!(atoms::lookup(rt, "length"), None);
+    // The slow path makes the atom in the table.
+    let a = atoms::intern_str(rt, "length");
+    assert!(string::is_atom(a));
+    assert_eq!(string::to_rust_string(a), "length");
+    assert_eq!(atoms::lookup(rt, "length"), Some(a));
+    assert_eq!(atoms::intern_str(rt, "length"), a);
+    // `init_static` then finds that atom for the root.
+    atoms::init_static(rt);
+    assert_eq!(rt.atom(Atom::Length), a);
+    assert_eq!(atoms::intern_str(rt, "length"), a);
+    for &b in Atom::ALL {
+        assert_eq!(atoms::intern_str(rt, b.text()), rt.atom(b), "{b:?}");
+    }
+    atoms::verify(rt).unwrap();
+}
