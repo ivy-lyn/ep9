@@ -843,6 +843,13 @@ fn add_scopes(
     let script = code == CodeKind::Script;
     let script_ctx = (script && root.needs_context).then_some(ep9_bytecode::ScopeId(1));
     let shifted = script_ctx.is_some();
+    // Exact sizes: one descriptor per analysis scope (plus the script context), and one code
+    // per analysis function (`set_function` fills them). Here, not at `UnitBuilder::new`
+    // above, so the ADR cites of the lines above keep their line numbers.
+    unit.reserve(
+        sa.scopes().len() + usize::from(shifted),
+        sa.functions().len(),
+    );
     for s in sa.scopes() {
         let mut flags = ScopeFlags::default();
         if s.strict {

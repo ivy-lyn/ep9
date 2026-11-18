@@ -316,8 +316,14 @@ impl Emitter {
             args,
             table_labels,
             handlers,
+            instructions,
             ..
         } = self;
+        // The recorded count: exact for the plain replay, a hint with the optimizer (it drops
+        // deferred transfers and adds a Mov where it must). An instruction has at most one
+        // position entry.
+        let n = instructions as usize;
+        b.reserve(n, n);
         let inner_at = if optimize {
             let mut r = Replay::new(&mut b, named, &events, &args, &table_labels, &handlers);
             r.run();
@@ -341,6 +347,15 @@ impl Emitter {
 /// The replay with the optimizer off: every event as recorded. Returns the instruction index
 /// of each bound label.
 fn plain_replay(b: &mut FunctionBuilder, events: &[Ev], args: &[Arg]) -> HashMap<Label, u32> {
+    // `finish` reserved one slot per recorded instruction, so the replay never grows the list.
+    debug_assert!(
+        b.instruction_capacity()
+            >= b.instruction_count() as usize
+                + events
+                    .iter()
+                    .filter(|e| matches!(e, Ev::Insn { .. }))
+                    .count()
+    );
     let mut inner_at = HashMap::new();
     let mut ops = [0u32.into_pending(); MAX_OPERANDS];
     for ev in events {
