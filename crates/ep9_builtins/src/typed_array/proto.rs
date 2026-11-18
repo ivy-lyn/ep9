@@ -1,6 +1,6 @@
 //! The methods of `%TypedArray.prototype%`
 //! (`sec-properties-of-the-%typedarray%-prototype-object`): module `typed_array_proto`, block
-//! 36. Owner of this file: TypedArray TA-4 R1 (the one writer of the TA-4 lists; design
+//! 42. Owner of this file: TypedArray TA-4 R1 (the one writer of the TA-4 lists; design
 //! `docs/plan/notes/typedarray-design.md` TA-PROTO). The module joins the lazy group of
 //! `array_buffer` (TA-D14): each table entry targets `%TypedArray.prototype%`.
 //!
