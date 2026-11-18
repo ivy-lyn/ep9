@@ -1336,10 +1336,10 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     let mut kept = UNDEFINED;
     let mut hops = 0;
     let mut cur = o;
+    let mut index_keys: Vec<(u32, bool)> = Vec::new();
+    let mut string_keys: Vec<(u64, bool)> = Vec::new();
     loop {
-        // (index, enumerable) and (key, enumerable).
-        let mut index_keys: Vec<(u32, bool)> = Vec::new();
-        let mut string_keys: Vec<(u64, bool)> = Vec::new();
+        // (index, enumerable) and (key, enumerable): empty here, drained below (PREALLOC K13).
         // The key array of a routed kind, kept live until its keys are pushed below.
         let mut own = UNDEFINED;
         if exotic::is_hooked(kind::cell_kind(cur)) {
@@ -1391,6 +1391,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 index_keys.extend((0..object::str_len(s) as u32).map(|i| (i, true)));
                 string_keys.push((rt.atom(Atom::Length), false));
             }
+            string_keys.reserve(object::own_count(cur) + 1);
             for i in 0..object::own_count(cur) {
                 let (k, _, a) = object::own_entry(cur, i);
                 if is_symbol_key(k) {
@@ -1404,10 +1405,9 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             }
         }
         index_keys.sort_by_key(|&(n, _)| n);
-        // The seen test of this hop: which indices came before it, and whether its string
-        // keys are unique with none seen yet (an ordinary object that is not a String wrapper).
-        seen.begin_hop(cur);
-        for (n, enumerable) in index_keys {
+        // The seen test of this hop (earlier indices; unique, unseen string keys: `fresh`).
+        seen.begin_hop(cur, string_keys.len());
+        for (n, enumerable) in index_keys.drain(..) {
             if !seen.add_index(n, enumerable) {
                 continue;
             }
@@ -1417,7 +1417,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 object::array_set(cx.rt(), keys, len, s);
             }
         }
-        for (k, enumerable) in string_keys {
+        for (k, enumerable) in string_keys.drain(..) {
             if !seen.add_string(k, enumerable) {
                 continue;
             }
@@ -2404,9 +2404,11 @@ struct ForInSeen {
 }
 
 impl ForInSeen {
-    /// Starts the hop of `cur` (after its keys are listed, before any is added).
+    /// Starts the hop of `cur` (after its keys are listed, before any is added) with `strings`
+    /// string keys: each one goes into `atoms` or `other`, so `atoms` gets room for all.
     #[inline]
-    fn begin_hop(&mut self, cur: u64) {
+    fn begin_hop(&mut self, cur: u64, strings: usize) {
+        self.atoms.reserve(strings);
         self.prior = self.index.len();
         self.fresh = self.atoms.is_empty()
             && self.other.is_empty()

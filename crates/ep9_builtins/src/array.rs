@@ -622,7 +622,9 @@ fn sorted_order<'s>(
     let n = items.len();
     // SortCompare steps 1-3: undefined values come after every other value, and compare
     // equal among themselves (stable: they keep their order).
-    let defined: Vec<usize> = (0..n).filter(|&i| !items.get(i).is_undefined()).collect();
+    // Room for all n (PREALLOC K17): the undefined ones are appended at the end.
+    let mut defined: Vec<usize> = Vec::with_capacity(n);
+    defined.extend((0..n).filter(|&i| !items.get(i).is_undefined()));
     let undefined = (0..n).filter(|&i| items.get(i).is_undefined());
     let mut order = defined;
     if comparefn.is_undefined() {
