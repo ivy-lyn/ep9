@@ -1473,3 +1473,17 @@ pub(crate) fn new_string_joined(rt: &Runtime, pre: &[u8], mid: JsStr<'_>, post: 
     }
     c.to_value().to_bits()
 }
+
+/// The process hash of a BigInt (`bigint::hash`, R20 §7): keyed SipHash-1-3 of one word for
+/// the sign and the digit count, then one word per digit, then the byte length in the top
+/// byte (the [`sip13_word`] form); the low 32 bits. Equal values give equal hashes (H12-Q2:
+/// no address input). A keyed hash, because an FNV-1a over words collides for every seed
+/// when the top bits of 2 adjacent digits flip. Not a GC point.
+pub(crate) fn sip13_bigint(v: ep9_bigint::View<'_>) -> u32 {
+    let mut s = Sip::new(sip_keys());
+    s.word((u64::from(v.neg) << 63) | v.digits.len() as u64);
+    for &d in v.digits {
+        s.word(d);
+    }
+    s.finish(((8 * (v.digits.len() + 1)) as u64 & 0xff) << 56) as u32
+}
