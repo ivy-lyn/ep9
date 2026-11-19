@@ -301,11 +301,18 @@ fn bad_record() {
         ),
         (
             "slot without class",
-            Box::new(|b| put_u16(b, rec(2, o::REC_SLOT), 0)),
+            Box::new(|b| put_u16(b, rec(1, o::REC_SLOT), 0)),
         ),
         (
             "slot at slot count",
-            Box::new(|b| put_u16(b, rec(0, o::REC_SLOT), 3)),
+            Box::new(|b| {
+                put_u32(b, rec(1, o::REC_CLASS), 1);
+                put_u16(b, rec(1, o::REC_SLOT), 3);
+            }),
+        ),
+        (
+            "slot on a kind that is not a member access",
+            Box::new(|b| put_u16(b, rec(0, o::REC_SLOT), 0)),
         ),
         (
             "target file out of range",

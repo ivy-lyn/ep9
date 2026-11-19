@@ -242,7 +242,6 @@ fn golden_bytes_of_a_tiny_file() {
     r.non_null = true;
     r.confidence = 1;
     r.class = Some(2);
-    r.slot = Some(4);
     h.records.push(r);
     let mut r = record(0, 4, NodeKind::CallExpression);
     r.repr = Repr::String;
@@ -351,7 +350,7 @@ fn golden_bytes_of_a_tiny_file() {
         "00",       // element 0 None
         "01",       // flags: bit 0 non-null
         "01",       // confidence 1
-        "0400",     // slot 4
+        "ffff",     // slot null
         "02000000", // class 2
         "ffffffff", // call-target file null
         "00000000", // call-target offset 0
@@ -597,6 +596,10 @@ fn member_access_class_is_the_receiver() {
     ab.slot = Some(2);
     h.records.push(ab);
     assert_eq!(read(&write(&h).unwrap(), &Expect::default()), Ok(h.clone()));
+    // `a` is not a member access, so it has no slot, though slot 0 is below A's 3 slots.
+    let mut bad = h.clone();
+    bad.records[0].slot = Some(0);
+    assert_eq!(write(&bad), Err(WriteError::Invalid(DropReason::BadRecord)));
     // Slot 2 is not a slot of B, so the record cannot name the class of the value.
     h.records[1].class = Some(1);
     assert_eq!(write(&h), Err(WriteError::Invalid(DropReason::BadRecord)));

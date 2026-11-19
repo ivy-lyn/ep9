@@ -50,7 +50,6 @@ pub fn sample() -> Hints {
     let mut r0 = record(0, 5, NodeKind::BindingIdentifier);
     r0.repr = Repr::ClassInstance;
     r0.class = Some(1);
-    r0.slot = Some(1);
     r0.non_null = true;
     r0.confidence = 200;
     let mut r1 = record(0, 5, NodeKind::StaticMemberExpression);

@@ -51,7 +51,8 @@ pub enum DropReason {
     /// slots.
     BadClassTable,
     /// A record has an unknown code, a reserved flag bit, start after end, a reference out of
-    /// range, a slot without a class, or a value in a field that its null value turns off.
+    /// range, a slot without a class or on a kind that is not a member access, or a value in
+    /// a field that its null value turns off.
     BadRecord,
     /// The records of a file are not in strictly ascending (start, end, kind) order.
     UnsortedRecords,
@@ -397,10 +398,16 @@ fn read_record(e: &[u8], file_count: usize, classes: &[ClassEntry]) -> Result<Re
         None => None,
         Some(c) => Some(classes.get(c as usize).ok_or(bad)?),
     };
+    let member = matches!(
+        kind,
+        NodeKind::StaticMemberExpression
+            | NodeKind::ComputedMemberExpression
+            | NodeKind::PrivateFieldExpression
+    );
     let slot = match u16_at(e, o::REC_SLOT) {
         NULL_U16 => None,
         s => match class_entry {
-            Some(k) if u32::from(s) < k.slot_count => Some(s),
+            Some(k) if member && u32::from(s) < k.slot_count => Some(s),
             _ => return Err(bad),
         },
     };

@@ -120,7 +120,8 @@ pub struct Record {
     /// candidate"). On any other kind it is the class of the node's value
     /// ([`Repr::ClassInstance`]).
     pub class: Option<u32>,
-    /// The slot of the member in the receiver class: below its slot count. Needs `class`.
+    /// The slot of the member in the receiver class: below its slot count. Needs `class` and
+    /// a member-access kind (3-5).
     pub slot: Option<u16>,
     /// The declaration of the call target.
     pub call_target: Option<DeclRef>,
