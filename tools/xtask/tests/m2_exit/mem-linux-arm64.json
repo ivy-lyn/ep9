@@ -1,0 +1,37 @@
+{
+ "schema": "ep9-mem/v1",
+ "commit": { "ep9": "0123456789abcdef0123456789abcdef01234567", "runner_dirty": false },
+ "host": { "file": "out/host.toml", "id": "gha-memjs-linux-arm64", "gate_host": false, "measured": { "platform": "linux-arm64" } },
+ "load": { "margin": 0.5, "before": { "load1": 1, "limit": 1.5, "pass": true }, "after": { "load1": 1.1, "limit": 1.5, "pass": true } },
+ "provisional": true,
+ "provisional_reasons": ["host gha-memjs-linux-arm64 is not a gate host"],
+ "runs": 5,
+ "engines": [
+  { "id": "ep9", "role": "subject", "version": "ep9 0.0.0", "engine_build": "features jit; preset jit" },
+  { "id": "ep9-jitless", "role": "subject", "version": "ep9 0.0.0", "engine_build": "features none; preset jitless" },
+  { "id": "node-jitless", "role": "cap", "version": "v24.22.0", "engine_build": null }
+ ],
+ "table": [
+  { "workload": "richards", "engine": "node-jitless", "n": 5, "median_bytes": 50000000, "min_bytes": 50000000, "max_bytes": 50000000 },
+  { "workload": "deltablue", "engine": "node-jitless", "n": 5, "median_bytes": 50000000, "min_bytes": 50000000, "max_bytes": 50000000 },
+  { "workload": "crypto", "engine": "node-jitless", "n": 5, "median_bytes": 50000000, "min_bytes": 50000000, "max_bytes": 50000000 },
+  { "workload": "raytrace", "engine": "node-jitless", "n": 5, "median_bytes": 50000000, "min_bytes": 50000000, "max_bytes": 50000000 },
+  { "workload": "earley-boyer", "engine": "node-jitless", "n": 5, "median_bytes": 50000000, "min_bytes": 50000000, "max_bytes": 50000000 },
+  { "workload": "splay", "engine": "node-jitless", "n": 5, "median_bytes": 100000000, "min_bytes": 100000000, "max_bytes": 100000000 },
+  { "workload": "navier-stokes", "engine": "node-jitless", "n": 5, "median_bytes": 50000000, "min_bytes": 50000000, "max_bytes": 50000000 },
+  { "workload": "richards", "engine": "ep9", "n": 5, "median_bytes": 45000000, "min_bytes": 45000000, "max_bytes": 45000000 },
+  { "workload": "deltablue", "engine": "ep9", "n": 5, "median_bytes": 45000000, "min_bytes": 45000000, "max_bytes": 45000000 },
+  { "workload": "crypto", "engine": "ep9", "n": 5, "median_bytes": 45000000, "min_bytes": 45000000, "max_bytes": 45000000 },
+  { "workload": "raytrace", "engine": "ep9", "n": 5, "median_bytes": 45000000, "min_bytes": 45000000, "max_bytes": 45000000 },
+  { "workload": "earley-boyer", "engine": "ep9", "n": 5, "median_bytes": 45000000, "min_bytes": 45000000, "max_bytes": 45000000 },
+  { "workload": "splay", "engine": "ep9", "n": 5, "median_bytes": 110000000, "min_bytes": 110000000, "max_bytes": 110000000 },
+  { "workload": "navier-stokes", "engine": "ep9", "n": 5, "median_bytes": 45000000, "min_bytes": 45000000, "max_bytes": 45000000 },
+  { "workload": "richards", "engine": "ep9-jitless", "n": 5, "median_bytes": 44000000, "min_bytes": 44000000, "max_bytes": 44000000 },
+  { "workload": "deltablue", "engine": "ep9-jitless", "n": 5, "median_bytes": 44000000, "min_bytes": 44000000, "max_bytes": 44000000 },
+  { "workload": "crypto", "engine": "ep9-jitless", "n": 5, "median_bytes": 44000000, "min_bytes": 44000000, "max_bytes": 44000000 },
+  { "workload": "raytrace", "engine": "ep9-jitless", "n": 5, "median_bytes": 44000000, "min_bytes": 44000000, "max_bytes": 44000000 },
+  { "workload": "earley-boyer", "engine": "ep9-jitless", "n": 5, "median_bytes": 44000000, "min_bytes": 44000000, "max_bytes": 44000000 },
+  { "workload": "splay", "engine": "ep9-jitless", "n": 5, "median_bytes": 105000000, "min_bytes": 105000000, "max_bytes": 105000000 },
+  { "workload": "navier-stokes", "engine": "ep9-jitless", "n": 5, "median_bytes": 44000000, "min_bytes": 44000000, "max_bytes": 44000000 }
+ ]
+}

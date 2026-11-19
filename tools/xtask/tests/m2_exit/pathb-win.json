@@ -149,20 +149,26 @@
    "cell": "item 1: Octane-7 geomean vs QuickJS",
    "threshold": 1.33,
    "box1": {
-    "median": null,
-    "interval": null,
-    "note": "gross, incomplete"
+    "median": 1.4,
+    "interval": [
+     1.37,
+     1.43
+    ],
+    "note": "net, provisional"
    },
    "box2": {
-    "median": null,
-    "interval": null,
-    "note": "gross, incomplete"
+    "median": 1.41,
+    "interval": [
+     1.38,
+     1.44
+    ],
+    "note": "net, provisional"
    },
    "sides": [
-    null,
-    null
+    "above",
+    "above"
    ],
-   "result": "NO AGREEMENT"
+   "result": "AGREE above"
   },
   {
    "group": "A. M2 gate items (m2gate.mjs)",
@@ -251,20 +257,26 @@
    "cell": "item 1: Octane-7 geomean vs QuickJS",
    "threshold": 1.33,
    "box1": {
-    "median": null,
-    "interval": null,
-    "note": "gross, incomplete"
+    "median": 1.38,
+    "interval": [
+     1.35,
+     1.41
+    ],
+    "note": "net, provisional"
    },
    "box2": {
-    "median": null,
-    "interval": null,
-    "note": "gross, incomplete"
+    "median": 1.39,
+    "interval": [
+     1.36,
+     1.42
+    ],
+    "note": "net, provisional"
    },
    "sides": [
-    null,
-    null
+    "above",
+    "above"
    ],
-   "result": "NO AGREEMENT"
+   "result": "AGREE above"
   },
   {
    "group": "A. M2 gate items (m2gate.mjs)",
@@ -346,6 +358,680 @@
     "above"
    ],
    "result": "AGREE above"
+  }
+ ],
+ "legs": [
+  {
+   "leg": "w2",
+   "cpu": "AMD EPYC 7763 64-Core Processor",
+   "platform": "win32-x64",
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "checks": [
+    {
+     "build": "jit",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "AMD EPYC 7763 64-Core Processor",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    },
+    {
+     "build": "jitless",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "AMD EPYC 7763 64-Core Processor",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    }
+   ],
+   "cells": [
+    {
+     "build": "jit",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.4,
+      "interval": [
+       1.37,
+       1.43
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.15,
+      "interval": [
+       1.13,
+       1.17
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.95,
+      "interval": [
+       0.93,
+       0.97
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 3.8095,
+      "interval": [
+       3.7383,
+       3.8835
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.25,
+      "interval": [
+       1.22,
+       1.28
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.38,
+      "interval": [
+       1.35,
+       1.41
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.13,
+      "interval": [
+       1.11,
+       1.15
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.93,
+      "interval": [
+       0.91,
+       0.95
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 3.8835,
+      "interval": [
+       3.8095,
+       3.9604
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.23,
+      "interval": [
+       1.2,
+       1.26
+      ],
+      "note": "net, provisional"
+     }
+    }
+   ]
+  },
+  {
+   "leg": "w1",
+   "cpu": "Intel Xeon Platinum 8370C",
+   "platform": "win32-x64",
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "checks": [
+    {
+     "build": "jit",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "Intel Xeon Platinum 8370C",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    },
+    {
+     "build": "jitless",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "Intel Xeon Platinum 8370C",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    }
+   ],
+   "cells": [
+    {
+     "build": "jit",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.35,
+      "interval": [
+       1.32,
+       1.38
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.1,
+      "interval": [
+       1.08,
+       1.12
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.9,
+      "interval": [
+       0.88,
+       0.92
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 4,
+      "interval": [
+       3.9216,
+       4.0816
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.2,
+      "interval": [
+       1.17,
+       1.23
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.33,
+      "interval": [
+       1.3,
+       1.36
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.08,
+      "interval": [
+       1.06,
+       1.1
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.88,
+      "interval": [
+       0.86,
+       0.9
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 4.0816,
+      "interval": [
+       4,
+       4.1667
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.18,
+      "interval": [
+       1.15,
+       1.21
+      ],
+      "note": "net, provisional"
+     }
+    }
+   ]
+  },
+  {
+   "leg": "w3",
+   "cpu": "AMD EPYC 7763 64-Core Processor",
+   "platform": "win32-x64",
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "checks": [
+    {
+     "build": "jit",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "AMD EPYC 7763 64-Core Processor",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    },
+    {
+     "build": "jitless",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "AMD EPYC 7763 64-Core Processor",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    }
+   ],
+   "cells": [
+    {
+     "build": "jit",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.41,
+      "interval": [
+       1.38,
+       1.44
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.16,
+      "interval": [
+       1.14,
+       1.18
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.96,
+      "interval": [
+       0.94,
+       0.98
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 3.7736,
+      "interval": [
+       3.7037,
+       3.8462
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.26,
+      "interval": [
+       1.23,
+       1.29
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.39,
+      "interval": [
+       1.36,
+       1.42
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.14,
+      "interval": [
+       1.12,
+       1.16
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.94,
+      "interval": [
+       0.92,
+       0.96
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 3.8462,
+      "interval": [
+       3.7736,
+       3.9216
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.24,
+      "interval": [
+       1.21,
+       1.27
+      ],
+      "note": "net, provisional"
+     }
+    }
+   ]
+  },
+  {
+   "leg": "w4",
+   "cpu": "Intel Xeon Platinum 8370C",
+   "platform": "win32-x64",
+   "commit": "0123456789abcdef0123456789abcdef01234567",
+   "checks": [
+    {
+     "build": "jit",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "Intel Xeon Platinum 8370C",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    },
+    {
+     "build": "jitless",
+     "commit_ok": true,
+     "rounds": 31,
+     "platform": "win32-x64",
+     "cpu": "Intel Xeon Platinum 8370C",
+     "load": {
+      "before": {
+       "load1": 0.41,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      },
+      "after": {
+       "load1": 0.38,
+       "limit": 1.2,
+       "pass": true,
+       "why": null,
+       "source": "typeperf"
+      }
+     }
+    }
+   ],
+   "cells": [
+    {
+     "build": "jit",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.36,
+      "interval": [
+       1.33,
+       1.39
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.11,
+      "interval": [
+       1.09,
+       1.13
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.91,
+      "interval": [
+       0.89,
+       0.93
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 3.9604,
+      "interval": [
+       3.8835,
+       4.0404
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jit",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.21,
+      "interval": [
+       1.18,
+       1.24
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 1: Octane-7 geomean vs QuickJS",
+     "value": {
+      "median": 1.34,
+      "interval": [
+       1.31,
+       1.37
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 2: v8-v7 geomean vs node --jitless",
+     "value": {
+      "median": 1.09,
+      "interval": [
+       1.07,
+       1.11
+      ],
+      "note": "net, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 3: TS vs node --jitless (Linux x64 rule)",
+     "value": {
+      "median": 0.89,
+      "interval": [
+       0.87,
+       0.91
+      ],
+      "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 4.0404,
+      "interval": [
+       3.9604,
+       4.1237
+      ],
+      "note": "gross, provisional"
+     }
+    },
+    {
+     "build": "jitless",
+     "cell": "item 6: splay vs node --jitless",
+     "value": {
+      "median": 1.19,
+      "interval": [
+       1.16,
+       1.22
+      ],
+      "note": "net, provisional"
+     }
+    }
+   ]
   }
  ]
 }
