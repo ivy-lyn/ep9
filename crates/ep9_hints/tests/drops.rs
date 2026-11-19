@@ -5,8 +5,8 @@ mod common;
 
 use common::*;
 use ep9_hints::{
-    CLASS_ENTRY_SIZE, DropCounts, DropReason, Expect, FILE_ENTRY_SIZE, HEADER_SIZE, RECORD_SIZE,
-    TsFlags, offsets as o, read,
+    CLASS_ENTRY_SIZE, DropCounts, DropReason, Expect, FIELD_SIZE, FILE_ENTRY_SIZE, HEADER_SIZE,
+    RECORD_SIZE, TsFlags, offsets as o, read,
 };
 
 fn drop_of(bytes: &[u8]) -> DropReason {
@@ -238,6 +238,15 @@ fn bad_class_table() {
     let c1 = CLASSES_AT + CLASS_ENTRY_SIZE;
     assert_eq!(
         patched(|b| put_u32(b, c1 + o::CLASS_DECL_FILE, 2)),
+        DropReason::BadClassTable
+    );
+    // A field that names a file that is not in the table.
+    assert_eq!(
+        patched(|b| put_u32(b, FIELDS_AT + FIELD_SIZE + o::FIELD_FILE, 2)),
+        DropReason::BadClassTable
+    );
+    assert_eq!(
+        patched(|b| put_u32(b, FIELDS_AT + o::FIELD_FILE, u32::MAX)),
         DropReason::BadClassTable
     );
     assert_eq!(

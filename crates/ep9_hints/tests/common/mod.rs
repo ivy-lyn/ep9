@@ -44,7 +44,8 @@ pub fn record(start: u32, end: u32, kind: NodeKind) -> Record {
 }
 
 /// Files "a.ts" (3 records, has_type_errors 0) and "lib/b.ts" (2 records, has_type_errors 1);
-/// 2 classes with 3 fields.
+/// 2 classes with 3 fields. Class 1 is a subclass in "a.ts": its slot 0 field is inherited
+/// from a base class in "lib/b.ts", its slot 1 field is in "a.ts".
 pub fn sample() -> Hints {
     let mut r0 = record(0, 5, NodeKind::BindingIdentifier);
     r0.repr = Repr::ClassInstance;
@@ -103,13 +104,26 @@ pub fn sample() -> Hints {
                 field_count: 1,
             },
             ClassEntry {
-                decl: DeclRef { file: 1, offset: 0 },
+                decl: DeclRef {
+                    file: 0,
+                    offset: 50,
+                },
                 slot_count: 3,
                 first_field: 1,
                 field_count: 2,
             },
         ],
-        fields: vec![44, 2, 9],
+        fields: vec![
+            DeclRef {
+                file: 0,
+                offset: 44,
+            },
+            DeclRef { file: 1, offset: 2 },
+            DeclRef {
+                file: 0,
+                offset: 52,
+            },
+        ],
         records: vec![r0, r1, r2, r3, r4],
     }
 }

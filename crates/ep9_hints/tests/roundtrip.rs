@@ -5,8 +5,8 @@ mod common;
 
 use common::*;
 use ep9_hints::{
-    DropReason, Expect, HINT_SCHEMA_VERSION, Hints, MAGIC, NodeKind, RECORD_SIZE, Repr, TsFlags,
-    WriteError, commit_hex, offsets as o, parse_commit_hex, read, write,
+    DeclRef, DropReason, Expect, HINT_SCHEMA_VERSION, Hints, MAGIC, NodeKind, RECORD_SIZE, Repr,
+    TsFlags, WriteError, commit_hex, offsets as o, parse_commit_hex, read, write,
 };
 
 fn u32_at(b: &[u8], at: usize) -> u32 {
@@ -108,6 +108,16 @@ fn header_counts_name_each_part() {
 fn strings_hold_the_paths_only() {
     let bytes = sample_bytes();
     assert_eq!(&bytes[STRINGS_AT..], b"a.tslib/b.ts");
+}
+
+#[test]
+fn field_entry_layout() {
+    assert_eq!(ep9_hints::FIELD_SIZE, 8);
+    let bytes = sample_bytes();
+    // Field 1 of the sample: the inherited slot 0 field of class 1, in "lib/b.ts".
+    let at = FIELDS_AT + ep9_hints::FIELD_SIZE;
+    assert_eq!(u32_at(&bytes, at + o::FIELD_FILE), 1);
+    assert_eq!(u32_at(&bytes, at + o::FIELD_OFFSET), 2);
 }
 
 #[test]
@@ -327,8 +337,12 @@ fn commit_hex_round_trips() {
 #[test]
 fn class_fields_and_find_file() {
     let h = sample();
-    assert_eq!(h.class_fields(&h.classes[0]), &[44]);
-    assert_eq!(h.class_fields(&h.classes[1]), &[2, 9]);
+    let d = |file, offset| DeclRef { file, offset };
+    assert_eq!(h.class_fields(&h.classes[0]), &[d(0, 44)]);
+    // An inherited field names its base class file, not the subclass file.
+    assert_eq!(h.class_fields(&h.classes[1]), &[d(1, 2), d(0, 52)]);
+    let back = read(&sample_bytes(), &expect()).unwrap();
+    assert_eq!(back.class_fields(&back.classes[1]), &[d(1, 2), d(0, 52)]);
     assert_eq!(h.find_file("a.ts"), Some(0));
     assert_eq!(h.find_file("lib/b.ts"), Some(1));
     assert_eq!(h.find_file("b.ts"), None);

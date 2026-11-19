@@ -9,7 +9,7 @@
 //!  +- file table  52 B each, sorted by path: path | record range | decoded-text hash |
 //!  |                    has_type_errors
 //!  +- classes     20 B each, class id = index: decl file:offset | slot count | field range
-//!  +- fields      4 B each: the decl offset of each field, in slot order
+//!  +- fields      8 B each: the decl file:offset of each field, in slot order
 //!  +- records     32 B each, per file, sorted by (start, end, kind): repr category |
 //!  |                    class id | slot candidate | call-target decl | non-null | enum const |
 //!  |                    element type | dts/lib | confidence
@@ -66,7 +66,7 @@ pub const FILE_ENTRY_SIZE: usize = 52;
 /// The size of one class entry in bytes.
 pub const CLASS_ENTRY_SIZE: usize = 20;
 /// The size of one field entry in bytes.
-pub const FIELD_SIZE: usize = 4;
+pub const FIELD_SIZE: usize = 8;
 /// The size of one record in bytes (H37-Q1: fixed size).
 pub const RECORD_SIZE: usize = 32;
 
@@ -125,6 +125,11 @@ pub mod offsets {
     pub const CLASS_FIRST_FIELD: usize = 12;
     /// Class entry: the number of the class's fields, `u32`.
     pub const CLASS_FIELD_COUNT: usize = 16;
+
+    /// Field entry: the decl file index, `u32` (an inherited field names its base class file).
+    pub const FIELD_FILE: usize = 0;
+    /// Field entry: the decl offset, `u32`.
+    pub const FIELD_OFFSET: usize = 4;
 
     /// Record: the key start, `u32`.
     pub const REC_START: usize = 0;

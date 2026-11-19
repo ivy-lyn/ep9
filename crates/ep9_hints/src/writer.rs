@@ -88,7 +88,8 @@ pub fn write(hints: &Hints) -> Result<Vec<u8>, WriteError> {
         }
     }
     for f in &hints.fields {
-        out.extend_from_slice(&f.to_le_bytes());
+        out.extend_from_slice(&f.file.to_le_bytes());
+        out.extend_from_slice(&f.offset.to_le_bytes());
     }
     for r in &hints.records {
         let mut e = [0u8; RECORD_SIZE];

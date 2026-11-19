@@ -138,8 +138,9 @@ pub struct Hints {
     pub files: Vec<FileEntry>,
     /// The class table.
     pub classes: Vec<ClassEntry>,
-    /// The field decl offsets of every class, class after class (each in its decl file).
-    pub fields: Vec<u32>,
+    /// The field decls of every class, class after class (an inherited field names its base
+    /// class file).
+    pub fields: Vec<DeclRef>,
     /// The records of every file, file after file.
     pub records: Vec<Record>,
 }
@@ -171,8 +172,8 @@ impl Hints {
         self.records.get(start..end).ok_or(DropReason::BadFileTable)
     }
 
-    /// The field decl offsets of one class, in slot order.
-    pub fn class_fields(&self, class: &ClassEntry) -> &[u32] {
+    /// The field decls of one class, in slot order.
+    pub fn class_fields(&self, class: &ClassEntry) -> &[DeclRef] {
         let start = class.first_field as usize;
         let end = start.saturating_add(class.field_count as usize);
         self.fields.get(start..end).unwrap_or(&[])

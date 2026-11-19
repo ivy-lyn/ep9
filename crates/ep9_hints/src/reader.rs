@@ -46,8 +46,9 @@ pub enum DropReason {
     /// The paths are not in strictly ascending byte order (a path is there twice, or out of
     /// order).
     UnsortedFiles,
-    /// A class names a file that is not in the table, its field range does not follow the
-    /// previous class, a field is left over, or it has more fields than slots.
+    /// A class or a field names a file that is not in the table, a class's field range does
+    /// not follow the previous class, a field is left over, or a class has more fields than
+    /// slots.
     BadClassTable,
     /// A record has an unknown code, a reserved flag bit, start after end, a reference out of
     /// range, a slot without a class, or a value in a field that its null value turns off.
@@ -222,7 +223,8 @@ pub fn read(bytes: &[u8], expect: &Expect) -> Result<Hints, DropReason> {
         return Err(DropReason::TrailingBytes);
     }
 
-    // From here every part is in the input, so each vector is at most the input size.
+    // From here every part is in the input, so each vector has at most one entry per input
+    // entry (a Record is 48 B in memory per 32 B in the input).
     let mut rest = &bytes[HEADER_SIZE..];
     let file_part = take(&mut rest, file_count, FILE_ENTRY_SIZE)?;
     let class_part = take(&mut rest, class_count, CLASS_ENTRY_SIZE)?;
@@ -232,12 +234,7 @@ pub fn read(bytes: &[u8], expect: &Expect) -> Result<Hints, DropReason> {
 
     let files = read_files(file_part, strings, record_count)?;
     let classes = read_classes(class_part, file_count, field_count)?;
-    let fields = field_part
-        .as_chunks::<FIELD_SIZE>()
-        .0
-        .iter()
-        .map(|c| u32_at(c, 0))
-        .collect();
+    let fields = read_fields(field_part, file_count)?;
     let records = read_records(record_part, &files, &classes)?;
     Ok(Hints {
         header,
@@ -339,6 +336,21 @@ fn read_classes(
         return Err(DropReason::BadClassTable);
     }
     Ok(classes)
+}
+
+fn read_fields(part: &[u8], file_count: u32) -> Result<Vec<DeclRef>, DropReason> {
+    let mut fields = Vec::with_capacity(part.len() / FIELD_SIZE);
+    for e in part.as_chunks::<FIELD_SIZE>().0 {
+        let field = DeclRef {
+            file: u32_at(e, o::FIELD_FILE),
+            offset: u32_at(e, o::FIELD_OFFSET),
+        };
+        if field.file >= file_count {
+            return Err(DropReason::BadClassTable);
+        }
+        fields.push(field);
+    }
+    Ok(fields)
 }
 
 fn read_records(
