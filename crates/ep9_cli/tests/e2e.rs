@@ -263,6 +263,21 @@ fn expected_outputs_match_node() {
         eprintln!("skip: node is not installed (set EP9_NODE to its path)");
         return;
     };
+    // An older node gives false diffs (node 22 has no Promise.try; CI-NODE-PIN-CHECK), so
+    // fail with one line when node is older than the setup-node pin of ci.yml.
+    let v = String::from_utf8_lossy(&version.stdout).trim().to_string();
+    let major = |s: &str| s.trim_start_matches('v').split('.').next()?.parse::<u32>().ok();
+    let ci = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/ci.yml");
+    let ci = std::fs::read_to_string(&ci).expect("read .github/workflows/ci.yml");
+    let pin = ci
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("node-version: "))
+        .and_then(|p| major(p.trim_matches('\'')))
+        .expect("ci.yml has a node-version pin");
+    assert!(
+        major(&v).is_some_and(|m| m >= pin),
+        "node {v} is older than the CI pin {pin} (setup-node did not install it?)"
+    );
     let bless = std::env::var("EP9_E2E_BLESS").is_ok_and(|v| v == "1");
     let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/node_driver.cjs");
     let files = programs();
