@@ -6,7 +6,7 @@
 - tsrs keeps its v1 role: `ep9 check` spawns the tsrs CLI out of process (unix; Windows after SP-tsrs-win).
 - tsrs gets a **new** role: the offline AOT type oracle `ep9-typecheck`. It writes a `.ep9h` hint table. It is never linked into the engine.
 - TypeScript runtime constructs now lower in BytecodeGen, not in oxc_transformer. This keeps hint keys valid on lowered code (H3).
-- `CompiledUnit` becomes a deterministic, versioned ABI with stable function ids and an optional hint section (H1, H2).
+- `CompiledUnit` becomes a deterministic, versioned ABI with stable function ids and a hint section that stays empty (H1, H2; facts go to the unit container: doc 13 F-R1).
 
 IDs used here: D1, D4, D12, D18, D20; H1-H4, H23, H36, H37; P1-P5; L0-L2; A1h, A4; K-A4H; SP-tsrs-win, SP-tsrs, SP-HintPrecision; HINT-SET; M0-M4; RK5-RK8, RK19, RK27, RK38, RK39.
 
@@ -120,7 +120,7 @@ CompiledUnit  (no GC objects; Rust-owned; serializable; = code-cache format = un
            ScopeInfo, flags, source range
   constant pools: indices plus owned literals (WTF-16 strings, f64, BigInt digits, regex source)
   position tables: UTF-8 offsets; the UTF-16 column map is built lazily
-  hint section (optional): HINTED entries keyed by (function id, feedback slot); format in ep9_facts
+  hint section (ABI 5): reserved and empty; HINTED entries go only to the container facts section, kind 6 (doc 13 F-R1; H02:43)
 
 isolate thread:  finalize(CompiledUnit) -> atoms, SharedFunctionInfos, BytecodeArrays on the heap
 ```
@@ -221,7 +221,7 @@ Any other TS-only runtime form found at M4 also goes into BytecodeGen. The M4 AD
                            count it                         v
                                     BytecodeGen (+ TS lowering, H3) writes HINTED entries
                                     keyed by (function id, feedback slot)
-                                    -> CompiledUnit hint section (format in ep9_facts)
+                                    -> container facts section, kind 6 (format in ep9_facts)
 ```
 
 | Rule | Detail | Evidence |
@@ -260,7 +260,7 @@ Any other TS-only runtime form found at M4 also goes into BytecodeGen. The M4 AD
 | tsrs roles | Not the parser; `ep9 check` only | Adds role (c): offline AOT type oracle `ep9-typecheck`; new option row H |
 | TS execution (v1 §2.9) | oxc_transformer for enums, namespaces, parameter properties | BytecodeGen lowers them; oxc_transformer only for legacy decorators (no hints) |
 | TS flags | not recorded | Per module in header, `.ep9h` and cache key (H3, D20) |
-| CompiledUnit | GC-free, serializable | + ABI version, decoded-source hash, stable function ids, hint section, determinism rule (H1, H2) |
+| CompiledUnit | GC-free, serializable | + ABI version, decoded-source hash, stable function ids, hint section (stays empty: doc 13 F-R1), determinism rule (H1, H2) |
 | Other | n/a | New hint-join and bundling rules (§10); lazy policy gains the AOT eager rule (§8); option B notes oracle consequences (§12) |
 | Unchanged | | Measured facts, A-G verdicts, engine parser (oxc, D1 = E), depth guard, oxc track, patch cap, P-gates, L0-L2 |
 | Decisions 2026-10-20 | | D12: no upstream contact; agents draft, only the user posts. D20 decided. Enum folds use `ep9_math` (H36). See [decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction) |

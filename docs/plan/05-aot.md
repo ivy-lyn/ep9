@@ -146,7 +146,7 @@ FV3 needs a T3-class backend. Typed AOT competes only with these: int32/range in
 | Level | What goes in | Guard | On failure | Where |
 |---|---|---|---|---|
 | PROVEN | Facts ep9 proves from JS semantics: never-reassigned module bindings, const, scopes without direct eval or `with`, bitwise results are int32, own range analysis, spec invariants | none | - | every mode |
-| HINT (default for TS types) | HINTED entries from .ep9h: repr category, class receiver -> shape + slot candidate, call target, non-null, element type, enum constant, field type | tag test, shape check, null check, elements-kind check hoisted to loop entry | JIT: DEOPT + exit counter. Hybrid: DEOPT -> instrumented re-tier. Jitless: SLOWPATH or DEOPT within budget, then PIN. Never THROW | every mode, only if K-A4H passes |
+| HINT (default for TS types) | HINTED entries from .ep9h: repr category, class receiver -> shape + slot candidate, call target, non-null, element type, enum constant, field type | tag test, shape check, null check, elements-kind check hoisted to loop entry | JIT: DEOPT + exit counter. Hybrid: DEOPT -> instrumented re-tier. Jitless: SLOWPATH or DEOPT within budget, then PIN. Never THROW | every mode, only if K-A4H passes [2026-11-19, M10-P0 MODES-TEXT-M10 (MC-w47-4; Codex r5 F1): "every mode" means two places only: the AOT build and the hybrid re-tier path, each only if K-A4H passes; pure JIT reads no unit facts in v1 (doc 13 :108-110; H37:65). "Hybrid: DEOPT -> instrumented re-tier" is a short form: hybrid code also PINs the function at the function budget (16, est.) while T1 compiles; the whole rule is in H32, H33 and doc 13 §3.3] |
 | SOUND (opt-in, A5) | Per-module typed subset: nominal classes, exact fields, final methods, checked casts, bounds-checked arrays, no Proxy/eval/defineProperty on typed objects | only at module, `any`, .d.ts and JS boundaries | THROW TypeError at the boundary. This changes JS semantics | outside test262 mode; only if the D17 rule picks (c) |
 
 - **VERIFIED (candidate, D17 d).** Facts that the `ep9c` verifier proves per region, under entry checks, hoisted interior checks and fuses. Never THROW; legal in test262 mode. It exists only if the D17 rule picks (d). Until then H30 reserves the provenance value and nothing is built [R18].
@@ -226,7 +226,7 @@ Join rules: [01-front-end](./01-front-end.md). Build and sync: [08-repo](./08-re
 
 - **No type strings.** They add about 620 MiB at export. The JSON prototype was 195 B per node; the binary target is about 20 B [R13].
 - **Join** (owned by [01-front-end](./01-front-end.md)): key (start, end, kind) + decoded-text hash. A mismatch, or has_type_errors = 1, drops the whole file's hints. Drops are counted.
-- **Conversion.** BytecodeGen turns joined records into HINTED entries keyed by (function id, feedback slot). It adds function-entry records (parameter and return repr) and class records (field types, slot count). The entry format lives in ep9_facts. Entries go into the CompiledUnit hint section.
+- **Conversion.** BytecodeGen turns joined records into HINTED entries keyed by (function id, feedback slot). It adds function-entry records (parameter and return repr) and class records (field types, slot count). The entry format lives in ep9_facts. Entries go into the container `facts` section (kind 6, doc 13 F-R1); the CompiledUnit hint section stays empty.
 - **Versions.** v0 at A1h (by M4 exit); frozen at A4 start. A header mismatch (schema, fact schema or TS flags) means ep9 ignores the file.
 
 ## 8. AOT unit format (H35)
@@ -346,7 +346,7 @@ Optimized AOT code does not produce feedback for free. .NET never instruments R2
 - **H30 merge rule** (in the H30 ADR before M1 exit). Precedence RUNTIME > PROFILED > HINTED applies per fact kind. On a conflict, RUNTIME wins.
   - A slot with RUNTIME facts ignores PROFILED and HINTED facts of the same kind (shape, call target, representation).
   - HINTED facts that feedback cannot give stay beside RUNTIME facts: CHA and enum constants under a fuse (H31), non-null, slot pre-size.
-  - The JIT graph builder reads them from the CompiledUnit hint section ([04-execution](./04-execution.md) §6).
+  - The JIT graph builder reads them from the unit's facts section (the container `facts` section, kind 6, doc 13 F-R1) ([04-execution](./04-execution.md) §6).
 - Costs to budget: instrumented T1 code for hot AOT functions, compile CPU for re-tiered code, and slower code while instrumented. K-A4P checks the FV2 numbers and test262 equality; on failure, v1 ships no hybrid mode. The mode model behind §9-§11 (ExecPolicy presets, lowering classes, code sets, the fact flow across runs and the contract room for A2-A5): [13-execution-modes.md](./13-execution-modes.md).
 
 ## 12. Stages A0-A5
