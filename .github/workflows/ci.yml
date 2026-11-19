@@ -138,7 +138,7 @@ on:
       # The exit-inputs mode (header; plan v14 section 4.1): set, the run has scope and the
       # exit-inputs legs only. `pathb` alone is the one retry when the 4 windows legs gave no pair.
       exit_inputs:
-        description: "exit-inputs mode: off, all (MEMREAD + JetStream per platform, windows Path B), memjs or pathb"
+        description: "exit-inputs mode: off, all (MEMREAD + JetStream per platform, windows and linux-x64 Path B), memjs or pathb"
         default: "off"
         type: choice
         options:
@@ -1449,15 +1449,20 @@ jobs:
   #   memjs-<platform> (linux-x64, linux-arm64, windows-x64): MEMREAD (mem.mjs, item 4) and the
   #     JetStream M2 list on both ep9 builds and node --jitless (jetstream/run.mjs, item 7).
   #     Linux arm64 has no d8 (jsvu has no linux-arm64 V8 build): no d8 cap there.
-  #   pathb-w1..w4 (windows-x64): the Path B M2 set (V14-D12): run.mjs --workloads m2, 31 paired
-  #     rounds, both builds in each round (--ep9-jitless, V14-D11), node --jitless, the load guard
-  #     on the typeperf source, and QuickJS (sync-shells.sh builds the pinned qjs.exe with the
-  #     runner's mingw gcc; plan v15 V15-D17), so item 1 gets an interval.
-  # The legs give the runs only. The reader downloads the 4 pathb artifacts and runs
-  # `node .github/scripts/exit-inputs.mjs pathb --leg <dir> x4 --out pathb.json`: it pairs the
-  # first 2 runners of one CPU model; no pair (exit 3): dispatch `pathb` once more, then the
-  # reading is NOT-RUN (a DL line). With exit_inputs off (push, pull_request, a plain dispatch)
-  # the one "off" leg runs, so the job reads success (a skipped job fails the tag gate).
+  #   pathb-w1..w4 (windows-x64) and pathb-l1, pathb-l2 (linux-x64; plan v15 V15-D16): the Path B
+  #     M2 set (V14-D12): run.mjs --workloads m2, 31 paired rounds, both builds in each round
+  #     (--ep9-jitless, V14-D11), QuickJS (on Windows sync-shells.sh builds the pinned qjs.exe
+  #     with the runner's mingw gcc; V15-D17) and node --jitless, the load guard (typeperf on
+  #     Windows).
+  # The legs give the runs only. The reader downloads the 6 pathb artifacts and runs
+  # `node .github/scripts/exit-inputs.mjs pathb --platform win32-x64 --leg <dir> x4 --out
+  # pathb.json`, and the same with `--platform linux-x64` on the 2 Linux legs (--out linux.json):
+  # it pairs the first 2 runners of one CPU model; no windows pair (exit 3): dispatch `pathb` once
+  # more, then the reading is NOT-RUN (a DL line). `cargo xtask m2-exit --pathb pathb.json
+  # --linux-pathb linux.json` pairs each Windows leg with the Linux legs of its CPU model
+  # (V15-D16); with no such pair the win-x64 cell keeps the Path B form. With exit_inputs off
+  # (push, pull_request, a plain dispatch) the one "off" leg runs, so the job reads success (a
+  # skipped job fails the tag gate).
   exit-inputs:
     name: exit inputs (${{ matrix.name }})
     # Skipped in the bench mode only (header).
@@ -1466,9 +1471,9 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(
-          (inputs.exit_inputs == 'all' && '[{"name":"memjs-linux-x64","os":"ubuntu-24.04","kind":"memjs","plat":"linux-x64"}, {"name":"memjs-linux-arm64","os":"ubuntu-24.04-arm","kind":"memjs","plat":"linux-arm64"}, {"name":"memjs-windows-x64","os":"windows-2025","kind":"memjs","plat":"windows-x64"}, {"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}]')
+          (inputs.exit_inputs == 'all' && '[{"name":"memjs-linux-x64","os":"ubuntu-24.04","kind":"memjs","plat":"linux-x64"}, {"name":"memjs-linux-arm64","os":"ubuntu-24.04-arm","kind":"memjs","plat":"linux-arm64"}, {"name":"memjs-windows-x64","os":"windows-2025","kind":"memjs","plat":"windows-x64"}, {"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-l1","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}, {"name":"pathb-l2","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}]')
           || (inputs.exit_inputs == 'memjs' && '[{"name":"memjs-linux-x64","os":"ubuntu-24.04","kind":"memjs","plat":"linux-x64"}, {"name":"memjs-linux-arm64","os":"ubuntu-24.04-arm","kind":"memjs","plat":"linux-arm64"}, {"name":"memjs-windows-x64","os":"windows-2025","kind":"memjs","plat":"windows-x64"}]')
-          || (inputs.exit_inputs == 'pathb' && '[{"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}]')
+          || (inputs.exit_inputs == 'pathb' && '[{"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-l1","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}, {"name":"pathb-l2","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}]')
           || '[{"name":"off","os":"ubuntu-24.04","kind":"off","plat":"off"}]') }}
     runs-on: ${{ matrix.os }}
     # Rule 25: 1.5x the longest measured leg: 138.8 min (memjs-linux-x64, dry dispatch

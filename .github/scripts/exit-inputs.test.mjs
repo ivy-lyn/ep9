@@ -1,7 +1,8 @@
 // node --test .github/scripts/exit-inputs.test.mjs
-// The exit-inputs helpers (plan v14 section 4.1): the runner host file and the Path B compare of
-// the windows legs. Synthetic inputs and fake engines (tools/bench/cross/testdata): no shells, no
-// ep9 build, no GitHub runner. `EP9_BLESS=1` writes the m2-exit fixture pathb-win.json.
+// The exit-inputs helpers (plan v14 section 4.1, plan v15 section 4.1): the runner host file and
+// the Path B compare of the windows and Linux x64 legs. Synthetic inputs and fake engines
+// (tools/bench/cross/testdata): no shells, no ep9 build, no GitHub runner. `EP9_BLESS=1` writes
+// the m2-exit fixtures pathb-win.json and pathb-gha-linux*.json.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -20,8 +21,17 @@ const ROOT = path.resolve(DIR, "../..");
 const SCRIPT = path.join(DIR, "exit-inputs.mjs");
 // The commit placeholder of the m2-exit fixtures (its tests put their scratch HEAD there).
 const SHA = "0123456789abcdef0123456789abcdef01234567";
-const FIXTURE = path.join(ROOT, "tools/xtask/tests/m2_exit/pathb-win.json");
+const FIXTURES = path.join(ROOT, "tools/xtask/tests/m2_exit");
+const FIXTURE = path.join(FIXTURES, "pathb-win.json");
 const WIN_CPU = "AMD EPYC 7763 64-Core Processor";
+
+/** The bytes of an m2-exit fixture: written with EP9_BLESS=1, else compared. */
+function fixture(name, c) {
+  const file = path.join(FIXTURES, name);
+  const text = `${JSON.stringify(c, null, 1)}\n`;
+  if (process.env.EP9_BLESS === "1") writeFileSync(file, text);
+  assert.equal(readFileSync(file, "utf8"), text, "run EP9_BLESS=1 node --test .github/scripts/exit-inputs.test.mjs");
+}
 
 /** A both-builds run view of a windows leg, cut to the fields that compare() reads. */
 function runView(build, { cpu = WIN_CPU, platform = "win32-x64", dirty = false, rounds = PATHB_ROUNDS, commit = SHA } = {}) {
@@ -38,15 +48,18 @@ function runView(build, { cpu = WIN_CPU, platform = "win32-x64", dirty = false, 
 
 const leg = (name, opts = {}) => ({ name, cpu: opts.cpu ?? WIN_CPU, platform: opts.platform ?? "win32-x64", jit: runView("jit", opts), jitless: runView("jitless", opts), error: null });
 
-/** Made-up m2gate readings of one box: each cell's ratio is `base` plus a per-item step. */
-function gateOf(base) {
+/**
+ * Made-up m2gate readings of one box: each cell's ratio is `base` plus a per-item step. With
+ * `qjs` false the run has no QuickJS (the windows legs before V15-D17): item 1 has no reading.
+ */
+function gateOf(base, { qjs = true } = {}) {
   const r = (x) => Number(x.toFixed(4));
   const readings = [];
   for (const build of BUILDS) {
     const b = build === "jit" ? 0 : -0.02;
     const geo = (id, m, half) => ({ id, build, value: r(m), interval: [r(m - half), r(m + half)], net: { median: r(m) }, status: "provisional" });
-    // Octane-7 vs QuickJS: no QuickJS on Windows (sync-shells.sh), so no reading.
-    readings.push({ id: "octane7-vs-qjs", build, value: null, interval: null, net: null, status: "incomplete" });
+    if (qjs) readings.push(geo("octane7-vs-qjs", base + 0.35 + b, 0.03));
+    else readings.push({ id: "octane7-vs-qjs", build, value: null, interval: null, net: null, status: "incomplete" });
     readings.push(geo("v8v7-7-vs-node-jitless", base + 0.1 + b, 0.02));
     readings.push(geo("splay-vs-node-jitless", base + 0.2 + b, 0.03));
     readings.push({ id: "ts", build, status: "provisional", vs_node_jitless: { net: { median: r(base - 0.1 + b), interval: [r(base - 0.12 + b), r(base - 0.08 + b)], void: false } } });
@@ -68,12 +81,16 @@ test("side and agreement follow the m2-exit rule (pathb_side, pathb_form)", () =
   assert.deepEqual(CELLS.map((c) => [c.item, c.threshold]), [[1, 1.33], [2, 1], [3, 1], [6, 1]]);
 });
 
-test("pairing: the first 2 legs of the first CPU model with 2, in leg order", () => {
-  const l = (name, cpu) => ({ name, cpu });
+test("pairing: the first 2 legs of the first platform and CPU model with 2, in leg order", () => {
+  const l = (name, cpu, platform = "win32-x64") => ({ name, cpu, platform });
   assert.deepEqual(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "B"), l("w4", "A")]), { cpu: "A", boxes: [l("w1", "A"), l("w4", "A")] });
   assert.deepEqual(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "B"), l("w4", "C")]), { cpu: "B", boxes: [l("w2", "B"), l("w3", "B")] });
   assert.equal(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "C"), l("w4", "D")]), null);
   assert.equal(pairLegs([l("w1", null), l("w2", null)]), null);
+  // V15-D16: the Linux x64 legs are in the same dispatch; one CPU model on 2 platforms is no pair.
+  assert.equal(pairLegs([l("w1", "A"), l("l1", "A", "linux-x64")]), null);
+  assert.deepEqual(pairLegs([l("w1", "A"), l("l1", "A", "linux-x64"), l("l2", "A", "linux-x64"), l("w2", "A")]), { cpu: "A", boxes: [l("w1", "A"), l("w2", "A")] });
+  assert.deepEqual(pairLegs([l("l1", "A", "linux-x64"), l("w1", "A"), l("l2", "A", "linux-x64")]).boxes.map((x) => x.name), ["l1", "l2"]);
 });
 
 test("compare: no pair names every runner and no cell; the CLI exits 3", (t) => {
@@ -83,7 +100,10 @@ test("compare: no pair names every runner and no cell; the CLI exits 3", (t) => 
   assert.match(c.result, /^NO PAIR: .*run the dispatch again once, then the reading is NOT-RUN/);
   assert.deepEqual(c.runners.map((r) => [r.leg, r.cpu]), [["w1", "A"], ["w2", "B"], ["w3", "C"], ["w4", null]]);
   assert.deepEqual([c.checks, c.cells, c.commit, c.platform], [[], [], null, null]);
+  // The legs block names every leg that was read, with a pair or not (V15-D16).
+  assert.deepEqual(c.legs.map((l) => [l.leg, l.cpu, l.commit]), [["w1", "A", SHA], ["w2", "B", SHA], ["w3", "C", SHA]]);
   assert.match(renderMarkdown(c), /\*\*NO PAIR/);
+  assert.match(renderMarkdown(c), /^Per leg \(the input of the win-x64 same-CPU-model cell, V15-D16\):$/m);
   const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-exit-inputs-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const legs = ["A", "B"].map((cpu, i) => {
@@ -100,7 +120,7 @@ test("compare: no pair names every runner and no cell; the CLI exits 3", (t) => 
 });
 
 test("compare: the pair's run checks and the 8 cells (the m2-exit fixture pathb-win.json)", () => {
-  const gates = { w2: gateOf(1.05), w3: gateOf(1.06) };
+  const gates = { w1: gateOf(1.0), w2: gateOf(1.05), w3: gateOf(1.06), w4: gateOf(1.01) };
   const readGate = (runs) => gates[runs[0].source.split("/")[0]];
   const legs = [leg("w1", { cpu: "Intel Xeon Platinum 8370C" }), leg("w2"), leg("w3"), leg("w4", { cpu: "Intel Xeon Platinum 8370C" })];
   const c = compare(legs, { readGate });
@@ -117,11 +137,11 @@ test("compare: the pair's run checks and the 8 cells (the m2-exit fixture pathb-
     [2, "jitless", true, 31, true, true],
   ]);
   assert.deepEqual(c2.cells.map((x) => [x.build, x.cell.split(":")[0], x.result]), [
-    ["jit", "item 1", "NO AGREEMENT"],
+    ["jit", "item 1", "AGREE above"],
     ["jit", "item 2", "AGREE above"],
     ["jit", "item 3", "AGREE below"],
     ["jit", "item 6", "AGREE above"],
-    ["jitless", "item 1", "NO AGREEMENT"],
+    ["jitless", "item 1", "AGREE above"],
     ["jitless", "item 2", "AGREE above"],
     ["jitless", "item 3", "AGREE below"],
     ["jitless", "item 6", "AGREE above"],
@@ -129,10 +149,19 @@ test("compare: the pair's run checks and the 8 cells (the m2-exit fixture pathb-
   const ts = c2.cells.find((x) => x.build === "jit" && x.cell.startsWith("item 3:"));
   assert.deepEqual(ts.box1, { median: 0.95, interval: [0.93, 0.97], note: "net, provisional" });
   assert.match(renderMarkdown(c2), /TS ratio to node --jitless \(V14-D59 input\): jit box 1 0\.950, box 2 0\.960; jitless box 1 0\.930, box 2 0\.940\./);
+  // The legs block: all 4 legs in leg order, each with its own run checks and 8 values.
+  assert.deepEqual(c2.legs.map((l) => [l.leg, l.cpu, l.platform, l.commit, l.checks.map((k) => k.commit_ok).join()]), [
+    ["w2", WIN_CPU, "win32-x64", SHA, "true,true"],
+    ["w1", "Intel Xeon Platinum 8370C", "win32-x64", SHA, "true,true"],
+    ["w3", WIN_CPU, "win32-x64", SHA, "true,true"],
+    ["w4", "Intel Xeon Platinum 8370C", "win32-x64", SHA, "true,true"],
+  ]);
+  assert.deepEqual(c2.legs[0].cells.find((x) => x.build === "jit" && x.cell.startsWith("item 2:")).value, { median: 1.15, interval: [1.13, 1.17], note: "net, provisional" });
+  assert.equal(c2.legs[0].cells.length, 8);
+  assert.match(renderMarkdown(c2), /^\| w2 \| AMD EPYC 7763 64-Core Processor \| jit \| yes \| 1\.400 \[1\.370-1\.430\] \| 1\.150 \[1\.130-1\.170\] \| 0\.950 \[0\.930-0\.970\] \| 1\.250 \[1\.220-1\.280\] \|$/m);
   // The fixture of `cargo xtask m2-exit --pathb` on x86_64-pc-windows-msvc is this output.
-  const text = `${JSON.stringify(c2, null, 1)}\n`;
-  if (process.env.EP9_BLESS === "1") writeFileSync(FIXTURE, text);
-  assert.equal(readFileSync(FIXTURE, "utf8"), text, "run EP9_BLESS=1 node --test .github/scripts/exit-inputs.test.mjs");
+  fixture("pathb-win.json", c2);
+  assert.ok(existsSync(FIXTURE));
   // A dirty binary, another commit or a gate that cannot read the pair: commit_ok false.
   const bad = compare([leg("w2", { dirty: true }), leg("w3")], { readGate });
   assert.deepEqual(bad.checks.map((k) => k.commit_ok), [false, false, true, true]);
@@ -141,8 +170,46 @@ test("compare: the pair's run checks and the 8 cells (the m2-exit fixture pathb-
   const thrown = compare([leg("w2"), leg("w3")], { readGate: () => { throw new Error("one host per m2gate file"); } });
   assert.ok(thrown.checks.every((k) => !k.commit_ok && k.error === "one host per m2gate file"));
   assert.ok(thrown.cells.every((x) => x.result === "NO AGREEMENT"));
-  // Two platforms in the pair: the compare names none (m2-exit then reads NO AGREEMENT).
-  assert.equal(compare([leg("w2"), leg("w3", { platform: "linux-x64" })], { readGate }).platform, null);
+  // One CPU model on 2 platforms is no pair (V15-D16: the Linux x64 legs are in the dispatch).
+  const mixed = compare([leg("w2"), leg("w3", { platform: "linux-x64" })], { readGate });
+  assert.equal(mixed.pair, null);
+  assert.deepEqual(mixed.legs.map((l) => [l.leg, l.platform]), [["w2", "win32-x64"], ["w3", "linux-x64"]]);
+});
+
+// V15-D16: the Linux x64 GitHub legs of the same dispatch. --platform keeps one platform; the
+// legs of the other one are named in the runners table only. The 3 m2-exit fixtures of the
+// win-x64 same-CPU-model cell: pathb-gha-linux.json (2 legs of the Windows pair's model, each
+// value a little above the Windows one: the cross-host intervals are above 0.9),
+// pathb-gha-linux-fast.json (the same model, every value about 1.3x the Windows one: below 0.9)
+// and pathb-gha-linux-other.json (another model: no same-model pair, the cell keeps today's form).
+test("compare: the Linux x64 legs, --platform, and the m2-exit fixtures pathb-gha-linux*.json", () => {
+  const lin = (name, cpu = WIN_CPU) => leg(name, { cpu, platform: "linux-x64" });
+  const all = [leg("w1"), lin("l1"), leg("w2"), lin("l2")];
+  const gates = { w1: gateOf(1.05), w2: gateOf(1.06), l1: gateOf(1.1), l2: gateOf(1.1) };
+  const readGate = (runs) => gates[runs[0].source.split("/")[0]];
+  const w = compare(all, { readGate, platform: "win32-x64" });
+  assert.deepEqual([w.boxes, w.platform, w.legs.map((l) => l.leg)], [["w1", "w2"], "win32-x64", ["w1", "w2"]]);
+  assert.deepEqual(w.runners.map((r) => [r.leg, r.error]), [
+    ["w1", null],
+    ["l1", "platform linux-x64, not win32-x64 (not read)"],
+    ["w2", null],
+    ["l2", "platform linux-x64, not win32-x64 (not read)"],
+  ]);
+  assert.match(renderMarkdown(w), /^\| l1 \| AMD EPYC 7763 64-Core Processor \| linux-x64 \| no \(platform linux-x64, not win32-x64 \(not read\)\) \|$/m);
+  const l = compare(all, { readGate, platform: "linux-x64" });
+  assert.deepEqual([l.boxes, l.platform, l.commit], [["l1", "l2"], "linux-x64", SHA]);
+  // The Linux pair against the M2 thresholds (its TS 1.000 [0.980-1.020] straddles 1.0).
+  assert.deepEqual(l.cells.map((x) => x.result), ["AGREE above", "AGREE above", "NO AGREEMENT", "AGREE above", "AGREE above", "AGREE above", "NO AGREEMENT", "AGREE above"]);
+  // Without --platform the first group with 2 legs is the pair: here the windows one.
+  assert.deepEqual(compare(all, { readGate }).boxes, ["w1", "w2"]);
+  assert.equal(parseArgs(["pathb", "--leg", "a", "--out", "c", "--platform", "linux-x64"]).platform, "linux-x64");
+  fixture("pathb-gha-linux.json", compare([lin("l1"), lin("l2")], { readGate }));
+  const fast = { l1: gateOf(1.4), l2: gateOf(1.42) };
+  fixture("pathb-gha-linux-fast.json", compare([lin("l1"), lin("l2")], { readGate: (runs) => fast[runs[0].source.split("/")[0]] }));
+  const epyc4 = "AMD EPYC 9V74 80-Core Processor";
+  const other = compare([lin("l1", epyc4), lin("l2", epyc4)], { readGate });
+  assert.deepEqual(other.legs.map((x) => x.cpu), [epyc4, epyc4]);
+  fixture("pathb-gha-linux-other.json", other);
 });
 
 /**
@@ -194,7 +261,7 @@ test("compare through readM2Gate: a not-gate-host run gives intervals; void, gro
     assert.equal(clean[item].result, "AGREE above", item);
     assert.equal(clean[item].box1.note, "net, provisional", item);
   }
-  assert.equal(clean["item 1"].result, "NO AGREEMENT", "no QuickJS on Windows");
+  assert.equal(clean["item 1"].result, "NO AGREEMENT", "no QuickJS in the run");
   // A void kernel row (richards): the v8-v7 geomean is not void, but the gates refuse it.
   const kernel = jitCells({ noisy: ["richards"] });
   assert.equal(kernel["item 2"].result, "NO AGREEMENT");

@@ -8,6 +8,8 @@
 //!     [--linux-gate <json>]   the m2gate JSON of the Linux x64 host (Windows host only: the ratio)
 //!     [--pathb <json>]        the Path B 2-box compare (ep9-pathb-compare/v1)       items 1, 2, 3, 6, 10, D11
 //!                             (Linux x64 and Windows x64 hosts only; V13-D37)
+//!     [--linux-pathb <json>]  the Path B compare of the Linux x64 GitHub legs       items 1, 2, 3, 6, 10, D11
+//!                             (Windows x64 host only: the same-CPU-model pairs, V15-D16)
 //!     [--mem <json>]          tools/bench/cross/mem.mjs --out (ep9-mem/v1)          item 4
 //!     [--exec <json>]         ep9-test262 exec --json (the CI artifact)             item 5
 //!     [--fastdiff <json>]     the FASTDIFF JSON (ep9-fastdiff/v1)                    item 5
@@ -64,6 +66,22 @@
 //! box protocol). The verdict line follows V13-D37: the M2 exit holds on the host when every cell is
 //! PASS or N/A, or the cells that are not read `MARGINAL (no gate host): AGREE above`.
 //!
+//! **The win-x64 same-CPU-model form** (plan v15 V15-D16). Windows x64 is compared with Linux x64
+//! on the same hardware class (10-quality.md:84) and within 10% (09-milestones.md:66). A
+//! GitHub Windows runner and a GitHub Linux x64 runner of one CPU model (the same `model name`)
+//! are the same hardware class, but not a gate host (10:157). So on `x86_64-pc-windows-msvc`,
+//! with no gate-host reading, `--pathb` (the windows compare) and `--linux-pathb` (the Linux x64
+//! compare of the same dispatch), the cell reads the `legs` of both: each Windows leg is paired
+//! only with each Linux x64 leg of the same CPU model. Per item and build, each pair gives the
+//! ratio interval [Windows low / Linux high, Windows high / Linux low] of the two leg intervals.
+//! The part is above when every pair's low end is >= 0.9, below when every pair's high end is
+//! < 0.9, else neither. The cell reads `MARGINAL (no gate host): AGREE above` when every part is
+//! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else
+//! `MARGINAL: NO AGREEMENT` (also when a leg of a pair is not a valid run: a fresh full commit,
+//! the same commit on every leg, a clean binary, at least 31 rounds and the load guard passed
+//! in each build). With no same-model pair (or no `--linux-pathb`), the cell keeps the form
+//! above: the windows compare against the Linux thresholds, and its text names the CPU models.
+//!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
 //! HEAD, or an ancestor with no change in the paths it measures since, and says that its tree
 //! had no uncommitted change; else the cell is at least OPEN. An exec JSON may instead name the
@@ -105,7 +123,9 @@
 //! - ep9-pathb-compare/v1 (the Path B compare of the 2 box runs): `commit`, `platform`,
 //!   `checks[]` with `box`, `build`, `commit_ok`, `rounds` and `load.{before, after}.pass`, and
 //!   `cells[]` with `build`, `cell` (the M2 item cells start `item <n>:`), `threshold`, `box1`
-//!   and `box2` (`median`, `interval`) and `result`.
+//!   and `box2` (`median`, `interval`) and `result`; and `legs[]` (V15-D16) with `leg`, `cpu`,
+//!   `platform`, `commit`, `checks[]` (`build`, `commit_ok`, `rounds`, `load`) and `cells[]`
+//!   (`build`, `cell`, `value.{median, interval}`).
 //!
 //! The extra rows (no exit-code effect): the parity debt of item 2 and the tripped P-gates.
 //!
@@ -248,6 +268,7 @@ const PATHB_ITEMS: [(&str, u32, f64); 4] = [
     (SPLAY, 6, 1.0),
 ];
 const PATHB_HOW: &str = "the Path B compare JSON (ep9-pathb-compare/v1) of the 2 box runs of this tree (plan section 13.2)";
+const LINUX_PATHB_HOW: &str = "node .github/scripts/exit-inputs.mjs pathb --platform linux-x64 --leg <dir> (the pathb-l1, pathb-l2 artifacts of the exit-inputs dispatch) --out linux.json";
 
 const GATE_CMD: &str = "node tools/bench/cross/run.mjs --workloads m2 --harness base --host <host file> --ep9 <build> --out run-<build>.json, for the jit preset and the jitless build, then node tools/bench/cross/m2gate.mjs run-jit.json run-jitless.json --out m2gate.json (on a gate host)";
 const MEM_CMD: &str = "node tools/bench/cross/mem.mjs --out mem.json (BENCH10)";
@@ -270,7 +291,7 @@ const LINUX_A64: &str = "aarch64-unknown-linux-gnu";
 const WINDOWS_X64: &str = "x86_64-pc-windows-msvc";
 
 const USAGE: &str = "usage: cargo xtask m2-exit --host <triple> --out <file.md> [--root <dir>] \
-     [--gate <json>] [--linux-gate <json>] [--pathb <json>] [--mem <json>] [--exec <json>] \
+     [--gate <json>] [--linux-gate <json>] [--pathb <json>] [--linux-pathb <json>] [--mem <json>] [--exec <json>] \
      [--fastdiff <json>] [--jetstream <json>] [--fuzz <json>]... [--p-gates <md>]";
 
 /// The parsed command line.
@@ -282,6 +303,7 @@ struct Options {
     gate: Option<PathBuf>,
     linux_gate: Option<PathBuf>,
     pathb: Option<PathBuf>,
+    linux_pathb: Option<PathBuf>,
     mem: Option<PathBuf>,
     exec: Option<PathBuf>,
     fastdiff: Option<PathBuf>,
@@ -309,6 +331,7 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
             "--gate" => o.gate = Some(PathBuf::from(val()?)),
             "--linux-gate" => o.linux_gate = Some(PathBuf::from(val()?)),
             "--pathb" => o.pathb = Some(PathBuf::from(val()?)),
+            "--linux-pathb" => o.linux_pathb = Some(PathBuf::from(val()?)),
             "--mem" => o.mem = Some(PathBuf::from(val()?)),
             "--exec" => o.exec = Some(PathBuf::from(val()?)),
             "--fastdiff" => o.fastdiff = Some(PathBuf::from(val()?)),
@@ -335,6 +358,11 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
     if o.linux_gate.is_some() && o.host != WINDOWS_X64 {
         return Err(format!(
             "--linux-gate is for --host {WINDOWS_X64} only\n{USAGE}"
+        ));
+    }
+    if o.linux_pathb.is_some() && o.host != WINDOWS_X64 {
+        return Err(format!(
+            "--linux-pathb is for --host {WINDOWS_X64} only (V15-D16)\n{USAGE}"
         ));
     }
     if o.pathb.is_some() && o.host != LINUX_X64 && o.host != WINDOWS_X64 {
@@ -392,6 +420,7 @@ struct Ctx<'a> {
     gate: Option<(PathBuf, Json)>,
     linux_gate: Option<(PathBuf, Json)>,
     pathb: Option<(PathBuf, Json)>,
+    linux_pathb: Option<(PathBuf, Json)>,
     mem: Option<(PathBuf, Json)>,
     exec: Option<(PathBuf, Json)>,
     fastdiff: Option<(PathBuf, Json)>,
@@ -426,6 +455,7 @@ fn run(o: &Options) -> Result<Report, String> {
         gate: one(&o.gate)?,
         linux_gate: one(&o.linux_gate)?,
         pathb: one(&o.pathb)?,
+        linux_pathb: one(&o.linux_pathb)?,
         mem: one(&o.mem)?,
         exec: one(&o.exec)?,
         fastdiff: one(&o.fastdiff)?,
@@ -444,6 +474,7 @@ fn run(o: &Options) -> Result<Report, String> {
     schema("--gate", &c.gate, "ep9-m2gate/v1")?;
     schema("--linux-gate", &c.linux_gate, "ep9-m2gate/v1")?;
     schema("--pathb", &c.pathb, PATHB_SCHEMA)?;
+    schema("--linux-pathb", &c.linux_pathb, PATHB_SCHEMA)?;
     schema("--mem", &c.mem, "ep9-mem/v1")?;
     schema("--fastdiff", &c.fastdiff, "ep9-fastdiff/v1")?;
     if let Some((p, j)) = &c.exec {
@@ -489,6 +520,14 @@ fn run(o: &Options) -> Result<Report, String> {
             "--pathb",
             "items 1, 2, 3, 6, 10, D11 with no gate host (V13-D37)",
             PATHB_HOW,
+        );
+    }
+    if o.host == WINDOWS_X64 {
+        miss(
+            c.linux_pathb.is_some() || on_gate_host(&c, &BUILDS),
+            "--linux-pathb",
+            "the same-CPU-model form of items 1, 2, 3, 6, 10, D11 with no gate host (V15-D16)",
+            LINUX_PATHB_HOW,
         );
     }
     miss(c.mem.is_some(), "--mem", "item 4", MEM_CMD);
@@ -1952,7 +1991,20 @@ fn host_cell(c: &Ctx, ids: &[&str], builds: &[&str]) -> (Cell, Option<HostForm>)
     if (host != LINUX_X64 && host != WINDOWS_X64) || on_gate_host(c, builds) {
         return (base, None);
     }
-    let (form, text) = pathb_form(c, p, j, ids, builds);
+    let (form, text) = if host == WINDOWS_X64 {
+        match cross_form(c, ids, builds) {
+            Ok(x) => x,
+            Err(none) => {
+                let (f, t) = pathb_form(c, p, j, ids, builds);
+                (
+                    f,
+                    format!("{none}, so the cell keeps the Path B form (V15-D16): {t}"),
+                )
+            }
+        }
+    } else {
+        pathb_form(c, p, j, ids, builds)
+    };
     let gate = if c.gate.is_some() {
         format!(
             "; the --gate reading ({}): {}",
@@ -2135,6 +2187,256 @@ fn pathb_form(c: &Ctx, p: &Path, j: &Json, ids: &[&str], builds: &[&str]) -> (Ho
             }
         ),
     )
+}
+
+// ---- the win-x64 same-CPU-model form (plan v15 V15-D16) -----------------------------------
+
+/// The `legs` of a Path B compare that name `platform` and a CPU model.
+fn compare_legs<'a>(j: &'a Json, platform: &str) -> Vec<&'a Json> {
+    j.get("legs")
+        .and_then(Json::arr)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|l| l.get("platform").and_then(Json::str) == Some(platform) && leg_cpu(l).is_some())
+        .collect()
+}
+
+fn leg_cpu(l: &Json) -> Option<&str> {
+    l.get("cpu").and_then(Json::str).filter(|s| !s.is_empty())
+}
+
+fn leg_name(l: &Json) -> &str {
+    l.get("leg").and_then(Json::str).unwrap_or("?")
+}
+
+/// The CPU models of `legs`, each once, or "none".
+fn models(legs: &[&Json]) -> String {
+    let m: BTreeSet<&str> = legs.iter().filter_map(|l| leg_cpu(l)).collect();
+    if m.is_empty() {
+        "none".into()
+    } else {
+        m.into_iter().collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// The run checks of one leg for `builds` (the box protocol, as in [`pathb_form`]): the reasons
+/// why the leg is not a valid run of this tree. A clean leg adds its commit to `commits`.
+fn leg_why<'a>(
+    c: &Ctx,
+    leg: &'a Json,
+    builds: &[&str],
+    commits: &mut BTreeSet<&'a str>,
+) -> Vec<String> {
+    let name = leg_name(leg);
+    let mut why = Vec::new();
+    let checks = leg.get("checks").and_then(Json::arr).unwrap_or(&[]);
+    let mut clean = true;
+    for &b in builds {
+        let Some(run) = checks
+            .iter()
+            .find(|x| x.get("build").and_then(Json::str) == Some(b))
+        else {
+            clean = false;
+            why.push(format!("leg {name}: no {b} run check"));
+            continue;
+        };
+        if run.get("commit_ok").and_then(Json::bool) != Some(true) {
+            clean = false;
+            why.push(format!(
+                "leg {name} {b}: the run is not of the leg commit, or its binary is dirty"
+            ));
+        }
+        if num(run, "rounds").is_none_or(|r| r < PATHB_ROUNDS) {
+            why.push(format!(
+                "leg {name} {b}: fewer than {PATHB_ROUNDS} paired rounds (the box protocol)"
+            ));
+        }
+        for when in ["before", "after"] {
+            if run.path(&["load", when, "pass"]).and_then(Json::bool) != Some(true) {
+                why.push(format!(
+                    "leg {name} {b}: the load guard {when} the run did not pass"
+                ));
+            }
+        }
+    }
+    let commit = leg.get("commit").and_then(Json::str);
+    if let Err(e) = fresh(&c.o.root, commit, Some(&Json::Bool(!clean)), &FRESH_PATHS) {
+        why.push(format!("leg {name} is stale: {e}"));
+    } else if let Some(x) = commit {
+        commits.insert(x);
+    }
+    why
+}
+
+/// The `value.interval` (low, high) of the `build` cell of item `item` of a leg; Err: why not.
+fn leg_interval(leg: &Json, build: &str, item: u32) -> Result<(f64, f64), String> {
+    let prefix = format!("item {item}:");
+    let found: Vec<&Json> = leg
+        .get("cells")
+        .and_then(Json::arr)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|x| {
+            x.get("build").and_then(Json::str) == Some(build)
+                && x.get("cell")
+                    .and_then(Json::str)
+                    .is_some_and(|l| l.starts_with(&prefix))
+        })
+        .collect();
+    let [x] = found.as_slice() else {
+        return Err(format!("{} cells (one needed)", found.len()));
+    };
+    match x.path(&["value", "interval"]).and_then(Json::arr) {
+        Some([a, z]) => match (a.num(), z.num()) {
+            (Some(a), Some(z)) if a > 0.0 && z >= a => Ok((a, z)),
+            _ => Err("no interval".into()),
+        },
+        _ => Err("no interval".into()),
+    }
+}
+
+/// An interval (low, high) of a leg value.
+type Span = (f64, f64);
+
+/// One part (an item in a build) over the same-model pairs: each pair's ratio interval
+/// [Windows low / Linux high, Windows high / Linux low]. Some(true) when every low end is
+/// >= 0.9, Some(false) when every high end is < 0.9, else None (also with no pair).
+fn cross_side(pairs: &[(Span, Span)]) -> Option<bool> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let iv: Vec<(f64, f64)> = pairs
+        .iter()
+        .map(|&((wl, wh), (ll, lh))| (wl / lh, wh / ll))
+        .collect();
+    if iv.iter().all(|&(lo, _)| lo >= WINDOWS_MIN) {
+        Some(true)
+    } else if iv.iter().all(|&(_, hi)| hi < WINDOWS_MIN) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The win-x64 same-CPU-model form of the readings `ids` of `builds` (V15-D16, see the module
+/// doc): the form and the evidence text. Err (the reason) when there is no same-model pair:
+/// the caller then reads the Path B form.
+fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, String), String> {
+    let Some((wp, wj)) = &c.pathb else {
+        return Err("no --pathb input".into());
+    };
+    let Some((lp, lj)) = &c.linux_pathb else {
+        return Err(
+            "no --linux-pathb input (the Linux x64 GitHub legs of the exit-inputs dispatch)".into(),
+        );
+    };
+    let (win, lin) = (compare_legs(wj, "win32-x64"), compare_legs(lj, "linux-x64"));
+    let pairs: Vec<(&Json, &Json)> = win
+        .iter()
+        .flat_map(|w| {
+            lin.iter()
+                .filter(|l| leg_cpu(l) == leg_cpu(w))
+                .map(|l| (*w, *l))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return Err(format!(
+            "no same-CPU-model pair of a Windows and a Linux x64 GitHub run (Windows: {}; Linux x64: {})",
+            models(&win),
+            models(&lin)
+        ));
+    }
+    let mut why = Vec::new();
+    let mut commits = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for leg in pairs.iter().flat_map(|(w, l)| [*w, *l]) {
+        let key = (leg.get("platform").and_then(Json::str), leg_name(leg));
+        if seen.insert(key) {
+            why.extend(leg_why(c, leg, builds, &mut commits));
+        }
+    }
+    if commits.len() > 1 {
+        why.push(format!("the legs name {} commits, not one", commits.len()));
+    }
+    let valid = why.is_empty();
+    let mut parts = Vec::new();
+    let (mut all_above, mut any_below) = (true, false);
+    for &b in builds {
+        for &id in ids {
+            let Some(&(_, item, _)) = PATHB_ITEMS.iter().find(|(i, _, _)| *i == id) else {
+                continue;
+            };
+            let mut ivs = Vec::new();
+            let mut texts = Vec::new();
+            let mut whole = true;
+            for (w, l) in &pairs {
+                let pair = format!("{}/{}", leg_name(w), leg_name(l));
+                match (leg_interval(w, b, item), leg_interval(l, b, item)) {
+                    (Ok(wi), Ok(li)) => {
+                        let (lo, hi) = (wi.0 / li.1, wi.1 / li.0);
+                        texts.push(format!("{pair} [{lo:.3}, {hi:.3}]"));
+                        ivs.push((wi, li));
+                    }
+                    (wi, li) => {
+                        whole = false;
+                        let e = |x: Result<(f64, f64), String>| x.err().unwrap_or_default();
+                        texts.push(format!(
+                            "{pair}: {}",
+                            [e(wi), e(li)]
+                                .into_iter()
+                                .filter(|x| !x.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                }
+            }
+            let side = if whole { cross_side(&ivs) } else { None };
+            all_above &= side == Some(true);
+            any_below |= side == Some(false);
+            let word = match side {
+                Some(true) => "AGREE above",
+                Some(false) => "AGREE below",
+                None => "NO AGREEMENT",
+            };
+            parts.push(format!("{b} item {item}: {}: {word}", texts.join(", ")));
+        }
+    }
+    let form = if !valid {
+        HostForm::NoAgreement
+    } else if any_below {
+        HostForm::AgreeBelow
+    } else if all_above {
+        HostForm::AgreeAbove
+    } else {
+        HostForm::NoAgreement
+    };
+    let names = pairs
+        .iter()
+        .map(|(w, l)| {
+            format!(
+                "{}/{} ({})",
+                leg_name(w),
+                leg_name(l),
+                leg_cpu(w).unwrap_or("?")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok((
+        form,
+        format!(
+            "Windows / Linux x64 on same-CPU-model GitHub runner pairs (V15-D16: the same hardware class of 10-quality.md:84; the interval >= {WINDOWS_MIN} needed, 09:66; not a gate host, 10:157; {} and {}): pairs {names}; {}{}",
+            wp.display(),
+            lp.display(),
+            parts.join("; "),
+            if valid {
+                String::new()
+            } else {
+                format!("; not a valid reading of this tree: {}", why.join("; "))
+            }
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -3585,6 +3887,7 @@ mod tests {
             gate: None,
             linux_gate: None,
             pathb: None,
+            linux_pathb: None,
             mem: None,
             exec: None,
             fastdiff: None,
@@ -3636,8 +3939,8 @@ mod tests {
 
     /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (1), (6)): the windows Path B compare that
     /// `.github/scripts/exit-inputs.mjs pathb` writes (fixture pathb-win.json, made by its
-    /// test) is a valid win32-x64 reading. Item 1 has no QuickJS run on Windows (no interval:
-    /// NO AGREEMENT); items 2 and 6 read AGREE above; the made-up TS cells read AGREE below, so
+    /// test) is a valid win32-x64 reading. Item 1 has the QuickJS runs of V15-D17 (AGREE
+    /// above); items 2 and 6 read AGREE above; the made-up TS cells read AGREE below, so
     /// items 3, 10 and D11 read FAIL-SIDE. On Linux x64 the same compare is NO AGREEMENT.
     #[test]
     fn windows_reads_the_exit_inputs_path_b() {
@@ -3652,7 +3955,7 @@ mod tests {
         assert_eq!(
             forms,
             [
-                Some(NoAgreement),
+                Some(AgreeAbove),
                 Some(AgreeAbove),
                 Some(AgreeBelow),
                 Some(AgreeAbove),
@@ -3671,7 +3974,7 @@ mod tests {
         }
         assert!(
             rep.cells[0].evidence.contains(
-                "jit item 1 (threshold 1.33): box 1 no interval, box 2 no interval: NO AGREEMENT"
+                "jit item 1 (threshold 1.33): box 1 1.400 [1.370-1.430] above, box 2 1.410 [1.380-1.440] above: AGREE above"
             ),
             "{}",
             rep.cells[0].evidence
@@ -3848,5 +4151,169 @@ mod tests {
             };
             assert_eq!(run(&o).unwrap().cells[6].status, Status::Fail, "{host}");
         }
+    }
+    /// The win-x64 same-CPU-model fixtures (plan v15 V15-D16; made by
+    /// `.github/scripts/exit-inputs.test.mjs`): the windows compare pathb-win.json and a Linux
+    /// x64 GitHub compare.
+    fn win_cross(r: &Repo, linux: &str) -> Options {
+        Options {
+            pathb: Some(input(r, "pathb-win.json")),
+            linux_pathb: Some(input(r, linux)),
+            ..opts(r, WINDOWS_X64)
+        }
+    }
+
+    /// V15-D16: each Windows leg pairs only with the Linux x64 legs of its CPU model (w2 and w3
+    /// are EPYC 7763; w1 and w4 are Intel, with no Linux leg). The Linux values are a little
+    /// above the Windows ones: every cross-host low end is >= 0.9, so every speed cell reads
+    /// AGREE above, while the Path B form of the same windows compare reads TS AGREE below. With
+    /// Linux values about 1.3x the Windows ones, every high end is < 0.9: FAIL-SIDE.
+    #[test]
+    fn windows_same_cpu_model_pairs_read_the_09_66_form() {
+        use HostForm::{AgreeAbove, AgreeBelow, NoAgreement};
+        let r = repo("pathb-cross");
+        let rep = run(&win_cross(&r, "pathb-gha-linux.json")).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(AgreeAbove), "{}", rep.cells[i].evidence);
+            assert_eq!(rep.cells[i].status, Status::Open);
+        }
+        let ev = &rep.cells[2].evidence;
+        assert!(
+            ev.starts_with("MARGINAL (no gate host): AGREE above: Windows / Linux x64 on same-CPU-model GitHub runner pairs (V15-D16"),
+            "{ev}"
+        );
+        let m = "AMD EPYC 7763 64-Core Processor";
+        assert!(
+            ev.contains(&format!(
+                "pairs w2/l1 ({m}), w2/l2 ({m}), w3/l1 ({m}), w3/l2 ({m});"
+            )),
+            "{ev}"
+        );
+        assert!(
+            ev.contains("jit item 3: w2/l1 [0.912, 0.990], w2/l2 [0.912, 0.990], w3/l1 [0.922, 1.000], w3/l2 [0.922, 1.000]: AGREE above"),
+            "{ev}"
+        );
+        assert!(!ev.contains("Intel"), "{ev}");
+        assert!(!rep.missing.iter().any(|m| m.starts_with("--linux-pathb")));
+        let rep = run(&win_cross(&r, "pathb-gha-linux-fast.json")).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(AgreeBelow), "{}", rep.cells[i].evidence);
+        }
+        // A leg of a pair that is not a valid run: NO AGREEMENT, never a verdict.
+        let lin = fixture("pathb-gha-linux.json").replace(SHA, &r.head);
+        let busy = lin.replace("\"pass\": true", "\"pass\": false");
+        write(&r.root, "inputs/lin-busy.json", &busy);
+        let dirty = lin.replace("\"commit_ok\": true", "\"commit_ok\": false");
+        write(&r.root, "inputs/lin-dirty.json", &dirty);
+        let short = lin.replace("\"rounds\": 31", "\"rounds\": 30");
+        write(&r.root, "inputs/lin-short.json", &short);
+        let stale = fixture("pathb-gha-linux.json").replace(SHA, &"f".repeat(40));
+        write(&r.root, "inputs/lin-stale.json", &stale);
+        for (f, want) in [
+            (
+                "lin-busy.json",
+                ": the load guard before the run did not pass",
+            ),
+            (
+                "lin-dirty.json",
+                ": the run is not of the leg commit, or its binary is dirty",
+            ),
+            ("lin-short.json", ": fewer than 31 paired rounds"),
+            ("lin-stale.json", "leg l1 is stale"),
+        ] {
+            let o = Options {
+                linux_pathb: Some(r.root.join("inputs").join(f)),
+                ..win_cross(&r, "pathb-gha-linux.json")
+            };
+            let rep = run(&o).unwrap();
+            for i in SPEED {
+                assert_eq!(
+                    rep.forms[i],
+                    Some(NoAgreement),
+                    "{f}: {}",
+                    rep.cells[i].evidence
+                );
+                assert!(
+                    rep.cells[i]
+                        .evidence
+                        .contains("not a valid reading of this tree")
+                        && rep.cells[i].evidence.contains(want),
+                    "{f}: {}",
+                    rep.cells[i].evidence
+                );
+            }
+        }
+    }
+
+    /// V15-D16, K19: with no same-CPU-model pair (the Linux legs are EPYC 9V74), or with no
+    /// --linux-pathb, the cell keeps the Path B form of the windows compare and names the CPU
+    /// models; a --linux-pathb on another host is a usage error.
+    #[test]
+    fn windows_with_no_same_model_pair_keeps_the_path_b_form() {
+        use HostForm::{AgreeAbove, AgreeBelow};
+        let r = repo("pathb-cross-none");
+        let want = [
+            Some(AgreeAbove),
+            Some(AgreeAbove),
+            Some(AgreeBelow),
+            Some(AgreeAbove),
+            Some(AgreeBelow),
+            Some(AgreeBelow),
+        ];
+        let rep = run(&win_cross(&r, "pathb-gha-linux-other.json")).unwrap();
+        let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
+        assert_eq!(forms, want, "{}", rep.table);
+        for i in SPEED {
+            assert!(
+                rep.cells[i].evidence.contains("no same-CPU-model pair of a Windows and a Linux x64 GitHub run (Windows: AMD EPYC 7763 64-Core Processor, Intel Xeon Platinum 8370C; Linux x64: AMD EPYC 9V74 80-Core Processor), so the cell keeps the Path B form (V15-D16): Path B "),
+                "{}",
+                rep.cells[i].evidence
+            );
+        }
+        let o = Options {
+            pathb: Some(input(&r, "pathb-win.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
+        assert_eq!(forms, want);
+        assert!(rep.cells[0].evidence.contains("no --linux-pathb input"));
+        assert!(rep.missing.iter().any(|m| m.starts_with("--linux-pathb")));
+        let mut args: Vec<String> = [
+            "--host",
+            LINUX_X64,
+            "--out",
+            "x.md",
+            "--linux-pathb",
+            "l.json",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(
+            parse_args(&args, r.root.clone())
+                .unwrap_err()
+                .contains("--linux-pathb is for --host x86_64-pc-windows-msvc only")
+        );
+        args[1] = WINDOWS_X64.into();
+        assert!(parse_args(&args, r.root.clone()).is_ok());
+    }
+
+    /// The part rule of the same-CPU-model form: every low end >= 0.9 is above, every high end
+    /// < 0.9 is below, a mix (or no pair) is neither.
+    #[test]
+    fn cross_side_reads_every_pair() {
+        let p = |w: (f64, f64), l: (f64, f64)| (w, l);
+        assert_eq!(cross_side(&[]), None);
+        assert_eq!(cross_side(&[p((0.93, 0.97), (0.98, 1.02))]), Some(true));
+        assert_eq!(cross_side(&[p((0.90, 1.00), (0.98, 1.00))]), Some(true));
+        assert_eq!(cross_side(&[p((0.70, 0.80), (0.98, 1.02))]), Some(false));
+        // One pair above and one below: NO AGREEMENT.
+        assert_eq!(
+            cross_side(&[p((0.93, 0.97), (0.98, 1.02)), p((0.70, 0.80), (0.98, 1.02))]),
+            None
+        );
+        // One pair straddles 0.9.
+        assert_eq!(cross_side(&[p((0.85, 0.97), (0.98, 1.02))]), None);
     }
 }
