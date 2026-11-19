@@ -1306,3 +1306,106 @@ fn a_second_name_in_the_same_stub_cache_entry_misses_the_fast_probe() {
         t.release(kept_r);
     });
 }
+
+// ---- two shapes of one name in one entry (M10 LEVER-12 Codex nm-r3) --------------------------
+
+/// Two objects under `p` (rooted by the handles) with different shapes whose load entries for
+/// `name` are the same entry (`stub_cache::index_of`), and with `name` at different slots.
+/// Object pair `n` has the pads `s{n / 1024}`, `t{n / 32 % 32}` and `w{n % 32}` (0 each),
+/// then `name` (slot 3) on side 0 and the pad `u` and `name` (slot 4) on side 1; `name` is
+/// 100 + the object's number. The search adds at most 32 transitions to a shape, under the
+/// cap (`shape::MAX_TRANSITIONS`, 64), so all the shapes are tree shapes. The search pairs a
+/// side 0 object with a side 1 one only. The ShapeIds come one after the other, and the hash
+/// spreads near ids well, so it needs some thousand objects (2,338 or 2,645 in each config on
+/// mac a64). Each object the search makes stays rooted until the end of the search, so a
+/// freed shape cannot come back with the same id.
+fn two_shapes_in_one_entry(t: &T, p: u64, name: &str) -> ([u64; 2], [GlobalHandle; 2]) {
+    let k = key(t.rt(), name);
+    let mut seen: [std::collections::HashMap<usize, (u64, GlobalHandle)>; 2] = Default::default();
+    for i in 0..2 * 32 * 32 * 32usize {
+        let (side, n) = (i % 2, i / 2);
+        let pads = [
+            format!("s{}", n / 1024),
+            format!("t{}", n / 32 % 32),
+            format!("w{}", n % 32),
+        ];
+        let v = int(100 + i as i32);
+        let mut props: Vec<(&str, u64)> = pads.iter().map(|q| (q.as_str(), int(0))).collect();
+        if side == 1 {
+            props.push(("u", int(0)));
+        }
+        props.push((name, v));
+        let o = object_with(t.rt(), p, &props);
+        assert!(!shape::is_dictionary(shape::shape_of(o)));
+        let h = t.keep(o);
+        let at = stub_cache::index_of(Op::Load, id(o), k);
+        if let Some((o0, h0)) = seen[1 - side].remove(&at) {
+            for m in &mut seen {
+                for (_, (_, hx)) in m.drain() {
+                    t.release(hx);
+                }
+            }
+            assert_ne!(id(o0), id(o));
+            assert_eq!(stub_cache::index_of(Op::Load, id(o0), k), at);
+            return ([o0, o], [h0, h]);
+        }
+        // A second object of one side in one entry: the first one stays, the new one goes.
+        if let Some((_, hx)) = seen[side].insert(at, (o, h)) {
+            t.release(hx);
+        }
+    }
+    panic!("no two shapes in one entry");
+}
+
+/// Codex nm-r3: two receiver shapes whose entries for one name are the same stub cache entry,
+/// with the name at different slots. The entry holds the first shape's case; a one-byte load
+/// of the name with the second receiver at a megamorphic site must miss the fast probe
+/// (`stub_cache::probe_at` compares the ShapeId) and give its own value, never a field at the
+/// first shape's offset (a pad, 0, or past the last field). Then the entry holds the second
+/// shape.
+#[test]
+fn a_second_shape_in_the_same_stub_cache_entry_misses_the_fast_probe() {
+    each(|c| {
+        let every = c.heap.gc_stress;
+        let stress = every != 0;
+        let mut t = T::new(c, &[Site::Get("x")]);
+        let op = object_prototype(t.rt());
+        // The search makes some thousand objects: no GC stress there; the loads below have it.
+        t.rt().heap.set_gc_stress(0);
+        let (rs, kept_r) = two_shapes_in_one_entry(&t, op, "x");
+        t.rt().heap.set_gc_stress(every);
+        let want = rs.map(|r| own(t.rt(), r, "x").unwrap());
+        assert!(want != [int(0); 2] && want[0] != want[1]);
+        // The site megamorphic (five other shapes).
+        let objs = five(&t, op);
+        let kept = t.keep_all(&objs);
+        for &o in &objs {
+            t.ok(0, o, UNDEFINED);
+        }
+        assert_eq!(t.state(0), State::Megamorphic);
+        // The first shape: its entry is filled, then a fast-body hit.
+        assert_eq!(t.ok(0, rs[0], UNDEFINED), want[0]);
+        let f = fast_hits();
+        assert_eq!(t.ok(0, rs[0], UNDEFINED), want[0]);
+        if !stress {
+            assert_eq!(fast_hits(), f + 1);
+            assert!(entry(&t, Op::Load, rs[0], "x").is_some());
+            assert!(entry(&t, Op::Load, rs[1], "x").is_none());
+        }
+        // The second shape, same name, same entry: a fast-probe miss and its own value.
+        let f = fast_hits();
+        assert_eq!(t.ok(0, rs[1], UNDEFINED), want[1]);
+        assert_eq!(fast_hits(), f);
+        // Now the entry holds the second shape: a hit for it, a miss for the first.
+        let f = fast_hits();
+        assert_eq!(t.ok(0, rs[1], UNDEFINED), want[1]);
+        if !stress {
+            assert_eq!(fast_hits(), f + 1);
+        }
+        let f = fast_hits();
+        assert_eq!(t.ok(0, rs[0], UNDEFINED), want[0]);
+        assert_eq!(fast_hits(), f);
+        t.release_all(kept);
+        t.release_all(kept_r.into());
+    });
+}
