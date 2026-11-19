@@ -1057,3 +1057,544 @@ fn the_abi_creates_and_revokes_a_proxy() {
         });
     }
 }
+
+// ---- the ownKeys duplicate check by content hash (M10-P0 HASH-SEED, HB-3) ------------------
+
+/// The `ownKeys` duplicate error (§10.5.11 step 10).
+const DUPLICATE: &str = "TypeError: 'ownKeys' on proxy: trap returned duplicate entries";
+
+/// An `ownKeys` trap: `["a", "b", "a"]` (new strings, not atoms).
+fn dup_strings_trap<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let a = cx.new_string("a")?.value();
+    let b = cx.new_string("b")?.value();
+    let a2 = cx.new_string("a")?.value();
+    Ok(cx.create_array_from_list(&[a, b, a2])?.value())
+}
+
+/// An `ownKeys` trap: `[handler.sym, "x", handler.sym]`.
+fn dup_symbol_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let sym = cx.get_v(this, "sym")?;
+    let x = cx.new_string("x")?.value();
+    Ok(cx.create_array_from_list(&[sym, x, sym])?.value())
+}
+
+/// An `ownKeys` trap: 40 new strings "k0" to "k39", then "k7" again if `handler.dup` is
+/// true. Each string is a new allocation (a collection under GC stress).
+fn many_keys_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let dup = cx.get_v(this, "dup")?;
+    let dup = cx.to_boolean(dup);
+    let list = cx.new_array();
+    let n = if dup { 41 } else { 40 };
+    for i in 0..n {
+        let k = cx.new_string(&format!("k{}", if i == 40 { 7 } else { i }))?;
+        cx.set(list, i.to_string().as_str(), k, true)?;
+    }
+    Ok(list.value())
+}
+
+std::thread_local! {
+    /// The calls of the element-2 getters below.
+    static GETTER_CALLS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// A getter: counts the call and returns 5 (not a property key).
+fn count_then_5<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    Ok(Local::int32(5))
+}
+
+/// A getter: counts the call and returns "b".
+fn count_then_b<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    Ok(cx.new_string("b")?.value())
+}
+
+/// An `ownKeys` trap: the array-like `{length: 3, 0: "a", 1: "a", get 2() {...}}`, whose
+/// getter is `handler.getter`.
+fn array_like_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let getter = cx.get_v(this, "getter")?;
+    let o = cx.new_object();
+    cx.set(o, "length", Local::int32(3), true)?;
+    for i in ["0", "1"] {
+        let a = cx.new_string("a")?;
+        cx.set(o, i, a, true)?;
+    }
+    let desc = PropertyDescriptor {
+        get: Some(getter),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    cx.define_property_or_throw(o, "2", desc)?;
+    Ok(o.value())
+}
+
+/// HB-3: a trap result with a duplicate string (`["a", "b", "a"]`) or a duplicate symbol
+/// throws the duplicate TypeError (§10.5.11 step 10), with and without GC stress.
+#[test]
+fn own_keys_duplicate_entries_still_throw() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let target = cx.new_object();
+            let h = handler_of(cx, rt, &["ownKeys"], dup_strings_trap);
+            let p = cx.proxy_create(target, h).unwrap();
+            assert!(cx.own_property_keys(p).is_err());
+            assert_eq!(take_error(cx, rt), DUPLICATE);
+
+            let h = handler_of(cx, rt, &["ownKeys"], dup_symbol_trap);
+            let sym = cx.new_symbol(Local::undefined()).unwrap();
+            cx.set(h, "sym", sym, true).unwrap();
+            let p = cx.proxy_create(target, h).unwrap();
+            assert!(cx.own_property_keys(p).is_err());
+            assert_eq!(take_error(cx, rt), DUPLICATE);
+        });
+    }
+}
+
+/// HB-3 with GC stress (a collection before every allocation): 40 keys, each a new string
+/// that the check interns, give no false duplicate and keep their order; one more "k7"
+/// throws the duplicate TypeError.
+#[test]
+fn own_keys_duplicate_check_under_gc_stress() {
+    with_cx(true, |cx, rt| {
+        let target = cx.new_object();
+        let h = handler_of(cx, rt, &["ownKeys"], many_keys_trap);
+        let p = cx.proxy_create(target, h).unwrap();
+        let keys = cx.own_property_keys(p).unwrap();
+        let want: Vec<String> = (0..40).map(|i| format!("k{i}")).collect();
+        assert_eq!(key_texts(cx, keys.into()), want);
+        cx.set(h, "dup", Local::boolean(true), true).unwrap();
+        assert!(cx.own_property_keys(p).is_err());
+        assert_eq!(take_error(cx, rt), DUPLICATE);
+    });
+}
+
+/// HB-3, the spec order (§10.5.11 steps 9-10, §7.3.18 CreateListFromArrayLike): every element
+/// is read and type-checked before the duplicate check. For `{length: 3, 0: "a", 1: "a",
+/// get 2() {...}}` the getter runs once; if it returns 5 the TypeError is the one of element
+/// 2, not the duplicate error; if it returns "b" the TypeError is the duplicate error (node
+/// v26.13.1 gives both results).
+#[test]
+fn own_keys_reads_every_element_before_the_duplicate_check() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let target = cx.new_object();
+            for (getter, want) in [
+                (
+                    count_then_5 as HostFn,
+                    "TypeError: 5 is not a valid property name",
+                ),
+                (count_then_b as HostFn, DUPLICATE),
+            ] {
+                let h = handler_of(cx, rt, &["ownKeys"], array_like_trap);
+                let g = host_fn(rt, getter, "get 2");
+                cx.set(h, "getter", g, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                GETTER_CALLS.with(|c| c.set(0));
+                assert!(cx.own_property_keys(p).is_err());
+                assert_eq!(take_error(cx, rt), want);
+                assert_eq!(GETTER_CALLS.with(core::cell::Cell::get), 1, "{want}");
+            }
+        });
+    }
+}
+
+/// An `ownKeys` trap: returns `handler.list`.
+fn list_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.get_v(this, "list")
+}
+
+/// HB-3, steps 19-24 (uncheckedResultKeys by (content hash, index), no address order): a
+/// non-extensible target with "x" (non-configurable), "y" and a symbol. A trap result with the
+/// same keys in a new order (new strings) passes and keeps its order; a result without "x",
+/// without the symbol, or with one more key "z" throws the step 21, 23 or 24 TypeError. With
+/// and without GC stress.
+#[test]
+fn own_keys_unchecked_keys_match_by_content_not_address() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let target = cx.new_object();
+            let sym = cx.new_symbol(Local::undefined()).unwrap();
+            let x = PropertyDescriptor::data(Local::int32(1), true, true, false);
+            cx.define_property_or_throw(target, "x", x).unwrap();
+            cx.set(target, "y", Local::int32(2), true).unwrap();
+            cx.set(target, sym, Local::int32(3), true).unwrap();
+            assert!(cx.prevent_extensions(target).unwrap());
+            let missing = "TypeError: 'ownKeys' on proxy: trap result did not include '";
+            let extra = "TypeError: 'ownKeys' on proxy: trap returned extra keys but proxy \
+                         target is non-extensible";
+            for (names, with_sym, want) in [
+                (&["y", "x"][..], true, None),
+                (&["y"][..], true, Some(format!("{missing}x'"))),
+                (&["y", "x"][..], false, Some(missing.to_owned())),
+                (&["y", "x", "z"][..], true, Some(extra.to_owned())),
+            ] {
+                let list = cx.new_array();
+                let mut n = 0;
+                for name in names {
+                    let s = cx.new_string(name).unwrap();
+                    cx.set(list, n.to_string().as_str(), s, true).unwrap();
+                    n += 1;
+                    if with_sym && n == 1 {
+                        cx.set(list, "1", sym, true).unwrap();
+                        n += 1;
+                    }
+                }
+                let h = handler_of(cx, rt, &["ownKeys"], list_trap);
+                cx.set(h, "list", list, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                match want {
+                    None => {
+                        let keys = cx.own_property_keys(p).unwrap();
+                        assert_eq!(object::array_len(keys.bits()), 3);
+                        let first = cx.get_index(keys, 0).unwrap();
+                        assert_eq!(cx.to_rust_string(first).unwrap(), "y");
+                        let second = cx.get_index(keys, 1).unwrap();
+                        assert_eq!(second.bits(), sym.bits());
+                        let third = cx.get_index(keys, 2).unwrap();
+                        assert_eq!(cx.to_rust_string(third).unwrap(), "x");
+                    }
+                    Some(want) => {
+                        assert!(cx.own_property_keys(p).is_err());
+                        let got = take_error(cx, rt);
+                        assert!(got.starts_with(&want), "{got} vs {want}");
+                    }
+                }
+            }
+        });
+    }
+}
+
+// ---- the ownKeys duplicate pass polls (M10-P0 HASH-SEED, Codex r1 F1) ----------------------
+
+/// A getter: counts the call, then requests a termination and sets the interrupt budget to 1,
+/// so the next poll stops the isolate. Returns "c".
+fn terminate_then_c<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    let c = cx.new_string("c")?.value();
+    let inner = cx.inner();
+    inner.rt().terminate.fetch_or(
+        crate::interp::interrupt::TERMINATE,
+        std::sync::atomic::Ordering::Release,
+    );
+    inner.budget = 1;
+    Ok(c)
+}
+
+/// An `ownKeys` trap: the array-like `{length: 3, 0: "a", 1: "b", get 2() {...}}`, whose
+/// getter is `handler.getter`. No duplicate.
+fn array_like_abc_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let getter = cx.get_v(this, "getter")?;
+    let o = cx.new_object();
+    cx.set(o, "length", Local::int32(3), true)?;
+    for (i, k) in [("0", "a"), ("1", "b")] {
+        let s = cx.new_string(k)?;
+        cx.set(o, i, s, true)?;
+    }
+    let desc = PropertyDescriptor {
+        get: Some(getter),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    cx.define_property_or_throw(o, "2", desc)?;
+    Ok(o.value())
+}
+
+/// Codex r1 F1: the getter of the last trap-result element requests a termination (and the
+/// budget runs out at the next poll). The pass after the read loop (step 10 and the
+/// uncheckedResultKeys build) polls, so `[[OwnPropertyKeys]]` stops with the termination: for
+/// an empty extensible target (no poll in steps 11-18) it does not return the keys, and for an
+/// empty non-extensible target it does not throw the step 24 TypeError. With and without GC
+/// stress.
+#[test]
+fn own_keys_stops_on_a_termination_from_the_last_getter() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            for extensible in [true, false] {
+                let target = cx.new_object();
+                if !extensible {
+                    assert!(cx.prevent_extensions(target).unwrap());
+                }
+                let h = handler_of(cx, rt, &["ownKeys"], array_like_abc_trap);
+                let g = host_fn(rt, terminate_then_c, "get 2");
+                cx.set(h, "getter", g, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                GETTER_CALLS.with(|c| c.set(0));
+                let failed = cx.own_property_keys(p).is_err();
+                let terminating = rt.terminating.get();
+                let pending = rt.take_pending();
+                // Clear the request before the asserts, so a failure does not stop the next run.
+                rt.terminating.set(false);
+                rt.terminate.fetch_and(
+                    !crate::interp::interrupt::TERMINATE,
+                    std::sync::atomic::Ordering::AcqRel,
+                );
+                assert_eq!(GETTER_CALLS.with(core::cell::Cell::get), 1);
+                assert!(failed, "extensible {extensible}: the keys came back");
+                assert!(terminating, "extensible {extensible}: not a termination");
+                assert_eq!(
+                    pending,
+                    crate::frame::UNDEFINED,
+                    "extensible {extensible}: a TypeError, not the termination"
+                );
+            }
+        });
+    }
+}
+
+/// 2 different texts "h<i>" with the same 30-bit table hash (`string::hash_text`) under this
+/// process's SipHash key: a birthday search (about 2^15 texts; any key works).
+fn same_hash_texts() -> (String, String) {
+    let mut by_hash = std::collections::HashMap::new();
+    for i in 0..(1u32 << 24) {
+        let s = format!("h{i}");
+        let (_, h) = crate::string::hash_text(crate::string::JsStr::Latin1(s.as_bytes()));
+        if let Some(t) = by_hash.insert(h, s.clone()) {
+            return (t, s);
+        }
+    }
+    panic!("no 30-bit hash collision in 2^24 texts");
+}
+
+/// Codex r1 next step: 2 different keys `a` and `b` with one content hash are one equal-hash
+/// run of the step 10 pass and of uncheckedResultKeys (steps 19-24); the bits test keeps them
+/// apart. A non-extensible target with `a` (non-configurable) and `b`: `[b, a]` passes in its
+/// order; `[a, b, a]` throws the duplicate error; `[b]` misses `a` (step 21); `[a]` misses `b`
+/// (step 23); `[b, a, "z"]` has an extra key (step 24). With and without GC stress.
+#[test]
+fn own_keys_keeps_apart_different_keys_with_one_hash() {
+    let (ta, tb) = same_hash_texts();
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let (a, b) = (atom(rt, &ta), atom(rt, &tb));
+            assert_ne!(a, b);
+            assert_eq!(crate::string::hash(a), crate::string::hash(b));
+            let target = cx.new_object();
+            let x = PropertyDescriptor::data(Local::int32(1), true, true, false);
+            cx.define_property_or_throw(target, ta.as_str(), x).unwrap();
+            cx.set(target, tb.as_str(), Local::int32(2), true).unwrap();
+            assert!(cx.prevent_extensions(target).unwrap());
+            let missing = "TypeError: 'ownKeys' on proxy: trap result did not include '";
+            let extra = "TypeError: 'ownKeys' on proxy: trap returned extra keys but proxy \
+                         target is non-extensible";
+            for (names, want) in [
+                (vec![tb.as_str(), ta.as_str()], None),
+                (
+                    vec![ta.as_str(), tb.as_str(), ta.as_str()],
+                    Some(DUPLICATE.to_owned()),
+                ),
+                (vec![tb.as_str()], Some(format!("{missing}{ta}'"))),
+                (vec![ta.as_str()], Some(format!("{missing}{tb}'"))),
+                (vec![tb.as_str(), ta.as_str(), "z"], Some(extra.to_owned())),
+            ] {
+                let list = cx.new_array();
+                for (n, name) in names.iter().enumerate() {
+                    // A new string, not the atom: the check interns it.
+                    let s = cx.new_string(name).unwrap();
+                    cx.set(list, n.to_string().as_str(), s, true).unwrap();
+                }
+                let h = handler_of(cx, rt, &["ownKeys"], list_trap);
+                cx.set(h, "list", list, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                match want {
+                    None => {
+                        let keys = cx.own_property_keys(p).unwrap();
+                        assert_eq!(key_texts(cx, keys.into()), [tb.clone(), ta.clone()]);
+                    }
+                    Some(want) => {
+                        assert!(cx.own_property_keys(p).is_err());
+                        assert_eq!(take_error(cx, rt), want);
+                    }
+                }
+            }
+        });
+    }
+}
+
+// ---- the ownKeys removal and run scan (M10-P0 HASH-SEED, Codex r2 F1, F2) -------------------
+
+/// Codex r2 F1: steps 19-23 can give `remove` a target key that is not a string or a symbol
+/// (a target key list past the dense limit reads as UNDEFINED). `remove` returns false for it
+/// (the caller then throws the step 21 or 23 TypeError, as the base `HashSet` lookup did), and
+/// does not hash it (`string::hash` of a non-cell panics). The real keys are still found once.
+#[test]
+fn own_keys_unchecked_remove_of_a_value_that_is_not_a_key_is_false() {
+    with_cx(false, |cx, rt| {
+        let (a, b) = (atom(rt, "a"), atom(rt, "b"));
+        let sym = cx.new_symbol(Local::undefined()).unwrap();
+        let list = cx.new_array();
+        for (n, k) in [a, b, sym.bits()].into_iter().enumerate() {
+            cx.set(
+                list,
+                n.to_string().as_str(),
+                Local::<'_, crate::JsValue>::from_bits(k),
+                true,
+            )
+            .unwrap();
+        }
+        let keys = list.bits();
+        for v in [
+            crate::frame::UNDEFINED,
+            NULL,
+            Local::int32(5).bits(),
+            Local::boolean(true).bits(),
+        ] {
+            assert_eq!(
+                proxy::unchecked_keys_remove(cx.inner(), keys, v),
+                Ok(false),
+                "{v:#x}"
+            );
+        }
+        for k in [a, b, sym.bits()] {
+            assert_eq!(proxy::unchecked_keys_remove(cx.inner(), keys, k), Ok(true));
+        }
+        assert_eq!(
+            proxy::unchecked_keys_remove(cx.inner(), keys, atom(rt, "c")),
+            Ok(false)
+        );
+    });
+}
+
+/// The length of the trap result of [`one_key_run_trap`]: every element is "a".
+const RUN_LEN: u32 = 256;
+
+std::thread_local! {
+    /// The interrupt budget that [`terminate_after_budget_a`] sets.
+    static RUN_BUDGET: core::cell::Cell<i64> = const { core::cell::Cell::new(1) };
+}
+
+/// A getter: counts the call, requests a termination and sets the interrupt budget to
+/// `RUN_BUDGET`, so poll number `RUN_BUDGET` after this call stops the isolate. Returns "a".
+fn terminate_after_budget_a<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    let a = cx.new_string("a")?.value();
+    let inner = cx.inner();
+    inner.rt().terminate.fetch_or(
+        crate::interp::interrupt::TERMINATE,
+        std::sync::atomic::Ordering::Release,
+    );
+    inner.budget = RUN_BUDGET.with(core::cell::Cell::get);
+    Ok(a)
+}
+
+/// An `ownKeys` trap: the array-like `{length: RUN_LEN, 0: "a", ..., get [RUN_LEN - 1]() {...}}`
+/// (one repeated key: one equal-hash run of every pair), whose last getter is
+/// `handler.getter`.
+fn one_key_run_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let getter = cx.get_v(this, "getter")?;
+    let o = cx.new_object();
+    cx.set(o, "length", Local::int32(RUN_LEN as i32), true)?;
+    for i in 0..RUN_LEN - 1 {
+        let s = cx.new_string("a")?;
+        cx.set(o, i.to_string().as_str(), s, true)?;
+    }
+    let desc = PropertyDescriptor {
+        get: Some(getter),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    cx.define_property_or_throw(o, (RUN_LEN - 1).to_string().as_str(), desc)?;
+    Ok(o.value())
+}
+
+/// Codex r2 F2: the termination request comes after the sort, inside the step 10 run scan.
+/// After the last getter, the pass polls `RUN_LEN` times (the hashes), then `RUN_LEN / 2` and
+/// `RUN_LEN - 1` times (the heapsort): `before` polls. The scan of the one run polls once for
+/// the first pair and once for its first comparison, which finds the duplicate. So a budget of
+/// `before + 1` or `before + 2` stops `[[OwnPropertyKeys]]` with the termination, and a budget
+/// of `before + 3` gives the duplicate TypeError (this pins `before`, so the termination comes
+/// from the scan, not from an earlier poll). With and without GC stress.
+#[test]
+fn own_keys_run_scan_stops_on_a_termination_after_the_sort() {
+    let before = i64::from(RUN_LEN + RUN_LEN / 2 + (RUN_LEN - 1));
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            for (budget, stops) in [(before + 1, true), (before + 2, true), (before + 3, false)] {
+                let target = cx.new_object();
+                let h = handler_of(cx, rt, &["ownKeys"], one_key_run_trap);
+                let g = host_fn(rt, terminate_after_budget_a, "get last");
+                cx.set(h, "getter", g, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                GETTER_CALLS.with(|c| c.set(0));
+                RUN_BUDGET.with(|c| c.set(budget));
+                let failed = cx.own_property_keys(p).is_err();
+                let terminating = rt.terminating.get();
+                // Clear the request before the asserts, so a failure does not stop the next run.
+                rt.terminating.set(false);
+                rt.terminate.fetch_and(
+                    !crate::interp::interrupt::TERMINATE,
+                    std::sync::atomic::Ordering::AcqRel,
+                );
+                assert_eq!(GETTER_CALLS.with(core::cell::Cell::get), 1);
+                assert!(failed, "budget {budget}: the keys came back");
+                assert_eq!(terminating, stops, "budget {budget}: termination");
+                if stops {
+                    assert_eq!(
+                        rt.take_pending(),
+                        crate::frame::UNDEFINED,
+                        "budget {budget}"
+                    );
+                } else {
+                    assert_eq!(take_error(cx, rt), DUPLICATE, "budget {budget}");
+                }
+            }
+        });
+    }
+}

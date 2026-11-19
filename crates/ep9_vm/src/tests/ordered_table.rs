@@ -726,3 +726,234 @@ fn an_iterator_index_past_the_entries_of_an_obsolete_table_is_their_end() {
         assert!(cx.collection_iterator_next(it, iter).unwrap().is_none());
     });
 }
+
+// ---- keyed number hashes (M10-P0 HASH-SEED, R20 §7 HB-2) ----------------------------------------
+
+/// The splitmix64 finalizer that `table::mix` used before M10-P0 (all 64 bits).
+fn old_finalizer(x: u64) -> u64 {
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// The inverse of the odd `a` modulo 2^64 (Newton: each step doubles the good low bits).
+fn inverse_u64(a: u64) -> u64 {
+    let mut x = a;
+    for _ in 0..6 {
+        x = x.wrapping_mul(2u64.wrapping_sub(a.wrapping_mul(x)));
+    }
+    x
+}
+
+/// The inverse of `z ^= z >> s`.
+fn undo_xorshift(z: u64, s: u32) -> u64 {
+    let mut x = z;
+    for _ in 0..64 / s + 1 {
+        x = z ^ (x >> s);
+    }
+    x
+}
+
+/// The inverse of [`old_finalizer`]: the old hash is a bijection, so JS can pick its output.
+fn old_finalizer_inverse(z: u64) -> u64 {
+    let z = undo_xorshift(z, 31).wrapping_mul(inverse_u64(0x94d0_49bb_1331_11eb));
+    let z = undo_xorshift(z, 27).wrapping_mul(inverse_u64(0xbf58_476d_1ce4_e5b9));
+    undo_xorshift(z, 30)
+}
+
+/// HB-2: number keys made by the inverse of the old finalizer, with the same low 32 bits of
+/// the old hash (so the old hash put them all in one bucket of every table), now spread: no
+/// bucket of a 2^16 table gets more than 8 of the 2,000 keys (est. bound; the mean is 0.03),
+/// for any per-process key. Only the finite numbers in their normal double form are kept. A
+/// Map with all of them finds each one.
+#[test]
+fn number_keys_built_from_the_old_mix_inverse_spread() {
+    let offset = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+    let keys: Vec<u64> = (1..u64::from(u32::MAX))
+        .map(|hi| old_finalizer_inverse((hi << 32) | 0x5EED_0001))
+        .filter(|&x| {
+            let d = f64::from_bits(x.wrapping_sub(offset));
+            d.is_finite() && num(d) == x && table::normalize(x) == x
+        })
+        .take(2000)
+        .collect();
+    assert_eq!(keys.len(), 2000);
+    for &k in &keys {
+        assert_eq!(
+            old_finalizer(k) as u32,
+            0x5EED_0001,
+            "the old low bits are equal"
+        );
+    }
+    let mut per_bucket = vec![0u32; 1 << 16];
+    for &k in &keys {
+        per_bucket[(table::mix(k) & 0xFFFF) as usize] += 1;
+    }
+    let most = per_bucket.iter().copied().max().unwrap();
+    assert!(most <= 8, "a bucket has {most} of the 2,000 keys");
+    on_big_stack(move || {
+        let iso = isolate(config(Dispatch::DEFAULT, true));
+        let rt: &Runtime = &iso.rt;
+        let map = new_collection(rt, ObjectClass::Map);
+        let h = rt.heap.new_global(val(map));
+        for (n, &k) in keys.iter().enumerate() {
+            table::set(rt, map, k, int32_bits(n as i32)).unwrap();
+        }
+        assert_eq!(table::live_count(table::table_of(map)), keys.len());
+        for (n, &k) in keys.iter().enumerate() {
+            assert_eq!(get(rt, map, k), Some(int32_bits(n as i32)));
+        }
+        iso.verify_heap().unwrap();
+        rt.heap.drop_global(h);
+    });
+}
+
+/// HB-2: SameValueZero number keys still meet under the keyed hash: +0 and -0 are one key,
+/// every NaN form is one key, and an int32 and the same double are one key.
+#[test]
+fn equal_number_keys_still_meet() {
+    let nans = [
+        f64::NAN,
+        -f64::NAN,
+        f64::from_bits(0x7FF0_0000_0000_0001),
+        f64::from_bits(0xFFFF_FFFF_FFFF_FFFF),
+    ];
+    let zero = table::normalize(num(0.0));
+    assert_eq!(table::normalize(num(-0.0)), zero);
+    assert_eq!(table::mix(table::normalize(num(-0.0))), table::mix(zero));
+    let seven = ep9_value::Value::double(7.0).to_bits();
+    assert_eq!(table::normalize(seven), num(7.0));
+    on_big_stack(move || {
+        let iso = isolate(config(Dispatch::DEFAULT, true));
+        let rt: &Runtime = &iso.rt;
+        let map = new_collection(rt, ObjectClass::Map);
+        let h = rt.heap.new_global(val(map));
+        table::set(rt, map, num(0.0), num(1.0)).unwrap();
+        table::set(rt, map, num(-0.0), num(2.0)).unwrap();
+        for (n, &d) in nans.iter().enumerate() {
+            let k = ep9_value::Value::double(d).to_bits();
+            table::set(rt, map, k, num(3.0 + n as f64)).unwrap();
+        }
+        table::set(rt, map, num(7.0), num(8.0)).unwrap();
+        table::set(rt, map, seven, num(9.0)).unwrap();
+        assert_eq!(table::live_count(table::table_of(map)), 3);
+        assert_eq!(get(rt, map, num(0.0)), Some(num(2.0)));
+        assert_eq!(get(rt, map, num(-0.0)), Some(num(2.0)));
+        for &d in &nans {
+            assert_eq!(
+                get(rt, map, ep9_value::Value::double(d).to_bits()),
+                Some(num(6.0))
+            );
+        }
+        assert_eq!(get(rt, map, num(7.0)), Some(num(9.0)));
+        iso.verify_heap().unwrap();
+        rt.heap.drop_global(h);
+    });
+}
+
+// ---- the pin to keyed SipHash-1-3 (M10-P0 HASH-SEED re-check F1) -------------------------------
+
+/// The 64-bit words `w` as code units (4 per word, little end first): the `sip13` form of
+/// `Sip::word`. With no tail, the last word is (8 * words) << 56, the same as `sip13_word`.
+fn units_of(w: &[u64]) -> Vec<u16> {
+    w.iter()
+        .flat_map(|&x| (0..4).map(move |j| (x >> (16 * j)) as u16))
+        .collect()
+}
+
+/// The reference SipHash-1-3 of the words `w` with the per-process key.
+fn keyed_sip13(w: &[u64]) -> u64 {
+    string::testing::sip13(string::testing::keys(), &units_of(w))
+}
+
+/// HB-2: `mix` is the low 32 bits of SipHash-1-3 with the per-process key, not a fixed mix
+/// (a fixed mix has no key, so JS can find keys that share a bucket). The set is the HB-2 set
+/// of `number_keys_built_from_the_old_mix_inverse_spread`, plus +0 and the NaN key. The assert
+/// holds for any key, so the test does not set `EP9_HASH_SEED`.
+#[test]
+fn mix_is_keyed_siphash13_of_the_key_bits() {
+    let offset = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+    let mut keys: Vec<u64> = (1..u64::from(u32::MAX))
+        .map(|hi| old_finalizer_inverse((hi << 32) | 0x5EED_0001))
+        .filter(|&x| {
+            let d = f64::from_bits(x.wrapping_sub(offset));
+            d.is_finite() && num(d) == x && table::normalize(x) == x
+        })
+        .take(2000)
+        .collect();
+    assert_eq!(keys.len(), 2000);
+    keys.push(table::normalize(num(0.0)));
+    keys.push(table::normalize(num(f64::NAN)));
+    for &k in &keys {
+        assert_eq!(table::mix(k), keyed_sip13(&[k]) as u32, "key {k:#x}");
+    }
+}
+
+/// The bucket of each live entry of the table `t` (a walk of each bucket chain in the cell,
+/// as `table::find` walks it), as (key, bucket) pairs, and the longest chain.
+fn chain_walk(t: u64) -> (Vec<(u64, usize)>, usize) {
+    let c = cell(t);
+    let field = |off: usize| object::rd_i32(c, off);
+    let (buckets, width) = (
+        field(table::otf::BUCKETS) as usize,
+        field(table::otf::WIDTH) as usize,
+    );
+    let mut placed = Vec::new();
+    let mut longest = 0;
+    for b in 0..buckets {
+        let mut n = 0;
+        let mut i = field(table::otf::DATA + 8 * b);
+        while i >= 0 {
+            let e = table::otf::DATA + 8 * (buckets + i as usize * width);
+            let k = object::rd(c, e);
+            if k != HOLE {
+                placed.push((k, b));
+            }
+            n += 1;
+            i = field(e + 8 * (width - 1));
+        }
+        longest = longest.max(n);
+    }
+    (placed, longest)
+}
+
+/// Codex r1 next step (HB-2 through the real insert and lookup): 2,000 number keys with one
+/// low 32 bits of the old hash (one bucket of any table under the old mix), added to a Map
+/// and to a Set by `Cx::collection_set`. In the table cell, each key is in the chain of the
+/// bucket of `table::mix` (the keyed hash), no chain is longer than 16 (est. bound; the mean
+/// is about 2), and `Cx::collection_has` finds each key, for any per-process key.
+#[test]
+fn map_and_set_place_number_keys_by_the_keyed_hash() {
+    let offset = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+    let keys: Vec<u64> = (1..u64::from(u32::MAX))
+        .map(|hi| old_finalizer_inverse((hi << 32) | 0x5EED_0001))
+        .filter(|&x| {
+            let d = f64::from_bits(x.wrapping_sub(offset));
+            d.is_finite() && num(d) == x && table::normalize(x) == x
+        })
+        .take(2000)
+        .collect();
+    assert_eq!(keys.len(), 2000);
+    with_cx(|cx| {
+        for class in [ObjectClass::Map, ObjectClass::Set] {
+            let o = cx.new_collection(Local::null(), class);
+            for &k in &keys {
+                let key: Local<'_> = Local::from_bits(k);
+                cx.collection_set(o, class, key, Local::int32(1)).unwrap();
+            }
+            let t = table::table_of(o.bits());
+            let buckets = object::rd_i32(cell(t), table::otf::BUCKETS) as usize;
+            let (placed, longest) = chain_walk(t);
+            assert_eq!(placed.len(), keys.len(), "{class:?}");
+            for (k, b) in placed {
+                assert_eq!(b, table::mix(k) as usize & (buckets - 1), "{class:?}");
+            }
+            assert!(longest <= 16, "{class:?}: a chain of {longest}");
+            for &k in &keys {
+                let key: Local<'_> = Local::from_bits(k);
+                assert!(cx.collection_has(o, class, key).unwrap());
+            }
+        }
+    });
+}

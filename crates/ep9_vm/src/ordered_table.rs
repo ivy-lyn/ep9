@@ -287,13 +287,13 @@ fn same_key(a: u64, b: u64) -> bool {
         || (kind::is_bigint(a) && kind::is_bigint(b) && crate::bigint::equals(a, b))
 }
 
-/// A 32-bit mix of 64 bits (the splitmix64 finalizer), for keys that are not cells.
-fn mix(x: u64) -> u32 {
-    let mut z = x;
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^= z >> 31;
-    z as u32
+/// The 32-bit hash of a key that is not a cell (a number, a boolean, null or undefined): the
+/// low 32 bits of keyed SipHash-1-3 of its 8 bytes, with the per-process key. A fixed mix
+/// (the old splitmix64 finalizer) has an inverse, so JS could make number keys that share one
+/// bucket. The key keeps the buckets unknown to JS (R20 §7). Equal keys (normalized) have
+/// equal bits, so they get equal hashes.
+pub(crate) fn mix(x: u64) -> u32 {
+    string::sip13_word(x) as u32
 }
 
 /// The private name under which an object keeps its identity hash (H12-Q1): one per isolate

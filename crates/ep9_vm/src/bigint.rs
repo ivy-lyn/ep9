@@ -181,7 +181,7 @@ pub(crate) fn hash(b: u64) -> u32 {
     if cached != 0 {
         return cached;
     }
-    let h = digits::hash(view(&b), 0).max(1);
+    let h = crate::string::sip13_bigint(view(&b)).max(1);
     // SAFETY: as above. The cell is immutable except this cache word, which no view covers
     // (views start at +16), and an isolate runs on one thread.
     unsafe { c.field::<u32>(bf::HASH).write(h) };
