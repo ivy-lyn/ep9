@@ -79,6 +79,153 @@ pub(crate) fn wide<S: crate::interp::dsl::Scale>(
     }
 }
 
+// ---- The Star lookahead (M9-P0 STAR-FUSE; M10-P2 STAR-LA2) ---------------------------------
+//
+// V8 `Bytecodes::IsStarLookahead`, `InterpreterAssembler::StarDispatchLookahead`: `star_next`
+// and `star_done` for the `Flow::Next` and `Done::Next` exits of a producer's fast body. It is
+// a body form on every target: no new opcode, handler, `Flow` arm or cold block, and no
+// change to `interp/dsl.rs` (H15 dispatch core; DL M9-PLAN-D6, M9-PRE-STARFUSE-KIND).
+
+use crate::interp::{St, dsl};
+use ep9_bytecode::Opcode;
+
+/// The Star lookahead: if the next instruction is a one-byte-scale `Star r`, the producer runs
+/// it here: it stores the accumulator to `r` and sets `st.next` past the Star, so the dispatch
+/// goes to the instruction after the Star and the Star handler does not run. A producer calls
+/// it only on its success exit ([`star_next`], [`star_done`]), after it wrote the accumulator;
+/// an exception, a cold exit or a record exit runs no lookahead, so the Star runs in its own
+/// handler there, as before.
+///
+/// The producers (M10-P2 STAR-LA2: the 6 of M9-P0 and 5 more; DL M6-ORCH-776 "11 producers"):
+/// the `GetNamedProperty` IC hit, the four context-slot loads (`ops::ctx_load`),
+/// `LdaCurrentContext`, `LdaConstant`, `LdaZero`, `LdaSmi`, `LdaNull` and `LdaFalse`.
+///
+/// - **Same result.** The Star handler does the same: the same operand decode
+///   (`kind::RegOut`), the same store, the next instruction 2 bytes after the Star. A Star
+///   whose register is the producer's input (`GetNamedProperty r1; Star r1`) stores after the
+///   producer read it, as the two handlers do. A Star that is also a jump target runs in the
+///   Star handler when a jump reaches it; only the fall-through from the producer fuses.
+/// - **The debugger off-switch.** The test reads the opcode byte at `st.next`, not a table of
+///   static pairs. A breakpoint patches the byte at its pc in the function's Interp debug copy
+///   (H24-Q3), so a producer before a breakpoint at a Star sees no Star byte and does not
+///   fuse; the break then runs at the Star pc. A throw never has the Star pc as its position:
+///   a Star does not throw, and a producer that throws takes no lookahead.
+/// - **No GC point.** It allocates nothing and calls nothing; the stored value is the
+///   accumulator, which the producer already holds.
+/// - A `Wide` or `ExtraWide` Star (a prefix byte at `st.next`) does not fuse. A prefixed
+///   producer (`Wide GetNamedProperty`, aarch64 `ops::prefixed_fast`) runs the lookahead too:
+///   its `st.next` is the end of the prefixed instruction.
+///
+/// The pc forms ([`lookahead_pc`]). aarch64: `st.next` goes through an empty `asm!` block
+/// before the test, so LLVM keeps it in `x1` (M9-P0: else 1 or 2 more instructions on each
+/// path). x86-64 with `ONE_PC`: through [`dsl::dispatch_pc`] before the test and after it, so
+/// LLVM keeps the next pc in one register and reads the opcode again at the dispatch: one
+/// dispatch jump. x86-64 without `ONE_PC`: the fused and the other path each get a dispatch
+/// jump (the V8 duplicated dispatch site). The form of each producer (asm read, M10-P2; the
+/// const argument at its exit in `interp/ops.rs`):
+///
+/// - `ONE_PC`: the `GetNamedProperty` IC hit and the four context-slot loads. Their success
+///   exit is a join of several paths (the IC hit paths; the context walk). x86-64: one
+///   dispatch jump. The plain form also gave one jump, and more instructions on each path
+///   (`GetNamedProperty` +2; the context-slot loads +1 not fused, +2 fused). The 4 dispatch
+///   jumps of the `GetNamedProperty` hit paths become 1 (x86-64 and aarch64).
+/// - Plain: `LdaCurrentContext`, `LdaConstant`, `LdaZero`, `LdaSmi`, `LdaNull` and `LdaFalse`
+///   (one path to the exit). x86-64: 2 dispatch jumps, one for the fused path and one for the
+///   other path. The not-fused path is the same as with `ONE_PC`, the fused path 1
+///   instruction shorter.
+/// - aarch64 (`ONE_PC` changes nothing there): LLVM gives each producer one dispatch jump;
+///   the not-fused path dispatches with the opcode byte that the test loaded.
+///
+/// No producer saves a register on entry (the frame goldens; plan rule 81).
+///
+/// Debug builds (M10-P2 STAR-LA2 step 0): [`star_next`] and [`star_done`] are out of line, so
+/// a debug producer frame (no tail calls there: each instruction nests one) does not grow by
+/// the lookahead code. At M9-P0 the inline form made the aarch64 debug `Wide` frame (its fast
+/// body runs `GetNamedProperty`) 12,064 -> 12,400 bytes, and `tests::profile` (2 `Wide` a turn)
+/// reached the debug stack floor at turn 10,469 of 10,600. Release builds inline them (the
+/// same code as the inline form).
+#[inline(always)]
+fn star_lookahead<const ONE_PC: bool>(st: &mut St<'_>) {
+    #[cfg(test)]
+    if star_count::OFF.with(|c| c.get()) {
+        return;
+    }
+    st.next = lookahead_pc::<ONE_PC>(st.next);
+    // SAFETY: `st.next` is the start of the next instruction of verified code (`St` contract):
+    // its opcode byte is readable.
+    if unsafe { *st.next } == Opcode::Star as u8 {
+        // SAFETY: verified code: a one-byte-scale `Star` is followed by its `RegOut` operand,
+        // a register of the live frame `fp`, and the instruction after it (a verified function
+        // never runs off its end).
+        let (len, (dst,)) = unsafe { dsl::decode!(dsl::S1, st.next; dst: RegOut) };
+        let v = st.acc;
+        st.set_reg(dst, v);
+        // SAFETY: as above: the next instruction starts `len` bytes after the Star.
+        st.next = unsafe { st.next.add(len) };
+        #[cfg(test)]
+        star_count::FUSED.with(|c| c.set(c.get() + 1));
+    }
+    if ONE_PC {
+        st.next = dsl::dispatch_pc(st.next);
+    }
+}
+
+/// The pc that [`star_lookahead`] tests, as the target wants it (see there). aarch64: through
+/// an empty `asm!` block. x86-64: [`dsl::dispatch_pc`] with `ONE_PC`, else the same value.
+/// Other targets: the same value.
+#[inline(always)]
+fn lookahead_pc<const ONE_PC: bool>(next: *const u8) -> *const u8 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut a = next.expose_provenance();
+        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
+        // change. `a` comes back as it went in.
+        unsafe {
+            core::arch::asm!(
+                "/* {a} */",
+                a = inout(reg) a,
+                options(pure, nomem, nostack, preserves_flags)
+            );
+        }
+        core::ptr::with_exposed_provenance(a)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if ONE_PC { dsl::dispatch_pc(next) } else { next }
+    }
+}
+
+/// `Flow::Next` after the Star lookahead ([`star_lookahead`]): the success exit of a producer
+/// whose fast body gives a `Flow`. Out of line in debug builds (see [`star_lookahead`]).
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+pub(crate) fn star_next<const ONE_PC: bool>(st: &mut St<'_>) -> crate::interp::Flow {
+    star_lookahead::<ONE_PC>(st);
+    crate::interp::Flow::Next
+}
+
+/// `Done::Next` after the Star lookahead ([`star_lookahead`]): the exit of a producer whose
+/// fast body gives a `Done`. Out of line in debug builds (see [`star_lookahead`]).
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+pub(crate) fn star_done<const ONE_PC: bool>(st: &mut St<'_>) -> crate::interp::Done {
+    star_lookahead::<ONE_PC>(st);
+    crate::interp::Done::Next
+}
+
+/// Test builds only: the fused Stars on this thread ([`star_lookahead`]) and a switch that
+/// turns the lookahead off on this thread, so a test runs the same code with and without it.
+#[cfg(test)]
+pub(crate) mod star_count {
+    use core::cell::Cell;
+    thread_local! {
+        /// The Stars that a producer ran ([`super::star_lookahead`]).
+        pub(crate) static FUSED: Cell<u64> = const { Cell::new(0) };
+        /// True: no lookahead (every Star runs in its own handler).
+        pub(crate) static OFF: Cell<bool> = const { Cell::new(false) };
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Tests: the runs of [`wide`] on this thread (0 where `ops::PREFIXED_FAST` is true).
