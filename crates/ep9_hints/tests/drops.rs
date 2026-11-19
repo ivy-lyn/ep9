@@ -124,6 +124,16 @@ fn ts_flags_mismatch_ignores_the_file() {
             DropReason::TsFlags
         );
     }
+    // Each reserved bit alone, on top of the flags that match.
+    for bit in 3..=31 {
+        let mut b = sample_bytes();
+        put_u32(&mut b, o::TS_FLAGS, flags().to_bits() | 1 << bit);
+        assert_eq!(
+            read(&b, &expect()).map(|_| ()),
+            Err(DropReason::TsFlags),
+            "bit {bit}"
+        );
+    }
 }
 
 #[test]

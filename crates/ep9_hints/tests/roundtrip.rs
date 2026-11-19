@@ -595,7 +595,39 @@ fn member_access_class_is_the_receiver() {
     ab.class = Some(0);
     ab.slot = Some(2);
     h.records.push(ab);
-    assert_eq!(read(&write(&h).unwrap(), &Expect::default()), Ok(h.clone()));
+    let bytes = write(&h).unwrap();
+    assert_eq!(read(&bytes, &Expect::default()), Ok(h.clone()));
+    // The same in-range slot on each kind: it round-trips on the three member-access kinds,
+    // and the writer and the reader refuse it on every other kind.
+    let kind_at = bytes.len() - "m.ts".len() - RECORD_SIZE + o::REC_KIND;
+    let member = [
+        NodeKind::StaticMemberExpression,
+        NodeKind::ComputedMemberExpression,
+        NodeKind::PrivateFieldExpression,
+    ];
+    for &kind in NodeKind::ALL {
+        let mut k = h.clone();
+        k.records[1].kind = kind;
+        let mut raw = bytes.clone();
+        put_u16(&mut raw, kind_at, kind.code());
+        if member.contains(&kind) {
+            assert_eq!(write(&k).as_ref(), Ok(&raw), "{}", kind.name());
+            assert_eq!(read(&raw, &Expect::default()), Ok(k), "{}", kind.name());
+        } else {
+            assert_eq!(
+                write(&k),
+                Err(WriteError::Invalid(DropReason::BadRecord)),
+                "{}",
+                kind.name()
+            );
+            assert_eq!(
+                read(&raw, &Expect::default()),
+                Err(DropReason::BadRecord),
+                "{}",
+                kind.name()
+            );
+        }
+    }
     // `a` is not a member access, so it has no slot, though slot 0 is below A's 3 slots.
     let mut bad = h.clone();
     bad.records[0].slot = Some(0);
