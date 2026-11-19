@@ -2227,7 +2227,7 @@ fn leg_name(l: &Json) -> &str {
 }
 
 /// The legs of a Path B compare of `platform` that were not read (a `runners` row with an
-/// `error`) or that have no CPU model or no platform in `legs`, each as "<leg>: <why>". A
+/// `error`) or that have no CPU model or no platform in `legs`, each as `<leg>: <why>`. A
 /// runner of another known platform (not read by `--platform`) is not of this set.
 fn unread_legs(j: &Json, platform: &str) -> Vec<String> {
     let of = |x: &Json| {
