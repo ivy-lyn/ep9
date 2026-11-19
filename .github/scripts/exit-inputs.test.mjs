@@ -445,22 +445,26 @@ test("host: run_id and run_attempt from GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, no
 test("readLeg and the legs block: the host.toml id, run_id and run_attempt of each leg", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-exit-inputs-ids-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const legDir = (name, hostText) => {
+  const legDir = (name, hostText, runHost = "gha-win32-x64") => {
     const d = path.join(dir, name);
     mkdirSync(d);
-    for (const b of BUILDS) writeFileSync(path.join(d, `run-${b}.json`), JSON.stringify(runView(b)));
+    for (const b of BUILDS) writeFileSync(path.join(d, `run-${b}.json`), JSON.stringify({ ...runView(b), host: { ...runView(b).host, id: runHost } }));
     if (hostText !== null) writeFileSync(path.join(d, "host.toml"), hostText);
     return d;
   };
   const toml = (id, runId, runAttempt) => hostToml({ id, runId, runAttempt, cpu: WIN_CPU, cores: 4, platform: "win32-x64", osText: "t", idle: 0.1, source: "typeperf", measured: "t" });
-  const w1 = readLeg(legDir("w1", toml("gha-pathb-w1", "1001", "1")));
+  const w1 = readLeg(legDir("w1", toml("gha-pathb-w1", "1001", "1"), "gha-pathb-w1"));
   assert.deepEqual([w1.id, w1.runId, w1.runAttempt, w1.error], ["gha-pathb-w1", "1001", "1", null]);
-  const box = readLeg(legDir("w2", toml("gha-pathb-w2")));
+  const box = readLeg(legDir("w2", toml("gha-pathb-w2"), "gha-pathb-w2"));
   assert.deepEqual([box.id, box.runId, box.runAttempt, box.error], ["gha-pathb-w2", null, null, null]);
   const old = readLeg(legDir("w3", null));
   assert.deepEqual([old.id, old.runId, old.runAttempt, old.error], [null, null, null, null]);
   const bad = readLeg(legDir("w4", "id = gha\n"));
   assert.match(bad.error, /^host\.toml: line 1: unsupported TOML value gha/);
+  // Codex ei3-r1 F2: the run files of slot w1 copied under the host.toml of slot w2 are not that leg.
+  const copy = readLeg(legDir("copy", toml("gha-pathb-w2", "1001", "1"), "gha-pathb-w1"));
+  assert.match(copy.error, /^host\.toml id gha-pathb-w2: run-jit\.json names host gha-pathb-w1/);
+  assert.equal(copy.id, null);
   const c = compare([w1, box, old], { readGate: () => gateOf(1.05) });
   assert.deepEqual(c.legs.map((l) => [l.leg, l.id, l.run_id, l.run_attempt]), [["w1", "gha-pathb-w1", "1001", "1"], ["w2", "gha-pathb-w2", undefined, undefined], ["w3", undefined, undefined, undefined]]);
   assert.deepEqual(Object.keys(c.legs[2]).slice(0, 2), ["leg", "cpu"], "no id keys on an older leg");

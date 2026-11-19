@@ -247,7 +247,8 @@ export function pairLegs(legs) {
  * Reads a leg dir: { name, id, runId, runAttempt, cpu, platform, jit, jitless, error }. `id`,
  * `runId` and `runAttempt` are the id, run_id and run_attempt of the leg's host.toml (the host
  * step writes it in the leg's out/; EI2-R1, EI2-R3-LEG-SLOT), null when the file or the key is
- * not there (an older leg). A host.toml that cannot be read is a read error of the leg.
+ * not there (an older leg). A host.toml that cannot be read is a read error of the leg. A run
+ * file whose host.id is not the host.toml id is a read error too (not the run files of this leg).
  */
 export function readLeg(dir) {
   const name = path.basename(path.resolve(dir));
@@ -266,6 +267,8 @@ export function readLeg(dir) {
         throw new Error(`host.toml: ${e.message}`);
       }
       ids = { id: h.id ?? null, runId: h.run_id ?? null, runAttempt: h.run_attempt ?? null };
+      for (const [b, r] of [["jit", jit], ["jitless", jitless]])
+        if (ids.id !== null && r.host?.id !== ids.id) throw new Error(`host.toml id ${ids.id}: run-${b}.json names host ${r.host?.id ?? "none"} (not the run files of this leg)`);
     }
     return { name, ...ids, cpu: jit.host?.measured?.cpu ?? null, platform: jit.host?.measured?.platform ?? null, jit, jitless, error: null };
   } catch (e) {
