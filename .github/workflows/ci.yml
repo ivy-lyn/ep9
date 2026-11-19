@@ -580,9 +580,9 @@ jobs:
         shards: [6]
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.target.os }}
-    # Rule 25: run 42135182874 (after B0) cut 8 of 24 shards at 40 min; the same shard grew
-    # 1.66x, so about 50 min (est.) x 1.5: 80 (was 40; feature-matrix 60 -> 75; DL B0-GCSKIP).
-    timeout-minutes: 90
+    # Rule 25 (2x): 2x the m10-p0 max 63.5 min (macos-arm64 1/6, run 44499084786; RULE25-MARGIN-M10P1;
+    # was 90; 80 before: 1.5 x about 50 min, run 42135182874, DL B0-GCSKIP; was 40): 127.
+    timeout-minutes: 127
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1218,8 +1218,8 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 85
-    # Rule 25 (M6-ORCH-545, -905, -965): max 56.25 min (windows-x64, run 44204833743; windows-x64 54.2 in 44221214860; macos-arm64 <= 50), so 85 (was 81 = 1.5 x 54).
+    timeout-minutes: 133
+    # Rule 25 (2x): 2x the m10-p0 max 66.4 min (macos-arm64, run 44499084786; RULE25-MARGIN-M10P1), so 133 (was 85 = 1.5 x 56.25, windows-x64, run 44204833743; M6-ORCH-545, -905, -965).
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
