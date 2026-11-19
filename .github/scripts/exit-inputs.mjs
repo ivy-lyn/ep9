@@ -32,7 +32,8 @@
 //       dispatch runs again once; a second miss is NOT-RUN (a DL line; plan v14 section 4.1 (6)).
 //       The Markdown also gives the TS ratio to node --jitless per box and build (V14-D59).
 //       The file also has `legs` (V15-D16), with a pair or not: every leg that was read, its CPU
-//       model, its own commit, a run check per build and the box value of each cell per build.
+//       model, its own commit, a run check per build and the box value of each cell per build
+//       (item 3 also `time_s`: the gross ep9 TS time, whose 1 / t is the cross-host TS speed).
 //       `cargo xtask m2-exit --host x86_64-pc-windows-msvc --pathb <windows compare>
 //       --linux-pathb <linux-x64 compare>` pairs each Windows leg with each Linux x64 leg of the
 //       same CPU model from these legs (the 09:66 cross-host form).
@@ -273,8 +274,24 @@ function runCheck(res, build, commit, g) {
 }
 
 /**
+ * The gross ep9 TS time (s) of a build of a leg: { median, interval, note }. The win-x64
+ * same-CPU-model form reads the TS speed as 1 / this time at each end (10-quality.md section 3,
+ * P0-WININT), not the ratio to node --jitless (EI2 Codex r1 F2). The interval is null when
+ * boxBlockers gives a reason or the gross times are void (the note names them).
+ */
+export function tsTime(gate, build) {
+  const r = gate?.readings?.find((x) => x.id === TS.id && x.build === build);
+  if (!r) return { median: null, interval: null, note: "no reading" };
+  const why = boxBlockers(r, CELLS.find((s) => s.id === TS.id));
+  if (r.gross_s?.void) why.push("gross times void");
+  const note = ["gross", r.status].filter(Boolean).join(", ");
+  return { median: r.value ?? null, interval: why.length ? null : (r.interval ?? null), note: why.length ? `${note}; no interval: ${why.join("; ")}` : note };
+}
+
+/**
  * The `legs` block (V15-D16): every leg that was read, with its own commit, a run check per
- * build against that commit, and the box value of each cell per build.
+ * build against that commit, and the box value of each cell per build (for item 3 also
+ * `time_s`, the gross ep9 TS time: see tsTime).
  */
 function legBlocks(usable, gateOf) {
   return usable.map((l) => {
@@ -286,7 +303,7 @@ function legBlocks(usable, gateOf) {
       platform: l.platform,
       commit,
       checks: BUILDS.map((build) => runCheck(l[build], build, commit, g)),
-      cells: BUILDS.flatMap((build) => CELLS.map((spec) => ({ build, cell: spec.cell, value: boxValue(g.gate, spec, build) }))),
+      cells: BUILDS.flatMap((build) => CELLS.map((spec) => ({ build, cell: spec.cell, value: boxValue(g.gate, spec, build), ...(spec.id === TS.id ? { time_s: tsTime(g.gate, build) } : {}) }))),
     };
   });
 }

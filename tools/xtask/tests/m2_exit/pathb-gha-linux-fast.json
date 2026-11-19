@@ -437,6 +437,14 @@
        1.32
       ],
       "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 2.8571,
+      "interval": [
+       2.8169,
+       2.8986
+      ],
+      "note": "gross, provisional"
      }
     },
     {
@@ -485,6 +493,14 @@
        1.3
       ],
       "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 2.8986,
+      "interval": [
+       2.8571,
+       2.9412
+      ],
+      "note": "gross, provisional"
      }
     },
     {
@@ -589,6 +605,14 @@
        1.34
       ],
       "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 2.8169,
+      "interval": [
+       2.7778,
+       2.8571
+      ],
+      "note": "gross, provisional"
      }
     },
     {
@@ -637,6 +661,14 @@
        1.32
       ],
       "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 2.8571,
+      "interval": [
+       2.8169,
+       2.8986
+      ],
+      "note": "gross, provisional"
      }
     },
     {

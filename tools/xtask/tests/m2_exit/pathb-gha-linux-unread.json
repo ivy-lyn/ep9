@@ -110,6 +110,14 @@
        1.02
       ],
       "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 3.6364,
+      "interval": [
+       3.5714,
+       3.7037
+      ],
+      "note": "gross, provisional"
      }
     },
     {
@@ -158,6 +166,14 @@
        1
       ],
       "note": "net, provisional"
+     },
+     "time_s": {
+      "median": 3.7037,
+      "interval": [
+       3.6364,
+       3.7736
+      ],
+      "note": "gross, provisional"
      }
     },
     {

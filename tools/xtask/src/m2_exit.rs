@@ -73,7 +73,8 @@
 //! with no gate-host reading, `--pathb` (the windows compare) and `--linux-pathb` (the Linux x64
 //! compare of the same dispatch), the cell reads the `legs` of both: each Windows leg is paired
 //! only with each Linux x64 leg of the same CPU model. Per item and build, each pair gives the
-//! ratio interval [Windows low / Linux high, Windows high / Linux low] of the two leg intervals.
+//! ratio interval [Windows low / Linux high, Windows high / Linux low] of the two leg intervals
+//! (for TS: 1 / the gross ep9 time `time_s` at each end, 10:157; not the ratio to node).
 //! The part is above when every pair's low end is >= 0.9, below when every pair's high end is
 //! < 0.9, else neither. The cell reads `MARGINAL (no gate host): AGREE above` when every part is
 //! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else
@@ -2314,7 +2315,10 @@ fn leg_why<'a>(
     why
 }
 
-/// The `value.interval` (low, high) of the `build` cell of item `item` of a leg; Err: why not.
+/// The speed interval (low, high) of the `build` cell of item `item` of a leg; Err: why not.
+/// Items 1, 2, 6: the ratio `value.interval`. Item 3: 1 / the gross ep9 TS time `time_s.interval`
+/// at each end (10-quality.md section 3, P0-WININT, as [`speed_interval`]); the ratio to node
+/// --jitless of each host is not the TS speed (EI2 Codex r1 F2).
 fn leg_interval(leg: &Json, build: &str, item: u32) -> Result<(f64, f64), String> {
     let prefix = format!("item {item}:");
     let found: Vec<&Json> = leg
@@ -2332,12 +2336,16 @@ fn leg_interval(leg: &Json, build: &str, item: u32) -> Result<(f64, f64), String
     let [x] = found.as_slice() else {
         return Err(format!("{} cells (one needed)", found.len()));
     };
-    match x.path(&["value", "interval"]).and_then(Json::arr) {
+    let ts = item == 3;
+    let key = if ts { "time_s" } else { "value" };
+    match x.path(&[key, "interval"]).and_then(Json::arr) {
         Some([a, z]) => match (a.num(), z.num()) {
-            (Some(a), Some(z)) if a > 0.0 && z >= a => Ok((a, z)),
-            _ => Err("no interval".into()),
+            (Some(a), Some(z)) if a > 0.0 && z >= a => {
+                Ok(if ts { (1.0 / z, 1.0 / a) } else { (a, z) })
+            }
+            _ => Err(format!("no {key} interval")),
         },
-        _ => Err("no interval".into()),
+        _ => Err(format!("no {key} interval")),
     }
 }
 
@@ -4249,7 +4257,7 @@ mod tests {
             "{ev}"
         );
         assert!(
-            ev.contains("jit item 3: w2/l1 [0.912, 0.990], w2/l2 [0.912, 0.990], w3/l1 [0.922, 1.000], w3/l2 [0.922, 1.000]: AGREE above"),
+            ev.contains("jit item 3: w2/l1 [0.920, 0.991], w2/l2 [0.920, 0.991], w3/l1 [0.929, 1.000], w3/l2 [0.929, 1.000]: AGREE above"),
             "{ev}"
         );
         assert!(!ev.contains("Intel"), "{ev}");
@@ -4394,6 +4402,27 @@ mod tests {
             );
             assert!(!ev.contains("keeps the Path B form"), "{ev}");
         }
+    }
+
+    /// EI2 Codex r1 F2: the TS speed of the cross-host form is 1 / the gross ep9 time (10:157),
+    /// not the ratio to node --jitless. In pathb-gha-linux-ts.json the Linux legs have the TS
+    /// ratios of the Windows legs, but 3/4 of their gross time: item 3 (and items 10, D11, which
+    /// hold it) read AGREE below; items 1, 2, 6 stay AGREE above.
+    #[test]
+    fn windows_cross_form_reads_the_ts_speed_from_the_gross_time() {
+        use HostForm::{AgreeAbove, AgreeBelow};
+        let r = repo("pathb-cross-ts");
+        let rep = run(&win_cross(&r, "pathb-gha-linux-ts.json")).unwrap();
+        let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
+        let want = [
+            AgreeAbove, AgreeAbove, AgreeBelow, AgreeAbove, AgreeBelow, AgreeBelow,
+        ];
+        assert_eq!(forms, want.map(Some), "{}", rep.table);
+        let ev = &rep.cells[2].evidence;
+        assert!(
+            ev.contains("jit item 3: w2/l1 [0.725, 0.775], w2/l2 [0.725, 0.775], w3/l1 [0.732, 0.783], w3/l2 [0.732, 0.783]: AGREE below"),
+            "{ev}"
+        );
     }
 
     /// EI2 Codex r1 F4: "unknown" is the host.mjs `cpuModel` sentinel of a failed detection. A

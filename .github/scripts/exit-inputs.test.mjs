@@ -51,8 +51,9 @@ const leg = (name, opts = {}) => ({ name, cpu: opts.cpu ?? WIN_CPU, platform: op
 /**
  * Made-up m2gate readings of one box: each cell's ratio is `base` plus a per-item step. With
  * `qjs` false the run has no QuickJS (the windows legs before V15-D17): item 1 has no reading.
+ * The gross ep9 TS time is 4 / (`base` * `tsScale`) s (the speed 1 / t goes with `base`).
  */
-function gateOf(base, { qjs = true } = {}) {
+function gateOf(base, { qjs = true, tsScale = 1 } = {}) {
   const r = (x) => Number(x.toFixed(4));
   const readings = [];
   for (const build of BUILDS) {
@@ -62,7 +63,9 @@ function gateOf(base, { qjs = true } = {}) {
     else readings.push({ id: "octane7-vs-qjs", build, value: null, interval: null, net: null, status: "incomplete" });
     readings.push(geo("v8v7-7-vs-node-jitless", base + 0.1 + b, 0.02));
     readings.push(geo("splay-vs-node-jitless", base + 0.2 + b, 0.03));
-    readings.push({ id: "ts", build, status: "provisional", vs_node_jitless: { net: { median: r(base - 0.1 + b), interval: [r(base - 0.12 + b), r(base - 0.08 + b)], void: false } } });
+    const speed = (base + b) * tsScale;
+    const gross = { median: r(4 / speed), interval: [r(4 / (speed + 0.02)), r(4 / (speed - 0.02))], void: false };
+    readings.push({ id: "ts", build, status: "provisional", value: gross.median, interval: gross.interval, gross_s: gross, vs_node_jitless: { net: { median: r(base - 0.1 + b), interval: [r(base - 0.12 + b), r(base - 0.08 + b)], void: false } } });
   }
   return { builds: BUILDS.map((build) => ({ build })), readings };
 }
@@ -221,6 +224,27 @@ test("compare: the Linux x64 legs, --platform, and the m2-exit fixtures pathb-gh
   assert.deepEqual(unread.legs.map((x) => x.leg), ["l1"]);
   assert.deepEqual(unread.runners.map((x) => [x.leg, x.error]), [["l1", null], ["l2", "no run-jit.json"]]);
   fixture("pathb-gha-linux-unread.json", unread);
+  // EI2 Codex r1 F2: the TS ratios to node --jitless of l1 and l2 are those of the Windows legs,
+  // but their gross ep9 TS time is 3/4 of the Windows one (pathb-gha-linux-ts.json): the
+  // cross-host TS speed (1 / t, 10:157) is about 0.75, below 0.9.
+  const slow = { l1: gateOf(1.05, { tsScale: 4 / 3 }), l2: gateOf(1.05, { tsScale: 4 / 3 }) };
+  const tsc = compare([lin("l1"), lin("l2")], { readGate: (runs) => slow[runs[0].source.split("/")[0]] });
+  const item3 = (c, l, build) => c.legs.find((x) => x.leg === l).cells.find((x) => x.build === build && x.cell.startsWith("item 3:"));
+  assert.deepEqual(item3(tsc, "l1", "jit").value.interval, [0.93, 0.97]);
+  assert.deepEqual(item3(tsc, "l1", "jit").time_s, { median: 2.8571, interval: [2.8169, 2.8986], note: "gross, provisional" });
+  assert.equal(item3(w, "w1", "jit").time_s.median, 3.8095);
+  assert.ok(tsc.legs.every((x) => x.cells.filter((y) => "time_s" in y).length === 2), "time_s on the 2 item 3 cells only");
+  fixture("pathb-gha-linux-ts.json", tsc);
+  // A void gross time, or a refused reading: time_s has no interval.
+  const voidG = gateOf(1.05);
+  voidG.readings.find((x) => x.id === "ts" && x.build === "jit").gross_s.void = true;
+  const v = compare([lin("l1"), lin("l2")], { readGate: () => voidG });
+  assert.deepEqual(item3(v, "l1", "jit").time_s, { median: 3.8095, interval: null, note: "gross, provisional; no interval: gross times void" });
+  assert.deepEqual(item3(v, "l1", "jitless").time_s.interval, [3.8095, 3.9604]);
+  const noNet = gateOf(1.05);
+  delete noNet.readings.find((x) => x.id === "ts" && x.build === "jit").vs_node_jitless;
+  const n = compare([lin("l1"), lin("l2")], { readGate: () => noNet });
+  assert.match(item3(n, "l1", "jit").time_s.note, /no interval: no net ratio to node --jitless/);
 });
 
 /**
