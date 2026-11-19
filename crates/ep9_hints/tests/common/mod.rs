@@ -1,4 +1,4 @@
-//! A small sample `.ep9h` that uses every field, with null and set values.
+//! A small sample `.ep9h` that uses every field except the slot, with null and set values.
 #![allow(dead_code)]
 
 use ep9_hints::{
