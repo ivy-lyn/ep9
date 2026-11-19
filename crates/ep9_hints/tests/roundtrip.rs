@@ -153,21 +153,33 @@ fn hex_decode(hex: &str) -> Vec<u8> {
 
 #[test]
 fn golden_bytes_of_a_tiny_file() {
-    // Every field of every part has a value that differs from its neighbours, so a swap of two
-    // offsets, a width change or a null-value change in the reader or the writer fails here.
+    // Each u32 of the header has its own value (schema version 1, fact-schema version 9, TS
+    // flags 7, counts 2, 3, 4 and 5, string bytes 12, reserved 0). In each other part, one
+    // entry (file 1, class 2, every field entry, record 1) gives each field a value that no
+    // other field of that entry has. So a swap of any two offsets of one part in the shared
+    // offsets module changes the bytes or the decoded hints and fails here (checked by hand
+    // for every pair), as does a width change or a null-value change in the reader or the
+    // writer.
     let mut h = Hints::default();
-    h.header.fact_schema_version = 2;
-    h.header.ts_flags = TsFlags::from_bits(5).unwrap();
+    h.header.fact_schema_version = 9;
+    h.header.ts_flags = TsFlags::from_bits(7).unwrap();
     h.header.tsrs_commit = parse_commit_hex("745eb10a650b65ea689155e36ba848f9bfba790d").unwrap();
     h.files.push(ep9_hints::FileEntry {
-        path: "m.ts".into(),
+        path: "lib/n.ts".into(),
         text_hash: [0x11; 32],
         has_type_errors: false,
         first_record: 0,
         record_count: 2,
     });
+    h.files.push(ep9_hints::FileEntry {
+        path: "m.ts".into(),
+        text_hash: [0x22; 32],
+        has_type_errors: true,
+        first_record: 2,
+        record_count: 3,
+    });
     h.classes.push(ep9_hints::ClassEntry {
-        decl: DeclRef { file: 0, offset: 3 },
+        decl: DeclRef { file: 1, offset: 3 },
         slot_count: 2,
         first_field: 0,
         field_count: 1,
@@ -177,14 +189,36 @@ fn golden_bytes_of_a_tiny_file() {
             file: 0,
             offset: 0x40,
         },
-        slot_count: 3,
+        slot_count: 4,
         first_field: 1,
         field_count: 0,
+    });
+    h.classes.push(ep9_hints::ClassEntry {
+        decl: DeclRef {
+            file: 0,
+            offset: 0x50,
+        },
+        slot_count: 5,
+        first_field: 1,
+        field_count: 3,
     });
     h.fields.push(DeclRef {
         file: 0,
         offset: 0x21,
     });
+    h.fields.push(DeclRef {
+        file: 1,
+        offset: 0x0a,
+    });
+    h.fields.push(DeclRef {
+        file: 0,
+        offset: 0x51,
+    });
+    h.fields.push(DeclRef {
+        file: 0,
+        offset: 0x52,
+    });
+    // "lib/n.ts": records 0 and 1.
     let mut r = record(1, 2, NodeKind::ThisExpression);
     r.repr = Repr::Object;
     r.non_null = true;
@@ -203,6 +237,22 @@ fn golden_bytes_of_a_tiny_file() {
         offset: 0x0105,
     });
     h.records.push(r);
+    // "m.ts": records 2, 3 and 4.
+    let mut r = record(0, 4, NodeKind::IdentifierReference);
+    r.repr = Repr::ClassInstance;
+    r.non_null = true;
+    r.confidence = 1;
+    r.class = Some(2);
+    r.slot = Some(4);
+    h.records.push(r);
+    let mut r = record(0, 4, NodeKind::CallExpression);
+    r.repr = Repr::String;
+    r.call_target = Some(DeclRef { file: 1, offset: 7 });
+    h.records.push(r);
+    let mut r = record(6, 6, NodeKind::NewExpression);
+    r.repr = Repr::Number;
+    r.enum_const = Some(3);
+    h.records.push(r);
     let hex: String = write(&h)
         .unwrap()
         .iter()
@@ -213,25 +263,33 @@ fn golden_bytes_of_a_tiny_file() {
         "894550394854",                             // magic "\x89EP9HT"
         "0d0a",                                     // magic "\r\n"
         "01000000",                                 // schema version 1
-        "02000000",                                 // fact-schema version 2
-        "05000000",                                 // TS flags 0b101
+        "09000000",                                 // fact-schema version 9
+        "07000000",                                 // TS flags 0b111
         "745eb10a650b65ea689155e36ba848f9bfba790d", // tsrs commit
-        "01000000",                                 // file count 1
-        "02000000",                                 // class count 2
-        "01000000",                                 // field count 1
-        "02000000",                                 // record count 2
-        "04000000",                                 // string bytes 4
+        "02000000",                                 // file count 2
+        "03000000",                                 // class count 3
+        "04000000",                                 // field count 4
+        "05000000",                                 // record count 5
+        "0c000000",                                 // string bytes 12
         "00000000",                                 // reserved
         // file entry 0
         "00000000", // path offset 0
-        "04000000", // path length 4
+        "08000000", // path length 8
         "00000000", // first record 0
         "02000000", // record count 2
         "1111111111111111111111111111111111111111111111111111111111111111", // text hash
         "00",       // has_type_errors 0
         "000000",   // reserved
+        // file entry 1
+        "08000000", // path offset 8
+        "04000000", // path length 4
+        "02000000", // first record 2
+        "03000000", // record count 3
+        "2222222222222222222222222222222222222222222222222222222222222222", // text hash
+        "01",       // has_type_errors 1
+        "000000",   // reserved
         // class entry 0
-        "00000000", // decl file 0
+        "01000000", // decl file 1
         "03000000", // decl offset 3
         "02000000", // slot count 2
         "00000000", // first field 0
@@ -239,13 +297,28 @@ fn golden_bytes_of_a_tiny_file() {
         // class entry 1
         "00000000", // decl file 0
         "40000000", // decl offset 0x40
-        "03000000", // slot count 3
+        "04000000", // slot count 4
         "01000000", // first field 1
         "00000000", // field count 0
+        // class entry 2
+        "00000000", // decl file 0
+        "50000000", // decl offset 0x50
+        "05000000", // slot count 5
+        "01000000", // first field 1
+        "03000000", // field count 3
         // field entry 0
         "00000000", // decl file 0
         "21000000", // decl offset 0x21
-        // record 0: every id null
+        // field entry 1
+        "01000000", // decl file 1
+        "0a000000", // decl offset 0x0a
+        // field entry 2
+        "00000000", // decl file 0
+        "51000000", // decl offset 0x51
+        // field entry 3
+        "00000000", // decl file 0
+        "52000000", // decl offset 0x52
+        // record 0 ("lib/n.ts"): every id null
         "01000000", // start 1
         "02000000", // end 2
         "1100",     // kind 17 ThisExpression
@@ -258,7 +331,7 @@ fn golden_bytes_of_a_tiny_file() {
         "ffffffff", // call-target file null
         "00000000", // call-target offset 0
         "00000000", // enum const 0 (flag bit 2 clear)
-        // record 1: every field set
+        // record 1 ("lib/n.ts"): every field set
         "05000000", // start 5
         "09000000", // end 9
         "0300",     // kind 3 StaticMemberExpression
@@ -271,14 +344,54 @@ fn golden_bytes_of_a_tiny_file() {
         "00000000", // call-target file 0
         "05010000", // call-target offset 0x0105
         "feffffff", // enum const -2
+        // record 2 ("m.ts")
+        "00000000", // start 0
+        "04000000", // end 4
+        "0100",     // kind 1 IdentifierReference
+        "0b",       // repr 11 ClassInstance
+        "00",       // element 0 None
+        "01",       // flags: bit 0 non-null
+        "01",       // confidence 1
+        "0400",     // slot 4
+        "02000000", // class 2
+        "ffffffff", // call-target file null
+        "00000000", // call-target offset 0
+        "00000000", // enum const 0 (flag bit 2 clear)
+        // record 3 ("m.ts")
+        "00000000", // start 0
+        "04000000", // end 4
+        "0600",     // kind 6 CallExpression
+        "02",       // repr 2 String
+        "00",       // element 0 None
+        "00",       // flags: none
+        "00",       // confidence 0 (none given)
+        "ffff",     // slot null
+        "ffffffff", // class null
+        "01000000", // call-target file 1
+        "07000000", // call-target offset 7
+        "00000000", // enum const 0 (flag bit 2 clear)
+        // record 4 ("m.ts")
+        "06000000", // start 6
+        "06000000", // end 6
+        "0700",     // kind 7 NewExpression
+        "01",       // repr 1 Number
+        "00",       // element 0 None
+        "04",       // flags: bit 2 enum const
+        "00",       // confidence 0 (none given)
+        "ffff",     // slot null
+        "ffffffff", // class null
+        "ffffffff", // call-target file null
+        "00000000", // call-target offset 0
+        "03000000", // enum const 3
         // strings
-        "6d2e7473", // "m.ts"
+        "6c69622f6e2e7473", // "lib/n.ts"
+        "6d2e7473",         // "m.ts"
     );
     assert_eq!(hex, golden);
     // The reader decodes the golden bytes apart from the writer.
     let e = Expect {
-        fact_schema_version: 2,
-        ts_flags: TsFlags::from_bits(5).unwrap(),
+        fact_schema_version: 9,
+        ts_flags: TsFlags::from_bits(7).unwrap(),
     };
     assert_eq!(read(&hex_decode(golden), &e).unwrap(), h);
 }
