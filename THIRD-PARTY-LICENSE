@@ -14,7 +14,7 @@ Not listed here:
   (upstream v0.12.0 at third_party/regress.commit, through [patch.crates-io];
   with 0 patches its code equals the crates.io 0.12.0 release), so it is still
   in Cargo.lock as a path package. Its fork patches
-  (third_party/patches/regress/*.patch, 7 since M5-P3) are code in this
+  (third_party/patches/regress/*.patch, 8 since M10-P0) are code in this
   repository: their entry is "regress (MIT)" below.
 - Checkouts that scripts/sync-*.sh fetch into third_party/<name>/ (git-ignored).
   They are not part of this repository and ep9 binaries do not contain them.
