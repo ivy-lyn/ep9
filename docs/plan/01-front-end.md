@@ -120,7 +120,7 @@ CompiledUnit  (no GC objects; Rust-owned; serializable; = code-cache format = un
            ScopeInfo, flags, source range
   constant pools: indices plus owned literals (WTF-16 strings, f64, BigInt digits, regex source)
   position tables: UTF-8 offsets; the UTF-16 column map is built lazily
-  hint section (optional): HINTED entries keyed by (function id, feedback slot); format in ep9_facts
+  hint section (ABI 5): reserved and empty; HINTED entries go only to the container facts section, kind 6 (doc 13 F-R1; H02:43)
 
 isolate thread:  finalize(CompiledUnit) -> atoms, SharedFunctionInfos, BytecodeArrays on the heap
 ```
