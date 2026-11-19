@@ -38,7 +38,7 @@ use crate::interp::dsl::{
     self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
-use crate::interp::{Done, Flow, St};
+use crate::interp::{Done, Flow, St, tails};
 use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
@@ -372,7 +372,7 @@ fn ctx_load(st: &mut St<'_>, c: u64, i: CSlot, depth: u32) -> Flow {
     match ctx_walk(c, depth).and_then(|c| object::context_get(c, i.0)) {
         Some(v) => {
             st.acc = v;
-            Flow::Next
+            tails::star_next::<true>(st)
         }
         None => Flow::Cold,
     }
@@ -930,11 +930,11 @@ fn scaled_cold<S: dsl::Scale>(st: &mut St<'_>) -> Done {
 
 op!(LdaZero(st) {
     st.acc = int(0);
-    Done::Next
+    tails::star_done::<false>(st)
 });
 op!(LdaSmi(st, value: i32) {
     st.acc = int(value);
-    Done::Next
+    tails::star_done::<false>(st)
 });
 op!(LdaUndefined(st) {
     st.acc = UNDEFINED;
@@ -942,7 +942,7 @@ op!(LdaUndefined(st) {
 });
 op!(LdaNull(st) {
     st.acc = NULL;
-    Done::Next
+    tails::star_done::<false>(st)
 });
 op!(LdaTheHole(st) {
     st.acc = HOLE;
@@ -954,7 +954,7 @@ op!(LdaTrue(st) {
 });
 op!(LdaFalse(st) {
     st.acc = FALSE;
-    Done::Next
+    tails::star_done::<false>(st)
 });
 op!(LdaConstant(st, k: K) {
     let v = st.constant(k);
@@ -962,7 +962,7 @@ op!(LdaConstant(st, k: K) {
         return Flow::Cold;
     }
     st.acc = v;
-    Flow::Next
+    tails::star_next::<false>(st)
 } cold {
     // The Oddball hole (a BigInt constant is a BIGINT cell since spec-temporal B2).
     st.acc = HOLE;
@@ -1067,7 +1067,7 @@ op!(PopContext(st, context: R) {
 });
 op!(LdaCurrentContext(st) {
     st.acc = st.hdr(slot::CONTEXT);
-    Done::Next
+    tails::star_done::<false>(st)
 });
 op!(LdaContextSlot(st, context: R, i: CSlot, depth: Depth) {
     let c = st.reg(context);
@@ -1128,7 +1128,7 @@ op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
-            Flow::Next
+            tails::star_next::<true>(st)
         }
         None => {
             ic::ic_count!(miss, Load, st.info(), s.0);
