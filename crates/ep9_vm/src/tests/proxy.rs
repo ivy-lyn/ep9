@@ -1726,3 +1726,35 @@ fn own_keys_takes_a_target_key_list_past_the_dense_limit() {
         assert_eq!(trap_keys(cx, rt, wrapper, &[]), Err(want.to_owned()));
     });
 }
+
+/// PROXY-KEYLIST-PANIC: the production reads of steps 14-23 go through `key_list_get`. A
+/// non-extensible target {x (non-configurable), y} with the trap result ["x", "y"] reads 4 target
+/// keys (steps 14-17: 2, steps 19-21: 1, step 23: 1). The same target, extensible, with
+/// ["y", "x"] reads 3 (steps 14-17: 2, steps 19-21: 1). If a read site goes back to the
+/// dense-only `object::array_get`, the count drops and the test fails. With and without GC
+/// stress (a collection at each `target_desc` GC point between the reads).
+#[test]
+fn own_keys_reads_each_target_key_through_the_key_list_read() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            for (extensible, names, reads) in [(false, ["x", "y"], 4), (true, ["y", "x"], 3)] {
+                let target = cx.new_object();
+                let x = PropertyDescriptor::data(Local::int32(1), true, true, false);
+                cx.define_property_or_throw(target, "x", x).unwrap();
+                cx.set(target, "y", Local::int32(2), true).unwrap();
+                if !extensible {
+                    assert!(cx.prevent_extensions(target).unwrap());
+                }
+                proxy::KEY_LIST_READS.with(|n| n.set(0));
+                let got = trap_keys(cx, rt, target, &names);
+                let want: Vec<String> = names.iter().map(|s| (*s).to_owned()).collect();
+                assert_eq!(got, Ok(want), "extensible {extensible}");
+                assert_eq!(
+                    proxy::KEY_LIST_READS.with(core::cell::Cell::get),
+                    reads,
+                    "the target key reads, extensible {extensible}"
+                );
+            }
+        });
+    }
+}

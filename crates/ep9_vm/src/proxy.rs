@@ -1194,12 +1194,20 @@ fn key_at(keys: u64, i: u32) -> u64 {
 /// the dense-only `object::array_get` gives `None` at each of its indices. Every index below
 /// the list length holds a key. Not a GC point.
 pub(crate) fn key_list_get(list: u64, j: u32) -> u64 {
+    #[cfg(test)]
+    KEY_LIST_READS.with(|n| n.set(n.get() + 1));
     object::array_get(list, j)
         .or_else(|| {
             let d = crate::elements::dict_of(list)?;
             crate::elements::dict_get(d, j).map(|(k, _)| k)
         })
         .expect("a key at each index below the list length")
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Tests: the [`key_list_get`] calls on this thread (the target key reads of steps 14-23).
+    pub(crate) static KEY_LIST_READS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 /// The content hash of the interned key `k` (`symbol::hash` or `string::hash`), never an
