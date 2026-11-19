@@ -2141,3 +2141,81 @@ fn a_keyed_hit_reads_the_same_in_both_feedback_modes() {
         }
     }
 }
+
+// ---- the keyed dictionary home (M10-P0 HASH-SEED, R20 §8 HB-1) --------------------------------
+
+/// The old multiplicative constant of `dict_home` (before M10-P0).
+const OLD_DICT_MUL: u32 = 0x9E37_79B1;
+
+/// The inverse of the odd `a` modulo 2^32 (Newton: each step doubles the good low bits).
+fn inverse_u32(a: u32) -> u32 {
+    let mut x = a;
+    for _ in 0..5 {
+        x = x.wrapping_mul(2u32.wrapping_sub(a.wrapping_mul(x)));
+    }
+    assert_eq!(a.wrapping_mul(x), 1);
+    x
+}
+
+/// The R20 §8 HB-1 set: 1,999 array indices with one home under the old hash in a table of
+/// 2^16 buckets, `i = inv(0x9E3779B1) * ((h << 16) | t)` for one `h` and `t` = 0, 1, ...
+/// (2^32 - 1 is not an array index, so it is skipped).
+fn old_colliding_indices() -> Vec<u32> {
+    let inv = inverse_u32(OLD_DICT_MUL);
+    let h = 0x2B5Du32;
+    (0..1 << 16)
+        .map(|t: u32| inv.wrapping_mul((h << 16) | t))
+        .filter(|&i| i != u32::MAX)
+        .take(1999)
+        .collect()
+}
+
+/// HB-1: the indices that had one home under the old unkeyed hash (R20:229) now spread.
+/// The keyed SipHash-1-3 home gives no bucket more than 8 of the 1,999 keys in a table of
+/// 2^16 (est. bound; the mean is 0.03), for any per-process key.
+#[test]
+fn dict_home_spreads_indices_that_shared_one_home() {
+    let ix = old_colliding_indices();
+    assert_eq!(ix.len(), 1999);
+    let old_home = |i: u32| i.wrapping_mul(OLD_DICT_MUL) >> 16;
+    assert!(
+        ix.iter().all(|&i| old_home(i) == old_home(ix[0])),
+        "the set shares one old home"
+    );
+    let mut per_home = vec![0u32; 1 << 16];
+    for &i in &ix {
+        per_home[elements::dict_home(i, 1 << 16)] += 1;
+    }
+    let most = per_home.iter().copied().max().unwrap();
+    assert!(most <= 8, "a home has {most} of the 1,999 keys");
+    // The smallest table (`MIN_BUCKETS`, a shift of 61) gives a home in range.
+    for &i in &ix[..64] {
+        assert!(elements::dict_home(i, 8) < 8);
+    }
+}
+
+/// HB-1: a sparse array with the old colliding indices (a DICTIONARY array) reads back each
+/// value, and its own keys are ascending (`dict_entries` sorts), with and without GC stress.
+#[test]
+fn sparse_array_with_the_old_colliding_indices_reads_back() {
+    each(|cx, rt| {
+        let ix = old_colliding_indices();
+        let a = object::new_array(rt, 0);
+        for (n, &i) in ix.iter().enumerate() {
+            assert!(property::set_index(cx, a, u64::from(i), int(n as i32)).unwrap());
+        }
+        assert_eq!(elements::kind_of(a), ek::DICTIONARY);
+        checked(rt, a);
+        for (n, &i) in ix.iter().enumerate() {
+            assert_eq!(
+                property::get_index(cx, a, u64::from(i)).unwrap(),
+                int(n as i32)
+            );
+        }
+        let mut sorted = ix.clone();
+        sorted.sort_unstable();
+        let mut want: Vec<String> = sorted.iter().map(u32::to_string).collect();
+        want.push("length".into());
+        assert_eq!(texts(property::own_property_keys(cx, a)), want);
+    });
+}

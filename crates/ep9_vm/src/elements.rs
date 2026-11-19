@@ -523,12 +523,12 @@ fn dict_key(i: u32) -> u64 {
     int32_bits(i as i32)
 }
 
-/// The first bucket of index `i` in a table of `buckets` (a power of two): the high bits of a
-/// multiplicative hash, so strided indices spread.
+/// The first bucket of index `i` in `buckets` (a power of two): the top bits of keyed
+/// SipHash-1-3 (the per-process key), so JS cannot pick indices that share a home (R20 §8 HB-1).
 #[inline]
-fn dict_home(i: u32, buckets: usize) -> usize {
+pub(crate) fn dict_home(i: u32, buckets: usize) -> usize {
     let bits = buckets.trailing_zeros();
-    (i.wrapping_mul(0x9E37_79B1) >> (32 - bits)) as usize
+    (crate::string::sip13_word(u64::from(i)) >> (64 - bits)) as usize
 }
 
 /// The byte offset of the live entry of index `i` in the ELEMENTS_DICT cell `d`. Not a GC

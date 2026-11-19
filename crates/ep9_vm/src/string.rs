@@ -1285,7 +1285,7 @@ fn sip13_units<T: Copy + Into<u64>>(units: &[T]) -> u64 {
 }
 
 /// The process hash of one u64 (cached array indices).
-fn sip13_word(w: u64) -> u64 {
+pub(crate) fn sip13_word(w: u64) -> u64 {
     let mut s = Sip::new(sip_keys());
     s.word(w);
     s.finish(8 << 56)
