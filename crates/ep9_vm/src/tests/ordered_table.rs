@@ -851,3 +851,41 @@ fn equal_number_keys_still_meet() {
         rt.heap.drop_global(h);
     });
 }
+
+// ---- the pin to keyed SipHash-1-3 (M10-P0 HASH-SEED re-check F1) -------------------------------
+
+/// The 64-bit words `w` as code units (4 per word, little end first): the `sip13` form of
+/// `Sip::word`. With no tail, the last word is (8 * words) << 56, the same as `sip13_word`.
+fn units_of(w: &[u64]) -> Vec<u16> {
+    w.iter()
+        .flat_map(|&x| (0..4).map(move |j| (x >> (16 * j)) as u16))
+        .collect()
+}
+
+/// The reference SipHash-1-3 of the words `w` with the per-process key.
+fn keyed_sip13(w: &[u64]) -> u64 {
+    string::testing::sip13(string::testing::keys(), &units_of(w))
+}
+
+/// HB-2: `mix` is the low 32 bits of SipHash-1-3 with the per-process key, not a fixed mix
+/// (a fixed mix has no key, so JS can find keys that share a bucket). The set is the HB-2 set
+/// of `number_keys_built_from_the_old_mix_inverse_spread`, plus +0 and the NaN key. The assert
+/// holds for any key, so the test does not set `EP9_HASH_SEED`.
+#[test]
+fn mix_is_keyed_siphash13_of_the_key_bits() {
+    let offset = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+    let mut keys: Vec<u64> = (1..u64::from(u32::MAX))
+        .map(|hi| old_finalizer_inverse((hi << 32) | 0x5EED_0001))
+        .filter(|&x| {
+            let d = f64::from_bits(x.wrapping_sub(offset));
+            d.is_finite() && num(d) == x && table::normalize(x) == x
+        })
+        .take(2000)
+        .collect();
+    assert_eq!(keys.len(), 2000);
+    keys.push(table::normalize(num(0.0)));
+    keys.push(table::normalize(num(f64::NAN)));
+    for &k in &keys {
+        assert_eq!(table::mix(k), keyed_sip13(&[k]) as u32, "key {k:#x}");
+    }
+}

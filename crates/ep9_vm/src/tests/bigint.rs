@@ -829,3 +829,48 @@ fn bigint_hash_is_by_value_and_cached() {
         assert_ne!(bigint::hash(p), bigint::hash(n));
     });
 }
+
+// ---- the pin to keyed SipHash-1-3 (M10-P0 HASH-SEED re-check F1) -------------------------------
+
+/// The 64-bit words `w` as code units (4 per word, little end first): the `sip13` form of
+/// `Sip::word`. With no tail, the last word is (8 * words) << 56, the same as `sip13_bigint`.
+fn units_of(w: &[u64]) -> Vec<u16> {
+    w.iter()
+        .flat_map(|&x| (0..4).map(move |j| (x >> (16 * j)) as u16))
+        .collect()
+}
+
+/// The reference SipHash-1-3 of the words `w` with the per-process key.
+fn keyed_sip13(w: &[u64]) -> u64 {
+    string::testing::sip13(string::testing::keys(), &units_of(w))
+}
+
+/// The hash that `bigint::hash` must give the BigInt cell `k`: the low 32 bits (0 -> 1) of
+/// keyed SipHash-1-3 of the word (sign << 63 | digit count), then each digit.
+fn want_hash(k: u64) -> u32 {
+    let v = bigint::view(&k);
+    let mut w = vec![(u64::from(v.neg) << 63) | v.digits.len() as u64];
+    w.extend_from_slice(v.digits);
+    (keyed_sip13(&w) as u32).max(1)
+}
+
+/// HB-2: `bigint::hash` is SipHash-1-3 with the per-process key, not a fixed-key or unkeyed
+/// hash (JS could then find BigInts that share a bucket). The values are those of
+/// `bigints_with_paired_top_bit_flips_hash_apart` and `bigint_hash_is_by_value_and_cached`.
+/// The asserts hold for any key, so the test does not set `EP9_HASH_SEED`.
+#[test]
+fn bigint_hash_is_keyed_siphash13_of_sign_length_and_digits() {
+    with_cx(true, |cx| {
+        let top = 1u64 << 63;
+        let (x, y) = (0x0123_4567_89AB_CDEF, 0x7EDC_BA98_7654_3210);
+        let rt: &Runtime = cx.rt();
+        for digits in [vec![x, y, 5], vec![x ^ top, y ^ top, 5]] {
+            let k = bigint::alloc(rt, &ep9_bigint::Big { neg: false, digits });
+            assert_eq!(bigint::hash(k), want_hash(k));
+        }
+        for text in ["0", "1", "-1", "7", "-7", "-123456789012345678901234567890"] {
+            let k = big(cx, text);
+            assert_eq!(bigint::hash(k), want_hash(k), "{text}");
+        }
+    });
+}

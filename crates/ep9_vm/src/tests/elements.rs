@@ -2219,3 +2219,36 @@ fn sparse_array_with_the_old_colliding_indices_reads_back() {
         assert_eq!(texts(property::own_property_keys(cx, a)), want);
     });
 }
+
+// ---- the pin to keyed SipHash-1-3 (M10-P0 HASH-SEED re-check F1) -------------------------------
+
+/// The 64-bit words `w` as code units (4 per word, little end first): the `sip13` form of
+/// `Sip::word`. With no tail, the last word is (8 * words) << 56, the same as `sip13_word`.
+fn units_of(w: &[u64]) -> Vec<u16> {
+    w.iter()
+        .flat_map(|&x| (0..4).map(move |j| (x >> (16 * j)) as u16))
+        .collect()
+}
+
+/// The reference SipHash-1-3 of the words `w` with the per-process key. (The name is not
+/// `keyed`: this file uses `profile::keyed`.)
+fn keyed_sip13(w: &[u64]) -> u64 {
+    crate::string::testing::sip13(crate::string::testing::keys(), &units_of(w))
+}
+
+/// HB-1: `dict_home` is the top bits of SipHash-1-3 of the index with the per-process key,
+/// not a fixed multiply (a fixed hash has no key, so JS can find indices that share a home).
+/// The set is `old_colliding_indices`. The asserts hold for any key, so the test does not set
+/// `EP9_HASH_SEED`.
+#[test]
+fn dict_home_is_keyed_siphash13_of_the_index() {
+    for i in old_colliding_indices() {
+        let h = keyed_sip13(&[u64::from(i)]);
+        assert_eq!(
+            elements::dict_home(i, 1 << 16),
+            (h >> 48) as usize,
+            "index {i}"
+        );
+        assert_eq!(elements::dict_home(i, 8), (h >> 61) as usize, "index {i}");
+    }
+}
