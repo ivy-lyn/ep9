@@ -368,6 +368,20 @@ fn unsorted_records() {
     put_u32(&mut b, rec(0, o::REC_END), 3);
     put_u16(&mut b, rec(1, o::REC_KIND), 2);
     assert!(read(&b, &expect()).is_ok());
+    // The start sorts before the end: (0, 7, kind 8) then (1, 6, kind 19), as in `(x + y)`,
+    // reads; the two records swapped drop.
+    let mut b = sample_bytes();
+    for (i, start, end, kind) in [(3, 0, 7, 8), (4, 1, 6, 19)] {
+        put_u32(&mut b, rec(i, o::REC_START), start);
+        put_u32(&mut b, rec(i, o::REC_END), end);
+        put_u16(&mut b, rec(i, o::REC_KIND), kind);
+    }
+    assert!(read(&b, &expect()).is_ok());
+    let (a, c) = (rec(3, 0), rec(4, 0));
+    let first: Vec<u8> = b[a..a + RECORD_SIZE].to_vec();
+    b.copy_within(c..c + RECORD_SIZE, a);
+    b[c..c + RECORD_SIZE].copy_from_slice(&first);
+    assert_eq!(drop_of(&b), DropReason::UnsortedRecords);
     // The order restarts at each file: record 3 (file 1) starts below record 2 (file 0).
     assert!(read(&sample_bytes(), &expect()).is_ok());
 }
