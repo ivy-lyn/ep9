@@ -776,3 +776,30 @@ fn the_cache_hash_is_the_keyed_string_hash() {
         });
     }
 }
+
+/// HB-6: two patterns with one cache hash and one flag set are two entries. The cache hash is
+/// only 30 bits, so the text compare of `find` after the hash keeps each text on its own
+/// program. A RegExp of the second text runs its own program, not the first one. The asserts
+/// hold for any key (with and without `EP9_HASH_SEED`). With and without GC stress.
+#[test]
+fn patterns_with_one_cache_hash_keep_their_own_programs() {
+    use crate::string::testing;
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let a = object_string(rt, "a+");
+            let hash = crate::string::hash(a);
+            let field = testing::raw_hash_field(a);
+            assert_eq!(create_count(cx, rt, a), 1, "a new pattern compiles");
+            let b = object_string(rt, "b+");
+            testing::set_raw_hash_field(b, field);
+            assert_eq!(crate::string::hash(b), hash, "one cache hash");
+            assert_eq!(create_count(cx, rt, b), 1, "one hash, another text: a miss");
+            let p: Local<'_> = Local::from_bits(b);
+            let (proto, f) = (cx.new_object(), cx.new_string("g").unwrap());
+            let rb = cx.regexp_create(proto, p.as_string().unwrap(), f).unwrap();
+            assert_eq!(exec(cx, rb, "abb", 0), "1-3", "the program of \"b+\"");
+            let ra = re(cx, "a+", "g");
+            assert_eq!(exec(cx, ra, "baa", 0), "1-3", "the program of \"a+\"");
+        });
+    }
+}
