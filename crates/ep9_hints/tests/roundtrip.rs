@@ -165,14 +165,14 @@ fn golden_bytes_of_a_tiny_file() {
     h.header.tsrs_commit = parse_commit_hex("745eb10a650b65ea689155e36ba848f9bfba790d").unwrap();
     h.files.push(ep9_hints::FileEntry {
         path: "lib/n.ts".into(),
-        text_hash: [0x11; 32],
+        text_hash: std::array::from_fn(|i| i as u8),
         has_type_errors: false,
         first_record: 0,
         record_count: 2,
     });
     h.files.push(ep9_hints::FileEntry {
         path: "m.ts".into(),
-        text_hash: [0x22; 32],
+        text_hash: std::array::from_fn(|i| 0x20 + i as u8),
         has_type_errors: true,
         first_record: 2,
         record_count: 3,
@@ -276,7 +276,7 @@ fn golden_bytes_of_a_tiny_file() {
         "08000000", // path length 8
         "00000000", // first record 0
         "02000000", // record count 2
-        "1111111111111111111111111111111111111111111111111111111111111111", // text hash
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", // text hash
         "00",       // has_type_errors 0
         "000000",   // reserved
         // file entry 1
@@ -284,7 +284,7 @@ fn golden_bytes_of_a_tiny_file() {
         "04000000", // path length 4
         "02000000", // first record 2
         "03000000", // record count 3
-        "2222222222222222222222222222222222222222222222222222222222222222", // text hash
+        "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", // text hash
         "01",       // has_type_errors 1
         "000000",   // reserved
         // class entry 0
