@@ -1228,3 +1228,74 @@ fn own_keys_reads_every_element_before_the_duplicate_check() {
         });
     }
 }
+
+/// An `ownKeys` trap: returns `handler.list`.
+fn list_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.get_v(this, "list")
+}
+
+/// HB-3, steps 19-24 (uncheckedResultKeys by (content hash, index), no address order): a
+/// non-extensible target with "x" (non-configurable), "y" and a symbol. A trap result with the
+/// same keys in a new order (new strings) passes and keeps its order; a result without "x",
+/// without the symbol, or with one more key "z" throws the step 21, 23 or 24 TypeError. With
+/// and without GC stress.
+#[test]
+fn own_keys_unchecked_keys_match_by_content_not_address() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let target = cx.new_object();
+            let sym = cx.new_symbol(Local::undefined()).unwrap();
+            let x = PropertyDescriptor::data(Local::int32(1), true, true, false);
+            cx.define_property_or_throw(target, "x", x).unwrap();
+            cx.set(target, "y", Local::int32(2), true).unwrap();
+            cx.set(target, sym, Local::int32(3), true).unwrap();
+            assert!(cx.prevent_extensions(target).unwrap());
+            let missing = "TypeError: 'ownKeys' on proxy: trap result did not include '";
+            let extra = "TypeError: 'ownKeys' on proxy: trap returned extra keys but proxy \
+                         target is non-extensible";
+            for (names, with_sym, want) in [
+                (&["y", "x"][..], true, None),
+                (&["y"][..], true, Some(format!("{missing}x'"))),
+                (&["y", "x"][..], false, Some(missing.to_owned())),
+                (&["y", "x", "z"][..], true, Some(extra.to_owned())),
+            ] {
+                let list = cx.new_array();
+                let mut n = 0;
+                for name in names {
+                    let s = cx.new_string(name).unwrap();
+                    cx.set(list, n.to_string().as_str(), s, true).unwrap();
+                    n += 1;
+                    if with_sym && n == 1 {
+                        cx.set(list, "1", sym, true).unwrap();
+                        n += 1;
+                    }
+                }
+                let h = handler_of(cx, rt, &["ownKeys"], list_trap);
+                cx.set(h, "list", list, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                match want {
+                    None => {
+                        let keys = cx.own_property_keys(p).unwrap();
+                        assert_eq!(object::array_len(keys.bits()), 3);
+                        let first = cx.get_index(keys, 0).unwrap();
+                        assert_eq!(cx.to_rust_string(first).unwrap(), "y");
+                        let second = cx.get_index(keys, 1).unwrap();
+                        assert_eq!(second.bits(), sym.bits());
+                        let third = cx.get_index(keys, 2).unwrap();
+                        assert_eq!(cx.to_rust_string(third).unwrap(), "x");
+                    }
+                    Some(want) => {
+                        assert!(cx.own_property_keys(p).is_err());
+                        let got = take_error(cx, rt);
+                        assert!(got.starts_with(&want), "{got} vs {want}");
+                    }
+                }
+            }
+        });
+    }
+}

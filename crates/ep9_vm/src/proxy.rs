@@ -1094,32 +1094,89 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
         let k = intern_key(cx.rt(), v);
         object::array_set(cx.rt(), keys, i, k);
     }
+    /// Element `i` of the dense key array `keys` that `own_property_keys` made. Not a GC point.
+    fn key_at(keys: u64, i: u32) -> u64 {
+        object::array_get(keys, i).expect("a key at each index below len")
+    }
+
+    /// The content hash of the interned key `k` (`symbol::hash` or `string::hash`), never an
+    /// address (H12-Q2). Not a GC point.
+    fn key_hash(k: u64) -> u32 {
+        if is_symbol(k) {
+            crate::symbol::hash(k)
+        } else {
+            crate::string::hash(k)
+        }
+    }
+
+    /// uncheckedResultKeys of `own_property_keys` steps 19-24 (§10.5.11): the trap result's
+    /// (content hash, index) pairs sorted by (hash, index), and a removed flag per pair. A lookup
+    /// finds the run of the key's hash by a binary search, then compares the keys by bits as an
+    /// equality test only, so no address goes into a hash input or an order (H12-Q2).
+    struct UncheckedKeys {
+        /// The dense key array (the trap result; a Rust local of the caller roots it).
+        keys: u64,
+        by_hash: Vec<(u32, u32)>,
+        removed: Vec<bool>,
+        /// The number of pairs not removed.
+        left: usize,
+    }
+
+    impl UncheckedKeys {
+        /// Removes the interned key `k`: true if it was in the set and not removed before. Not a
+        /// GC point.
+        fn remove(&mut self, k: &u64) -> bool {
+            let h = key_hash(*k);
+            let start = self.by_hash.partition_point(|&(x, _)| x < h);
+            for n in start..self.by_hash.len() {
+                let (x, i) = self.by_hash[n];
+                if x != h {
+                    break;
+                }
+                if !self.removed[n] && key_at(self.keys, i) == *k {
+                    self.removed[n] = true;
+                    self.left -= 1;
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// True when every key is removed.
+        fn is_empty(&self) -> bool {
+            self.left == 0
+        }
+    }
+
     // 10. If trapResult contains any duplicate entries, throw a TypeError exception.
-    //     The keys are interned strings and symbols, so equal keys have equal bits. Sort them
-    //     by content hash (`string::hash`, `symbol::hash`; no address, H12-Q2), then by bits:
-    //     equal keys are then adjacent. Not a GC point from the end of the loop to the check.
-    let mut by_hash: Vec<(u32, u64)> = (0..len)
-        .map(|i| {
-            // The loop above stored each element at its index (a dense array).
-            let k = object::array_get(keys, i).expect("a key at each index below len");
-            let h = if is_symbol(k) {
-                crate::symbol::hash(k)
-            } else {
-                crate::string::hash(k)
-            };
-            (h, k)
-        })
-        .collect();
+    //     The keys are interned strings and symbols, so equal keys have equal bits. Sort the
+    //     (content hash, index) pairs (`string::hash`, `symbol::hash`; no address goes into
+    //     an order, H12-Q2). Equal keys have equal hashes, so they are in one equal-hash run.
+    //     Inside a run, compare the keys by bits as an equality test only. Not a GC point
+    //     from the end of the loop to the check.
+    let mut by_hash: Vec<(u32, u32)> = (0..len).map(|i| (key_hash(key_at(keys, i)), i)).collect();
     by_hash.sort_unstable();
-    if by_hash.windows(2).any(|w| w[0] == w[1]) {
+    let duplicate = by_hash.chunk_by(|a, b| a.0 == b.0).any(|run| {
+        run.iter().enumerate().any(|(n, &(_, i))| {
+            let k = key_at(keys, i);
+            run[n + 1..].iter().any(|&(_, j)| key_at(keys, j) == k)
+        })
+    });
+    if duplicate {
         return Err(invariant(
             cx,
             &[Text("'ownKeys' on proxy: trap returned duplicate entries")],
         ));
     }
-    // uncheckedResultKeys of steps 19-24: an ordered set of the key bits (no hash of an
-    // address, H12-Q2). `keys` holds the keys across the GC points below.
-    let seen: std::collections::BTreeSet<u64> = by_hash.into_iter().map(|(_, k)| k).collect();
+    // uncheckedResultKeys of steps 19-24: the sorted (content hash, index) pairs and a removed
+    // flag per pair (no address in a hash input or an order, H12-Q2). `keys` holds the keys
+    // across the GC points below.
+    let seen = UncheckedKeys {
+        keys,
+        removed: vec![false; by_hash.len()],
+        left: by_hash.len(),
+        by_hash,
+    };
     // 11. Let extensibleTarget be ? IsExtensible(target).
     let extensible = target_extensible(cx, t.target)?;
     // 12. Let targetKeys be ? target.[[OwnPropertyKeys]]().
