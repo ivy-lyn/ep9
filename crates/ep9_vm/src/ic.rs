@@ -2720,3 +2720,176 @@ mod x86_form_tests {
         );
     }
 }
+
+// ---- the stub cache probe in the SetNamedProperty and DefineNamedOwnProperty fast bodies ----
+// (M10-P2 LEVER-12 NAMED-STORE-MEGA)
+
+/// The length of a one-byte-scale `SetNamedProperty` (`CHECK_EPOCH`, 0x24) or
+/// `DefineNamedOwnProperty` (0x25), from the opcode table, as [`GET_NAMED_LEN`]. A constant,
+/// so the `next` test of [`store_or_mega`] folds and adds no load.
+const fn named_store_len<const CHECK_EPOCH: bool>() -> usize {
+    crate::interp::dsl::one_byte_len(named_store_opcode::<CHECK_EPOCH>())
+}
+
+/// The opcode of the named store with this `CHECK_EPOCH`: 0x24 checks the validity cell of an
+/// add case, 0x25 does not (as `ops.rs` calls [`store`]).
+const fn named_store_opcode<const CHECK_EPOCH: bool>() -> Opcode {
+    if CHECK_EPOCH {
+        Opcode::SetNamedProperty
+    } else {
+        Opcode::DefineNamedOwnProperty
+    }
+}
+
+/// The byte offset of the name operand of a one-byte-scale 0x24 or 0x25 from its opcode byte
+/// ([`mega_store_fast`] reads it).
+const fn named_store_name_at<const CHECK_EPOCH: bool>() -> usize {
+    named_store_opcode::<CHECK_EPOCH>()
+        .info()
+        .operand_offset(1, OperandScale::Single)
+}
+
+// Operand 1 of 0x24 and 0x25 is the name (a constant index), one byte wide at one-byte scale.
+const _: () = {
+    let set = &Opcode::SetNamedProperty.info().operands[1];
+    assert!(matches!(set.kind, OperandKind::Const));
+    assert!(set.kind.size(OperandScale::Single) == 1);
+    let define = &Opcode::DefineNamedOwnProperty.info().operands[1];
+    assert!(matches!(define.kind, OperandKind::Const));
+    assert!(define.kind.size(OperandScale::Single) == 1);
+};
+
+/// The hit path of the `SetNamedProperty` (0x24, `CHECK_EPOCH`) and `DefineNamedOwnProperty`
+/// (0x25) fast bodies (M10-P2 LEVER-12 NAMED-STORE-MEGA, the store form of [`load_or_mega`]):
+/// [`store`], and on a megamorphic entry of a one-byte-scale instruction the stub cache probe
+/// ([`mega_store_fast`]) before the branch to the cold body. The same result as [`store`] then
+/// [`handler_mega_store`] (the first half of the cold body, `slow::set_named`). False: nothing
+/// is stored, and the cold body runs as before (its probe and the runtime call).
+/// `fp` is the frame of `fi`; `pc` and `next` are the start of the instruction and of the
+/// next one.
+///
+/// - A monomorphic or polymorphic hit runs the code of [`store`]: [`mega_store_fast`] reads
+///   the name operand, the FunctionInfo, its constant and the runtime pointer only on the
+///   megamorphic branch, after an empty `asm!` block (as [`mega_fast`]).
+/// - Only the one-byte scale probes here: a `Wide` or `ExtraWide` instruction runs [`store`]
+///   (the scale test folds: each handler has one scale), so the prefixed fast bodies do not
+///   change and their megamorphic store probes in the cold body, as before.
+/// - A stub cache hit stores through [`store_with`], as [`handler_mega_store`] does: 0x24 with
+///   the validity cell check of an add case, 0x25 with none (`store_op`: the `Store` and
+///   `Define` entries). The same write barrier (the keep forms of `store_with`). An add with
+///   no room in the SLOTS cell misses (the growth allocates; the runtime call grows it).
+/// - A ShapeId 0 test in the MEGA arm, in place of `is_object`: a string, a symbol and a
+///   BigInt have ShapeId 0 (H16 K11) and no entry has one, so they skip the probe.
+/// - Counts (`ic-stats`): a stub cache hit here is a store hit (`ic_count!(hit)` in the op)
+///   and a stub cache hit (`stub_stats!(Store, true)`); a miss counts in the runtime call
+///   ([`mega_store`]), so each probe counts once. Tests: `FAST_STORE_HITS` counts it, and
+///   `HANDLER_STORE_HITS` counts it with the hits of the cold body.
+///
+/// No allocation, no call, not a GC point (H16 Rules). Inline in optimized builds; out of line
+/// in debug builds, so a debug handler frame does not grow by the probe code (the debug form of
+/// [`load_or_mega`]).
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn store_or_mega<const CHECK_EPOCH: bool>(
+    cx: &Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    next: *const u8,
+    fi: &FunctionInfo,
+    o: u64,
+    slot: u32,
+    name: u32,
+    v: u64,
+) -> bool {
+    if next != pc.wrapping_add(named_store_len::<CHECK_EPOCH>()) {
+        return store::<CHECK_EPOCH>(cx.rt(), fi, o, slot, name, v);
+    }
+    if !is_cell_bits(o) {
+        return false;
+    }
+    let Some((key, value)) = entry(fi, slot) else {
+        return false;
+    };
+    let id = shape_id(o);
+    #[cfg(any(test, feature = "ic-stats"))]
+    let mut stub = false;
+    // [`handler_for`], with the megamorphic test in the arm of the hole key.
+    let h = if key as u32 == id {
+        value
+    } else if key != HOLE {
+        return false;
+    } else if is_cell_bits(value) {
+        let Some(h) = poly_case(value, id) else {
+            return false;
+        };
+        h
+    } else if value == MEGA && id != 0 {
+        // SAFETY: a one-byte-scale 0x24 or 0x25 (the `next` test above) of verified code (the
+        // opcode, then the object, name and slot operands, one byte each) in the live frame
+        // `fp`.
+        let Some(h) = (unsafe { mega_store_fast::<CHECK_EPOCH>(cx, fp, pc, id) }) else {
+            return false;
+        };
+        #[cfg(any(test, feature = "ic-stats"))]
+        {
+            stub = true;
+        }
+        h
+    } else {
+        return false;
+    };
+    // `move`: as in [`store`].
+    let r = store_with::<CHECK_EPOCH>(cx.rt(), o, move || fi.constant(name), v, h);
+    #[cfg(any(test, feature = "ic-stats"))]
+    if stub && r {
+        // SAFETY: as above.
+        let n = unsafe { *pc.add(named_store_name_at::<CHECK_EPOCH>()) };
+        debug_assert_eq!(u32::from(n), name);
+        debug_assert!(kind::is_object(o));
+        stub_stats!(Store, true);
+        #[cfg(test)]
+        HANDLER_STORE_HITS.with(|c| c.set(c.get() + 1));
+        #[cfg(test)]
+        FAST_STORE_HITS.with(|c| c.set(c.get() + 1));
+    }
+    r
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M10-P2 LEVER-12 NAMED-STORE-MEGA): how many stores the probe in the 0x24 and
+    /// 0x25 fast bodies ([`store_or_mega`]) answered (they count in [`HANDLER_STORE_HITS`]
+    /// too).
+    pub(crate) static FAST_STORE_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// The stub cache handler for ShapeId `id` and the name of the one-byte-scale 0x24
+/// (`CHECK_EPOCH`, the `Store` entries) or 0x25 (the `Define` entries) at `pc` in frame `fp`
+/// ([`store_or_mega`]), or `None`. The store form of [`mega_fast`], with its 2 empty `asm!`
+/// blocks for the same reasons. The same entry as the probe of [`handler_mega_store`]
+/// (`stub_cache::index_of` is the index of `stub_cache::probe`). Not a GC point.
+///
+/// # Safety
+/// `pc` is a one-byte-scale 0x24 (`CHECK_EPOCH`) or 0x25 of verified code whose function runs
+/// in the live frame `fp`.
+#[inline(always)]
+unsafe fn mega_store_fast<const CHECK_EPOCH: bool>(
+    cx: &Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    id: u32,
+) -> Option<u64> {
+    // SAFETY: the block has no instructions.
+    unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
+    // SAFETY: the name operand is byte `named_store_name_at` of the instruction (caller
+    // contract).
+    let n = unsafe { *pc.add(named_store_name_at::<CHECK_EPOCH>()) };
+    let k = FrameRef(fp).info().constant(u32::from(n));
+    let op = store_op(!CHECK_EPOCH);
+    let i = stub_cache::index_of(op, id, k);
+    // SAFETY: the block has no instructions.
+    unsafe { core::arch::asm!("/* {0} */", in(reg) i, options(nostack, preserves_flags)) };
+    stub_cache::probe_at(cx.rt(), i, op, id, k)
+}
