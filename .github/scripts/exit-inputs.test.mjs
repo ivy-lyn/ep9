@@ -398,3 +398,17 @@ test("CLI: 2 both-builds legs of run.mjs (fake engines, 31 rounds) give a paired
   assert.ok(c.cells.every((x) => x.result === "NO AGREEMENT"));
   assert.ok(existsSync(md));
 });
+
+// Option B (EI2-R3-LINUX-PATHB-REQUIRED): m2-exit reads a windows compare with a `legs` block
+// and no --linux-pathb as NO AGREEMENT; only an older compare (no `legs`: 2 boxes, no Linux x64
+// legs in its run) keeps the Path B form. pathb-run-nolegs.json is pathb-win.json with the
+// `legs` block cut, the input of that fallback.
+test("compare: the m2-exit fixture pathb-run-nolegs.json (an older compare, no legs block)", () => {
+  const gates = { w1: gateOf(1.0), w2: gateOf(1.05), w3: gateOf(1.06), w4: gateOf(1.01) };
+  const readGate = (runs) => gates[runs[0].source.split("/")[0]];
+  const c = compare([leg("w2"), leg("w1", { cpu: "Intel Xeon Platinum 8370C" }), leg("w3"), leg("w4", { cpu: "Intel Xeon Platinum 8370C" })], { readGate });
+  assert.equal(c.legs.length, 4);
+  delete c.legs;
+  assert.deepEqual(c.boxes, ["w2", "w3"]);
+  fixture("pathb-run-nolegs.json", c);
+});

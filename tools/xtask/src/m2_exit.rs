@@ -80,10 +80,10 @@
 //! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else
 //! `MARGINAL: NO AGREEMENT` (also when a leg of a pair is not a valid run: a fresh full commit,
 //! the same commit on every leg, a clean binary, at least 31 rounds and the load guard passed
-//! in each build; and when a leg of either compare was not read, has no CPU model, or is missing
-//! or given twice (each compare holds its 4 or 2 matrix legs once): the pairs are then not known).
-//! With a complete read and no same-model pair (or no `--linux-pathb`), the cell keeps the form
-//! above: the windows compare against the Linux thresholds, and its text names the CPU models.
+//! in each build; when a leg of either compare was not read, has no CPU model, or is missing or
+//! given twice (each compare holds its 4 or 2 matrix legs once); and when the windows compare has
+//! `legs` but no `--linux-pathb` is given: the pairs are then not known). With a complete read and
+//! no same-model pair, or an older compare (no `legs`), the cell keeps the form above (CPU models).
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
 //! HEAD, or an ancestor with no change in the paths it measures since, and says that its tree
@@ -2377,13 +2377,27 @@ fn cross_side(pairs: &[(Span, Span)]) -> Option<bool> {
 const MATRIX_LEGS: [(&str, usize); 2] = [("win32-x64", 4), ("linux-x64", 2)];
 
 /// The win-x64 same-CPU-model form of the readings `ids` of `builds` (V15-D16, see the module
-/// doc): the form and the evidence text. Err (the reason) when there is no same-model pair:
-/// the caller then reads the Path B form.
+/// doc): the form and the evidence text. Err (the reason) when there is no same-model pair, or
+/// when an older compare (no `legs`) has no `--linux-pathb`: the caller then reads the Path B
+/// form.
 fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, String), String> {
     let Some((wp, wj)) = &c.pathb else {
         return Err("no --pathb input".into());
     };
     let Some((lp, lj)) = &c.linux_pathb else {
+        // Option B (EI2-R3-LINUX-PATHB-REQUIRED): a compare with a `legs` block is of an
+        // exit-inputs dispatch, which also has Linux x64 legs. With no Linux x64 compare the
+        // same-model pairs are not known: no verdict and no fallback. Only an older compare (no
+        // `legs`: 2 boxes, no Linux x64 legs in its run) keeps the Path B form.
+        if wj.get("legs").is_some() {
+            return Ok((
+                HostForm::NoAgreement,
+                format!(
+                    "Windows / Linux x64 same-CPU-model form (V15-D16; {}): the windows compare has a legs block (an exit-inputs dispatch); the Linux x64 compare is missing (pass --linux-pathb with the Linux x64 compare of the same dispatch), so the same-model pairs are not known",
+                    wp.display()
+                ),
+            ));
+        }
         return Err(
             "no --linux-pathb input (the Linux x64 GitHub legs of the exit-inputs dispatch)".into(),
         );
@@ -4040,15 +4054,25 @@ mod tests {
 
     /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (1), (6)): the windows Path B compare that
     /// `.github/scripts/exit-inputs.mjs pathb` writes (fixture pathb-win.json, made by its
-    /// test) is a valid win32-x64 reading. Item 1 has the QuickJS runs of V15-D17 (AGREE
-    /// above); items 2 and 6 read AGREE above; the made-up TS cells read AGREE below, so
-    /// items 3, 10 and D11 read FAIL-SIDE. On Linux x64 the same compare is NO AGREEMENT.
+    /// test) is a valid win32-x64 reading. With no --linux-pathb, its `legs` block gives NO
+    /// AGREEMENT (option B); with the block cut (pathb-run-nolegs.json, the older form), item 1
+    /// has the QuickJS runs of V15-D17 (AGREE above); items 2 and 6 read AGREE above; the
+    /// made-up TS cells read AGREE below, so items 3, 10 and D11 read FAIL-SIDE. On Linux x64
+    /// the same compare is NO AGREEMENT.
     #[test]
     fn windows_reads_the_exit_inputs_path_b() {
         use HostForm::{AgreeAbove, AgreeBelow, NoAgreement};
         let r = repo("pathb-exit-inputs");
         let o = Options {
             pathb: Some(input(&r, "pathb-win.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(NoAgreement), "{}", rep.cells[i].evidence);
+        }
+        let o = Options {
+            pathb: Some(input(&r, "pathb-run-nolegs.json")),
             ..opts(&r, WINDOWS_X64)
         };
         let rep = run(&o).unwrap();
@@ -4343,8 +4367,10 @@ mod tests {
     }
 
     /// V15-D16, K19: with no same-CPU-model pair (the Linux legs are EPYC 9V74), or with no
-    /// --linux-pathb, the cell keeps the Path B form of the windows compare and names the CPU
-    /// models; a --linux-pathb on another host is a usage error.
+    /// --linux-pathb and an older compare (no `legs`), the cell keeps the Path B form of the
+    /// windows compare and names the CPU models. Option B (EI2-R3-LINUX-PATHB-REQUIRED): with no
+    /// --linux-pathb and a compare with `legs` (an exit-inputs dispatch) the cell reads NO
+    /// AGREEMENT. A --linux-pathb on another host is a usage error.
     #[test]
     fn windows_with_no_same_model_pair_keeps_the_path_b_form() {
         use HostForm::{AgreeAbove, AgreeBelow};
@@ -4369,6 +4395,21 @@ mod tests {
         }
         let o = Options {
             pathb: Some(input(&r, "pathb-win.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("the windows compare has a legs block (an exit-inputs dispatch); the Linux x64 compare is missing (pass --linux-pathb"),
+                "{ev}"
+            );
+            assert!(!ev.contains("keeps the Path B form"), "{ev}");
+        }
+        assert!(rep.missing.iter().any(|m| m.starts_with("--linux-pathb")));
+        let o = Options {
+            pathb: Some(input(&r, "pathb-run-nolegs.json")),
             ..opts(&r, WINDOWS_X64)
         };
         let rep = run(&o).unwrap();
