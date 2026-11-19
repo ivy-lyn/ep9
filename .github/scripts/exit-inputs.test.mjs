@@ -412,3 +412,86 @@ test("compare: the m2-exit fixture pathb-run-nolegs.json (an older compare, no l
   assert.deepEqual(c.boxes, ["w2", "w3"]);
   fixture("pathb-run-nolegs.json", c);
 });
+
+// EI2-R1: the host step writes the GitHub run id and attempt of the dispatch; off GitHub (a box
+// run, a local run) the env has none, and the file has no such line (it is still a valid host file).
+test("host: run_id and run_attempt from GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, none off GitHub (EI2-R1)", (t) => {
+  const info = { cpu: WIN_CPU, cores: 4, platform: "win32-x64", osText: "Windows_NT 10.0.26100", source: "typeperf" };
+  const idle = () => ({ status: 0, stdout: "idle_baseline_load1 = 0.1\n" });
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-exit-inputs-host-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const read = (text) => {
+    const f = path.join(dir, "host.toml");
+    writeFileSync(f, text);
+    return readHostFile(f);
+  };
+  const gh = host({ id: "gha-pathb-w1", minutes: 10, everyS: 120 }, { idle, info, env: { GITHUB_RUN_ID: "44568926404", GITHUB_RUN_ATTEMPT: "2" } });
+  assert.equal(gh.status, 0);
+  const h = read(gh.text);
+  assert.deepEqual([h.id, h.run_id, h.run_attempt, h.gate_host], ["gha-pathb-w1", "44568926404", "2", false]);
+  assert.match(gh.text, /^id = "gha-pathb-w1"\nrun_id = "44568926404"\nrun_attempt = "2"\ncpu = /m);
+  for (const env of [{}, { GITHUB_RUN_ID: "", GITHUB_RUN_ATTEMPT: "" }]) {
+    const box = host({ id: "box-1", minutes: 10, everyS: 10 }, { idle, info, env });
+    const b = read(box.text);
+    assert.equal(b.id, "box-1");
+    assert.ok(!("run_id" in b) && !("run_attempt" in b), box.text);
+    assert.doesNotMatch(box.text, /run_/);
+  }
+});
+
+// EI2-R1, EI2-R3-LEG-SLOT: readLeg reads the id, run_id and run_attempt of the leg's host.toml,
+// and the legs block copies them. A leg with no host.toml (an older leg) has none; a host.toml
+// that cannot be read is a read error of the leg.
+test("readLeg and the legs block: the host.toml id, run_id and run_attempt of each leg", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-exit-inputs-ids-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const legDir = (name, hostText) => {
+    const d = path.join(dir, name);
+    mkdirSync(d);
+    for (const b of BUILDS) writeFileSync(path.join(d, `run-${b}.json`), JSON.stringify(runView(b)));
+    if (hostText !== null) writeFileSync(path.join(d, "host.toml"), hostText);
+    return d;
+  };
+  const toml = (id, runId, runAttempt) => hostToml({ id, runId, runAttempt, cpu: WIN_CPU, cores: 4, platform: "win32-x64", osText: "t", idle: 0.1, source: "typeperf", measured: "t" });
+  const w1 = readLeg(legDir("w1", toml("gha-pathb-w1", "1001", "1")));
+  assert.deepEqual([w1.id, w1.runId, w1.runAttempt, w1.error], ["gha-pathb-w1", "1001", "1", null]);
+  const box = readLeg(legDir("w2", toml("gha-pathb-w2")));
+  assert.deepEqual([box.id, box.runId, box.runAttempt, box.error], ["gha-pathb-w2", null, null, null]);
+  const old = readLeg(legDir("w3", null));
+  assert.deepEqual([old.id, old.runId, old.runAttempt, old.error], [null, null, null, null]);
+  const bad = readLeg(legDir("w4", "id = gha\n"));
+  assert.match(bad.error, /^host\.toml: line 1: unsupported TOML value gha/);
+  const c = compare([w1, box, old], { readGate: () => gateOf(1.05) });
+  assert.deepEqual(c.legs.map((l) => [l.leg, l.id, l.run_id, l.run_attempt]), [["w1", "gha-pathb-w1", "1001", "1"], ["w2", "gha-pathb-w2", undefined, undefined], ["w3", undefined, undefined, undefined]]);
+  assert.deepEqual(Object.keys(c.legs[2]).slice(0, 2), ["leg", "cpu"], "no id keys on an older leg");
+  assert.deepEqual(Object.keys(c.legs[0]).slice(0, 5), ["leg", "id", "run_id", "run_attempt", "cpu"]);
+});
+
+// The m2-exit fixtures of the run id and slot checks (pathb-run-*.json): the legs of
+// pathb-win.json and pathb-gha-linux.json with the host.toml id of their matrix slot and the run
+// id 1001 (attempt 1). Variants of the Linux x64 compare: run id 1002 (2 runs), l2 with no run
+// id (a mixed input), l2 with the id of l1 (a doubled slot), l2 with the id gha-pathb-l3 (slot
+// gha-pathb-l2 missing, an id that is not a slot).
+test("compare: the m2-exit fixtures pathb-run-*.json (run ids and slot ids in the legs block)", () => {
+  const gates = { w1: gateOf(1.0), w2: gateOf(1.05), w3: gateOf(1.06), w4: gateOf(1.01), l1: gateOf(1.1), l2: gateOf(1.1) };
+  const readGate = (runs) => gates[runs[0].source.split("/")[0]];
+  const ids = (l, id, runId = "1001", runAttempt = "1") => ({ ...l, id, runId, runAttempt });
+  const intel = "Intel Xeon Platinum 8370C";
+  const w = compare([ids(leg("w2"), "gha-pathb-w2"), ids(leg("w1", { cpu: intel }), "gha-pathb-w1"), ids(leg("w3"), "gha-pathb-w3"), ids(leg("w4", { cpu: intel }), "gha-pathb-w4")], { readGate });
+  assert.deepEqual(w.legs.map((l) => [l.leg, l.id, l.run_id, l.run_attempt]), [
+    ["w2", "gha-pathb-w2", "1001", "1"],
+    ["w1", "gha-pathb-w1", "1001", "1"],
+    ["w3", "gha-pathb-w3", "1001", "1"],
+    ["w4", "gha-pathb-w4", "1001", "1"],
+  ]);
+  fixture("pathb-run-win.json", w);
+  const lin = (name) => leg(name, { platform: "linux-x64" });
+  const linux = (l1, l2) => compare([l1, l2], { readGate });
+  fixture("pathb-run-linux.json", linux(ids(lin("l1"), "gha-pathb-l1"), ids(lin("l2"), "gha-pathb-l2")));
+  fixture("pathb-run-linux-2.json", linux(ids(lin("l1"), "gha-pathb-l1", "1002"), ids(lin("l2"), "gha-pathb-l2", "1002")));
+  const mixed = linux(ids(lin("l1"), "gha-pathb-l1"), ids(lin("l2"), "gha-pathb-l2", null, null));
+  assert.deepEqual(mixed.legs.map((l) => "run_id" in l), [true, false]);
+  fixture("pathb-run-linux-mixed.json", mixed);
+  fixture("pathb-run-linux-doubled.json", linux(ids(lin("l1"), "gha-pathb-l1"), ids(lin("l2"), "gha-pathb-l1")));
+  fixture("pathb-run-linux-missing.json", linux(ids(lin("l1"), "gha-pathb-l1"), ids(lin("l2"), "gha-pathb-l3")));
+});

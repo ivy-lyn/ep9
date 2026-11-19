@@ -2376,6 +2376,132 @@ fn cross_side(pairs: &[(Span, Span)]) -> Option<bool> {
 /// same-model pairs are known only when each compare holds each of them once (EI2 Codex r2 F1).
 const MATRIX_LEGS: [(&str, usize); 2] = [("win32-x64", 4), ("linux-x64", 2)];
 
+/// The host.toml id of each pathb leg of the exit-inputs matrix, per platform (ci.yml: the host
+/// step's `--id "gha-$LEG"`). Each compare must hold each of its ids once (EI2-R3-LEG-SLOT).
+const MATRIX_IDS: [(&str, &[&str]); 2] = [
+    (
+        "win32-x64",
+        &[
+            "gha-pathb-w1",
+            "gha-pathb-w2",
+            "gha-pathb-w3",
+            "gha-pathb-w4",
+        ],
+    ),
+    ("linux-x64", &["gha-pathb-l1", "gha-pathb-l2"]),
+];
+
+/// A provenance field of a leg (`id`, `run_id`, `run_attempt`: the leg's host.toml, copied by
+/// exit-inputs.mjs readLeg): None when it is missing or null; else its text (a string, or a
+/// whole number), and "" for any other value.
+fn leg_field(l: &Json, key: &str) -> Option<String> {
+    match l.get(key)? {
+        Json::Null => None,
+        Json::Str(s) => Some(s.trim().to_string()),
+        Json::Num(n) if n.is_finite() && n.fract() == 0.0 => Some(format!("{n:.0}")),
+        _ => Some(String::new()),
+    }
+}
+
+/// The provenance checks of the legs of both compares (`sets`: each platform and its legs).
+/// EI2-R3-LEG-SLOT: each compare holds each host.toml id of [`MATRIX_IDS`] once. EI2-R1: every
+/// leg names the same GitHub `run_id` (one dispatch). When no leg names an id (or no leg names
+/// a run id), the input is older than these fields: that check gives a note only. Ok: the text
+/// of the checks; Err: each reason (the cell then reads NO AGREEMENT).
+fn provenance(sets: &[(&str, &[&Json])]) -> Result<String, Vec<String>> {
+    let mut why = Vec::new();
+    let mut text = Vec::new();
+    let legs: Vec<&Json> = sets.iter().flat_map(|(_, l)| l.iter().copied()).collect();
+    if legs.iter().all(|l| leg_field(l, "id").is_none()) {
+        text.push(
+            "note: no leg names its host.toml id (an older input), so the slots are not checked"
+                .to_string(),
+        );
+    } else {
+        let before = why.len();
+        for &(p, ls) in sets {
+            let want = MATRIX_IDS
+                .iter()
+                .find(|(q, _)| *q == p)
+                .map_or(&[][..], |(_, w)| *w);
+            let mut by: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+            for l in ls {
+                match leg_field(l, "id") {
+                    Some(id) => by.entry(id).or_default().push(leg_name(l)),
+                    None => why.push(format!("{p} leg {}: no host.toml id", leg_name(l))),
+                }
+            }
+            for w in want.iter().filter(|w| !by.contains_key(**w)) {
+                why.push(format!("{p}: no leg has the id {w}"));
+            }
+            for (id, names) in &by {
+                if !want.contains(&id.as_str()) {
+                    why.push(format!(
+                        "{p} leg {}: the id {id:?} is not a pathb slot of the matrix",
+                        names.join(", ")
+                    ));
+                } else if names.len() > 1 {
+                    why.push(format!(
+                        "{p}: the id {id} is given {} times (legs {})",
+                        names.len(),
+                        names.join(", ")
+                    ));
+                }
+            }
+        }
+        if why.len() == before {
+            text.push("each pathb slot once (host.toml ids)".to_string());
+        }
+    }
+    let mut runs: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut attempts = BTreeSet::new();
+    let mut without = Vec::new();
+    for l in &legs {
+        match leg_field(l, "run_id") {
+            Some(r) if r.is_empty() => why.push(format!(
+                "leg {}: the run_id is empty or not a string",
+                leg_name(l)
+            )),
+            Some(r) => {
+                runs.entry(r).or_default().push(leg_name(l));
+                attempts.insert(leg_field(l, "run_attempt").unwrap_or_else(|| "?".into()));
+            }
+            None => without.push(leg_name(l)),
+        }
+    }
+    if runs.is_empty() && without.len() == legs.len() {
+        text.push(
+            "note: no leg names a GitHub run id (an older input), so one dispatch is not checked"
+                .to_string(),
+        );
+    } else if !without.is_empty() {
+        why.push(format!(
+            "some legs name a GitHub run id and some do not (no run id: {})",
+            without.join(", ")
+        ));
+    }
+    if runs.len() > 1 {
+        why.push(format!(
+            "the legs are of {} GitHub runs, not one ({})",
+            runs.len(),
+            runs.iter()
+                .map(|(r, n)| format!("run {r}: {}", n.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    } else if let Some(r) = runs.keys().next() {
+        text.push(format!(
+            "one GitHub run {r} (attempt {})",
+            attempts.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if why.is_empty() {
+        Ok(text.join("; "))
+    } else {
+        Err(why)
+    }
+}
+
 /// The win-x64 same-CPU-model form of the readings `ids` of `builds` (V15-D16, see the module
 /// doc): the form and the evidence text. Err (the reason) when there is no same-model pair, or
 /// when an older compare (no `legs`) has no `--linux-pathb`: the caller then reads the Path B
@@ -2446,6 +2572,22 @@ fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, Strin
             ),
         ));
     }
+    // EI2-R1, EI2-R3-LEG-SLOT: legs of 2 runs, or a slot that is missing or doubled, make the
+    // same-model pairs of one dispatch not known: no verdict and no fallback.
+    let prov = match provenance(&[("win32-x64", &win), ("linux-x64", &lin)]) {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok((
+                HostForm::NoAgreement,
+                format!(
+                    "Windows / Linux x64 same-CPU-model form (V15-D16; {} and {}): the legs are not of one exit-inputs dispatch with each pathb slot once ({}), so the same-model pairs are not known; read both compares of one dispatch",
+                    wp.display(),
+                    lp.display(),
+                    e.join("; ")
+                ),
+            ));
+        }
+    };
     let pairs: Vec<(&Json, &Json)> = win
         .iter()
         .flat_map(|w| {
@@ -2456,7 +2598,7 @@ fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, Strin
         .collect();
     if pairs.is_empty() {
         return Err(format!(
-            "no same-CPU-model pair of a Windows and a Linux x64 GitHub run (Windows: {}; Linux x64: {})",
+            "{prov}; no same-CPU-model pair of a Windows and a Linux x64 GitHub run (Windows: {}; Linux x64: {})",
             models(&win),
             models(&lin)
         ));
@@ -2541,7 +2683,7 @@ fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, Strin
     Ok((
         form,
         format!(
-            "Windows / Linux x64 on same-CPU-model GitHub runner pairs (V15-D16: the same hardware class of 10-quality.md:84; the interval >= {WINDOWS_MIN} needed, 09:66; not a gate host, 10:157; {} and {}): pairs {names}; {}{}",
+            "Windows / Linux x64 on same-CPU-model GitHub runner pairs (V15-D16: the same hardware class of 10-quality.md:84; the interval >= {WINDOWS_MIN} needed, 09:66; not a gate host, 10:157; {} and {}): pairs {names}; {}{}; {prov}",
             wp.display(),
             lp.display(),
             parts.join("; "),
@@ -4633,5 +4775,173 @@ mod tests {
             "{}",
             c.evidence
         );
+    }
+
+    /// The run id and slot fixtures (EI2-R1, EI2-R3-LEG-SLOT; made by
+    /// `.github/scripts/exit-inputs.test.mjs`): the windows compare pathb-run-win.json and a
+    /// Linux x64 compare `linux`, on x86_64-pc-windows-msvc. Each speed cell's form and text.
+    fn run_cross(r: &Repo, linux: &str) -> Vec<(Option<HostForm>, String)> {
+        let o = Options {
+            pathb: Some(input(r, "pathb-run-win.json")),
+            linux_pathb: Some(input(r, linux)),
+            ..opts(r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        SPEED
+            .iter()
+            .map(|&i| (rep.forms[i], rep.cells[i].evidence.clone()))
+            .collect()
+    }
+
+    /// EI2-R1, EI2-R3-LEG-SLOT: the legs of one GitHub run (1001), each pathb slot once: the
+    /// cross form reads as before (AGREE above) and its text names the run.
+    #[test]
+    fn windows_cross_form_reads_one_run_and_each_slot_once() {
+        let r = repo("pathb-run-one");
+        for (form, ev) in run_cross(&r, "pathb-run-linux.json") {
+            assert_eq!(form, Some(HostForm::AgreeAbove), "{ev}");
+            assert!(
+                ev.ends_with(
+                    "; each pathb slot once (host.toml ids); one GitHub run 1001 (attempt 1)"
+                ),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R1: the windows legs are of run 1001 and the Linux x64 legs of run 1002 (2
+    /// dispatches): NO AGREEMENT, and the text names both run ids. With no same-model pair (the
+    /// Linux legs of another CPU model), the cell does not fall back to the Path B form.
+    #[test]
+    fn windows_cross_form_with_two_run_ids_reads_no_agreement() {
+        let r = repo("pathb-run-two");
+        let want = "the legs are not of one exit-inputs dispatch with each pathb slot once (the legs are of 2 GitHub runs, not one (run 1001: w2, w1, w3, w4; run 1002: l1, l2)), so the same-model pairs are not known";
+        for (form, ev) in run_cross(&r, "pathb-run-linux-2.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(ev.contains(want), "{ev}");
+        }
+        let m = "AMD EPYC 7763 64-Core Processor";
+        let other = fixture("pathb-run-linux-2.json")
+            .replace(SHA, &r.head)
+            .replace(m, "AMD EPYC 9V74 80-Core Processor");
+        write(&r.root, "inputs/run-2-other.json", &other);
+        let o = Options {
+            pathb: Some(input(&r, "pathb-run-win.json")),
+            linux_pathb: Some(r.root.join("inputs/run-2-other.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains(want) && !ev.contains("keeps the Path B form"),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R1: some legs name a run id and some do not (l2 of pathb-run-linux-mixed.json; or a
+    /// windows compare of the older reader, with no ids, and a Linux x64 compare with ids): NO
+    /// AGREEMENT, and the text names the legs with no run id.
+    #[test]
+    fn windows_cross_form_with_a_mixed_run_id_reads_no_agreement() {
+        let r = repo("pathb-run-mixed");
+        for (form, ev) in run_cross(&r, "pathb-run-linux-mixed.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("(some legs name a GitHub run id and some do not (no run id: l2))"),
+                "{ev}"
+            );
+        }
+        let o = Options {
+            pathb: Some(input(&r, "pathb-win.json")),
+            linux_pathb: Some(input(&r, "pathb-run-linux.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("win32-x64 leg w2: no host.toml id")
+                    && ev.contains(
+                        "some legs name a GitHub run id and some do not (no run id: w2, w1, w3, w4)"
+                    ),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R3-LEG-SLOT: l1 and l2 both have the host.toml id gha-pathb-l1 (one artifact under 2
+    /// dir names, or a doubled slot): the leg names differ, but the slot gha-pathb-l2 is missing
+    /// and gha-pathb-l1 is given twice: NO AGREEMENT, and the text names the ids.
+    #[test]
+    fn windows_cross_form_with_a_doubled_slot_reads_no_agreement() {
+        let r = repo("pathb-run-doubled");
+        for (form, ev) in run_cross(&r, "pathb-run-linux-doubled.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("(linux-x64: no leg has the id gha-pathb-l2; linux-x64: the id gha-pathb-l1 is given 2 times (legs l1, l2))"),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R3-LEG-SLOT: l2 has the host.toml id gha-pathb-l3: the slot gha-pathb-l2 is missing
+    /// and gha-pathb-l3 is not a slot of the matrix: NO AGREEMENT, and the text names both.
+    #[test]
+    fn windows_cross_form_with_a_missing_slot_reads_no_agreement() {
+        let r = repo("pathb-run-missing");
+        for (form, ev) in run_cross(&r, "pathb-run-linux-missing.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("(linux-x64: no leg has the id gha-pathb-l2; linux-x64 leg l2: the id \"gha-pathb-l3\" is not a pathb slot of the matrix)"),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R1: no leg names a run id (an older input: the fixtures of the older reader, or the
+    /// legs of a dispatch before the run id field, which name their slot ids): the cross form
+    /// reads as before, and the text has a note only.
+    #[test]
+    fn windows_cross_form_with_no_run_id_reads_as_before_with_a_note() {
+        let r = repo("pathb-run-older");
+        let note =
+            "note: no leg names a GitHub run id (an older input), so one dispatch is not checked";
+        let rep = run(&win_cross(&r, "pathb-gha-linux.json")).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::AgreeAbove), "{ev}");
+            assert!(
+                ev.ends_with(&format!("; note: no leg names its host.toml id (an older input), so the slots are not checked; {note}")),
+                "{ev}"
+            );
+        }
+        let cut = "\n   \"run_id\": \"1001\",\n   \"run_attempt\": \"1\",";
+        for f in ["pathb-run-win.json", "pathb-run-linux.json"] {
+            let text = fixture(f).replace(SHA, &r.head);
+            assert!(text.contains(cut), "{f}");
+            write(
+                &r.root,
+                &format!("inputs/older-{f}"),
+                &text.replace(cut, ""),
+            );
+        }
+        let o = Options {
+            pathb: Some(r.root.join("inputs/older-pathb-run-win.json")),
+            linux_pathb: Some(r.root.join("inputs/older-pathb-run-linux.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::AgreeAbove), "{ev}");
+            assert!(
+                ev.ends_with(&format!("; each pathb slot once (host.toml ids); {note}")),
+                "{ev}"
+            );
+        }
     }
 }

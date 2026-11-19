@@ -34,24 +34,31 @@
 //       The file also has `legs` (V15-D16), with a pair or not: every leg that was read, its CPU
 //       model, its own commit, a run check per build and the box value of each cell per build
 //       (item 3 also `time_s`: the gross ep9 TS time, whose 1 / t is the cross-host TS speed).
+//       Each leg also names the id, run_id and run_attempt of its host.toml when they are set (the
+//       host step writes run_id and run_attempt from GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT; a run
+//       off GitHub, such as a box run, has none).
 //       `cargo xtask m2-exit --host x86_64-pc-windows-msvc --pathb <windows compare>
 //       --linux-pathb <linux-x64 compare>` pairs each Windows leg with each Linux x64 leg of the
 //       same CPU model from these legs (the 09:66 cross-host form).
 //       A leg that was not read is in `runners` only (with its `error`): m2-exit then reads
-//       NO AGREEMENT, as the same-model pairs of the dispatch are not known.
+//       NO AGREEMENT, as the same-model pairs of the dispatch are not known. It also reads NO
+//       AGREEMENT when the legs name more than one run_id, or only some legs name one (EI2-R1);
+//       when a compare does not hold each slot id once (gha-pathb-w1..w4, gha-pathb-l1 and -l2;
+//       EI2-R3-LEG-SLOT); and when a windows compare with `legs` has no --linux-pathb (option B).
+//       With no run_id on any leg (an older input), m2-exit gives a note only.
 //
 // Exit status: 0 done; 2 usage error or an input that cannot be read; 3 no baseline (host) or
 // no pair (pathb).
 // Tests: node --test .github/scripts/exit-inputs.test.mjs
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readM2Gate, TS } from "../../tools/bench/cross/m2gate.mjs";
-import { cpuModel, loadSource } from "../../tools/bench/lib/host.mjs";
+import { cpuModel, loadSource, parseToml } from "../../tools/bench/lib/host.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const SCHEMA = "ep9-pathb-compare/v1";
@@ -84,12 +91,19 @@ export function parseIdle(stdout) {
 
 const tomlString = (s) => `"${String(s).replace(/["\\#]/g, "_")}"`;
 
-/** The host file text (the TOML subset of lib/host.mjs: no '#', '"' or '\' in a string). */
-export function hostToml({ id, cpu, cores, platform, osText, idle, source, measured }) {
+/**
+ * The host file text (the TOML subset of lib/host.mjs: no '#', '"' or '\' in a string). `runId`
+ * and `runAttempt` (GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT; EI2-R1) give the run_id and run_attempt
+ * lines only when they are set: a run off GitHub (a box) has none.
+ */
+export function hostToml({ id, runId, runAttempt, cpu, cores, platform, osText, idle, source, measured }) {
+  const run = (k, v) => (v === undefined || v === null || String(v) === "" ? [] : [`${k} = ${tomlString(v)}`]);
   return [
     "# Host file of a GitHub-hosted runner, written by .github/scripts/exit-inputs.mjs host",
     `# (${measured}). A GitHub runner is never a gate host (10-quality.md section 3).`,
     `id = ${tomlString(id)}`,
+    ...run("run_id", runId),
+    ...run("run_attempt", runAttempt),
     `cpu = ${tomlString(cpu)}`,
     `cores = ${cores}`,
     `platform = ${tomlString(platform)}`,
@@ -101,8 +115,12 @@ export function hostToml({ id, cpu, cores, platform, osText, idle, source, measu
   ].join("\n");
 }
 
-/** The host subcommand. `deps.idle(args)` runs idle.mjs: { status, stdout, stderr }. */
+/**
+ * The host subcommand. `deps.idle(args)` runs idle.mjs: { status, stdout, stderr }. `deps.env`
+ * (process.env by default) gives GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT (EI2-R1).
+ */
 export function host(o, deps = {}) {
+  const env = deps.env ?? process.env;
   const idle =
     deps.idle ??
     ((args) => spawnSync(process.execPath, [path.join(ROOT, "tools/bench/cross/idle.mjs"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
@@ -118,6 +136,8 @@ export function host(o, deps = {}) {
   };
   const text = hostToml({
     id: o.id,
+    runId: env.GITHUB_RUN_ID,
+    runAttempt: env.GITHUB_RUN_ATTEMPT,
     ...info,
     idle: base,
     measured: `idle baseline: ${o.minutes} min, a sample every ${o.everyS} s, ${new Date().toISOString()}`,
@@ -221,16 +241,33 @@ export function pairLegs(legs) {
   return null;
 }
 
-/** Reads a leg dir: { name, cpu, platform, jit, jitless, error }. */
+/**
+ * Reads a leg dir: { name, id, runId, runAttempt, cpu, platform, jit, jitless, error }. `id`,
+ * `runId` and `runAttempt` are the id, run_id and run_attempt of the leg's host.toml (the host
+ * step writes it in the leg's out/; EI2-R1, EI2-R3-LEG-SLOT), null when the file or the key is
+ * not there (an older leg). A host.toml that cannot be read is a read error of the leg.
+ */
 export function readLeg(dir) {
   const name = path.basename(path.resolve(dir));
   const read = (f) => JSON.parse(readFileSync(path.join(dir, f), "utf8"));
+  const none = { id: null, runId: null, runAttempt: null };
   try {
     const jit = read("run-jit.json");
     const jitless = read("run-jitless.json");
-    return { name, cpu: jit.host?.measured?.cpu ?? null, platform: jit.host?.measured?.platform ?? null, jit, jitless, error: null };
+    const file = path.join(dir, "host.toml");
+    let ids = none;
+    if (existsSync(file)) {
+      let h;
+      try {
+        h = parseToml(readFileSync(file, "utf8"));
+      } catch (e) {
+        throw new Error(`host.toml: ${e.message}`);
+      }
+      ids = { id: h.id ?? null, runId: h.run_id ?? null, runAttempt: h.run_attempt ?? null };
+    }
+    return { name, ...ids, cpu: jit.host?.measured?.cpu ?? null, platform: jit.host?.measured?.platform ?? null, jit, jitless, error: null };
   } catch (e) {
-    return { name, cpu: null, platform: null, jit: null, jitless: null, error: e.message };
+    return { name, ...none, cpu: null, platform: null, jit: null, jitless: null, error: e.message };
   }
 }
 
@@ -291,14 +328,19 @@ export function tsTime(gate, build) {
 /**
  * The `legs` block (V15-D16): every leg that was read, with its own commit, a run check per
  * build against that commit, and the box value of each cell per build (for item 3 also
- * `time_s`, the gross ep9 TS time: see tsTime).
+ * `time_s`, the gross ep9 TS time: see tsTime). The leg's host.toml id, run_id and run_attempt
+ * (readLeg) are copied when they are set; m2-exit checks them (EI2-R1, EI2-R3-LEG-SLOT).
  */
 function legBlocks(usable, gateOf) {
+  const set = (k, v) => (v === undefined || v === null ? {} : { [k]: v });
   return usable.map((l) => {
     const commit = legCommit(l);
     const g = gateOf(l);
     return {
       leg: l.name,
+      ...set("id", l.id),
+      ...set("run_id", l.runId),
+      ...set("run_attempt", l.runAttempt),
       cpu: l.cpu,
       platform: l.platform,
       commit,
