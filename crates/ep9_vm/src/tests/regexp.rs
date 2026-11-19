@@ -713,3 +713,66 @@ fn legacy_state_keeps_no_realm_alive() {
         iso.verify_heap().unwrap();
     }
 }
+
+// ---- the cache hash is keyed (M10-P1 HASH-SEED-2, HB-6-REGEXP-CACHE) ---------------------------
+
+/// `Cx::regexp_create` with the pattern string `p` (bits) and the flags "g"; the compile count
+/// it adds.
+fn create_count(cx: &mut Cx<'_>, rt: &Runtime, p: u64) -> usize {
+    let n0 = rt.regexp_programs.compiles();
+    let p: Local<'_> = Local::from_bits(p);
+    let (proto, f) = (cx.new_object(), cx.new_string("g").unwrap());
+    cx.regexp_create(proto, p.as_string().unwrap(), f).unwrap();
+    rt.regexp_programs.compiles() - n0
+}
+
+/// HB-6: a seen pattern is a cache hit in its Latin-1 form (a SEQ_LATIN1 cell) and its UTF-16
+/// form (a SEQ_UTF16 cell of the same text): one entry, one compile. With and without GC
+/// stress.
+#[test]
+fn latin1_and_utf16_patterns_hit_one_entry() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let text = "caf\u{e9}+(x)";
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let latin1 = object_string(rt, text);
+            assert_eq!(create_count(cx, rt, latin1), 1, "a new pattern compiles");
+            let utf16 = crate::string::testing::new_utf16_cell(rt, &units);
+            assert_eq!(create_count(cx, rt, utf16), 0, "the UTF-16 form is a hit");
+            assert_eq!(create_count(cx, rt, latin1), 0, "the Latin-1 form is a hit");
+        });
+    }
+}
+
+/// HB-6 (R20 section 7, class (a)): the cache hash of a pattern is the keyed process hash of
+/// its string (`string::hash`, cached in the hash field), not a hash of the units with no
+/// key. The hash field holds SipHash-1-3 of the units with the process keys. A string of the
+/// same text whose hash field has one other bit misses (an FNV-1a or fixed-key hash of the
+/// units would hit), and a fresh string of that text hits. The asserts hold for any key, so
+/// the test does not set `EP9_HASH_SEED`. With and without GC stress.
+#[test]
+fn the_cache_hash_is_the_keyed_string_hash() {
+    use crate::string::testing;
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let text = "keyed+(x)";
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let a = object_string(rt, text);
+            let keyed = testing::sip13(testing::keys(), &units) as u32 & crate::string::HASH_MASK;
+            assert_eq!(crate::string::hash(a), keyed, "the keyed process hash");
+            assert_eq!(create_count(cx, rt, a), 1, "a new pattern compiles");
+            let b = object_string(rt, text);
+            assert_eq!(crate::string::hash(b), keyed, "computed and cached");
+            let f = testing::raw_hash_field(b);
+            testing::set_raw_hash_field(b, f ^ (1 << 7));
+            assert_eq!(create_count(cx, rt, b), 1, "another hash field: a miss");
+            testing::set_raw_hash_field(b, f);
+            let c = object_string(rt, text);
+            assert_eq!(
+                create_count(cx, rt, c),
+                0,
+                "a fresh string of the text: a hit"
+            );
+        });
+    }
+}
