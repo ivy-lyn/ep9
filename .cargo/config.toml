@@ -1,4 +1,15 @@
 # Cargo merges this file into every cargo run below the repo root, third_party/ and spikes/ included.
-# So keep it to aliases: no [build] or [target] settings here.
+# So keep it to aliases and the x86-64 [target] rustflags below: no [build] table, no other flag.
+# The x86-64 rustflags are the handler alignment of H15:39 (M10-PRE-ALIGN-FORM): every function
+# starts on a 64-byte line. They change code placement only, never behavior. Stable Rust 1.99.1
+# has no per-function align attribute, so this is the only form. RUSTFLAGS (or
+# CARGO_ENCODED_RUSTFLAGS) in the environment replaces these rustflags (cargo order): a build that
+# sets it loses the alignment. The disasm frames check (`cargo xtask disasm-check --frames`) fails then.
 [alias]
 xtask = "run --package xtask --"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "llvm-args=-align-all-functions=6"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "llvm-args=-align-all-functions=6"]
