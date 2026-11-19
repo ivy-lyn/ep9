@@ -28,8 +28,10 @@
 //       A box reading that the gates refuse (void, gross only, a void or net invalid kernel row,
 //       any other m2gate reason except the run labels of a runner that is not a gate host and,
 //       for item 3, the QuickJS ratio) gives no interval (boxBlockers).
-//       No 2 legs of one CPU model: the file says pair null and the exit status is 3. Then the
-//       dispatch runs again once; a second miss is NOT-RUN (a DL line; plan v14 section 4.1 (6)).
+//       No 2 legs of one CPU model: the file says pair null and the exit status is 3. On
+//       --platform win32-x64 the dispatch then runs again once; a second miss is NOT-RUN (a DL
+//       line; plan v14 section 4.1 (6)). On --platform linux-x64 exit 3 is normal (2 legs, often of
+//       2 CPU models): do not run the dispatch again; m2-exit reads the `legs` block of the file.
 //       The Markdown also gives the TS ratio to node --jitless per box and build (V14-D59).
 //       The file also has `legs` (V15-D16), with a pair or not: every leg that was read, its CPU
 //       model, its own commit, a run check per build and the box value of each cell per build

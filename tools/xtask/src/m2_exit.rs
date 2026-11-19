@@ -77,12 +77,12 @@
 //! (for TS: 1 / the gross ep9 time `time_s` at each end, 10:157; not the ratio to node).
 //! The part is above when every pair's low end is >= 0.9, below when every pair's high end is
 //! < 0.9, else neither. The cell reads `MARGINAL (no gate host): AGREE above` when every part is
-//! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else
-//! `MARGINAL: NO AGREEMENT` (also when a leg of a pair is not a valid run: a fresh full commit,
-//! the same commit on every leg, a clean binary, at least 31 rounds and the load guard passed
-//! in each build; when a leg of either compare was not read, has no CPU model, or is missing or
-//! given twice (each compare holds its 4 or 2 matrix legs once); and when the windows compare has
-//! `legs` but no `--linux-pathb` is given: the pairs are then not known). With a complete read and
+//! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else `MARGINAL: NO
+//! AGREEMENT` (also when a leg of a pair is not a valid run: a fresh full commit, one commit on
+//! every leg, a clean binary, >= 31 rounds and the load guard passed in each build; when a leg of
+//! a compare was not read, has no CPU model, or is missing or given twice; when the legs are of 2
+//! GitHub runs or a host.toml slot id is not there once (no such id on any leg: a note only); and
+//! when the windows compare has `legs` but no `--linux-pathb`: the pairs are then not known). With
 //! no same-model pair, or an older compare (no `legs`), the cell keeps the form above (CPU models).
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
