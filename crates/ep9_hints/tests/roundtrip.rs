@@ -566,3 +566,38 @@ fn writer_refuses_what_the_reader_would_drop_or_change() {
     h.records[4].class = Some(u32::MAX);
     assert_eq!(write(&h), Err(WriteError::Lossy));
 }
+
+#[test]
+fn member_access_class_is_the_receiver() {
+    // `a.b` with `a: A` and `b: B`: the record of `a` names A as its value class, and the
+    // record of `a.b` names A, the receiver class that owns the slot, not B.
+    let class = |slot_count| ep9_hints::ClassEntry {
+        decl: DeclRef { file: 0, offset: 0 },
+        slot_count,
+        first_field: 0,
+        field_count: 0,
+    };
+    let mut h = Hints::default();
+    h.files.push(ep9_hints::FileEntry {
+        path: "m.ts".into(),
+        text_hash: hash(3),
+        has_type_errors: false,
+        first_record: 0,
+        record_count: 2,
+    });
+    h.classes.push(class(3)); // A
+    h.classes.push(class(1)); // B
+    let mut a = record(0, 1, NodeKind::IdentifierReference);
+    a.repr = Repr::ClassInstance;
+    a.class = Some(0);
+    h.records.push(a);
+    let mut ab = record(0, 3, NodeKind::StaticMemberExpression);
+    ab.repr = Repr::ClassInstance;
+    ab.class = Some(0);
+    ab.slot = Some(2);
+    h.records.push(ab);
+    assert_eq!(read(&write(&h).unwrap(), &Expect::default()), Ok(h.clone()));
+    // Slot 2 is not a slot of B, so the record cannot name the class of the value.
+    h.records[1].class = Some(1);
+    assert_eq!(write(&h), Err(WriteError::Invalid(DropReason::BadRecord)));
+}

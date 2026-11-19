@@ -114,9 +114,13 @@ pub struct Record {
     pub enum_const: Option<i32>,
     /// 0 = none given, 1 lowest to 255 highest (as the H30-Q1 confidence byte).
     pub confidence: u8,
-    /// The class id of a class receiver or instance: an index of [`Hints::classes`].
+    /// The class id, an index of [`Hints::classes`]. On a member-access kind (3
+    /// StaticMemberExpression, 4 ComputedMemberExpression, 5 PrivateFieldExpression) it is the
+    /// receiver's class, which owns `slot` (05-aot.md:149 "class receiver -> shape + slot
+    /// candidate"). On any other kind it is the class of the node's value
+    /// ([`Repr::ClassInstance`]).
     pub class: Option<u32>,
-    /// The slot candidate in that class: below its slot count. Needs `class`.
+    /// The slot of the member in the receiver class: below its slot count. Needs `class`.
     pub slot: Option<u16>,
     /// The declaration of the call target.
     pub call_target: Option<DeclRef>,
