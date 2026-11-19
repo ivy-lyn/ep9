@@ -1094,93 +1094,6 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
         let k = intern_key(cx.rt(), v);
         object::array_set(cx.rt(), keys, i, k);
     }
-    /// Element `i` of the dense key array `keys` that `own_property_keys` made. Not a GC point.
-    fn key_at(keys: u64, i: u32) -> u64 {
-        object::array_get(keys, i).expect("a key at each index below len")
-    }
-
-    /// The content hash of the interned key `k` (`symbol::hash` or `string::hash`), never an
-    /// address (H12-Q2). Not a GC point.
-    fn key_hash(k: u64) -> u32 {
-        if is_symbol(k) {
-            crate::symbol::hash(k)
-        } else {
-            crate::string::hash(k)
-        }
-    }
-
-    /// uncheckedResultKeys of `own_property_keys` steps 19-24 (§10.5.11): the trap result's
-    /// (content hash, index) pairs sorted by (hash, index), and a removed flag per pair. A lookup
-    /// finds the run of the key's hash by a binary search, then compares the keys by bits as an
-    /// equality test only, so no address goes into a hash input or an order (H12-Q2).
-    struct UncheckedKeys {
-        /// The dense key array (the trap result; a Rust local of the caller roots it).
-        keys: u64,
-        by_hash: Vec<(u32, u32)>,
-        removed: Vec<bool>,
-        /// The number of pairs not removed.
-        left: usize,
-    }
-
-    impl UncheckedKeys {
-        /// Removes the interned key `k`: true if it was in the set and not removed before. Not a
-        /// GC point.
-        fn remove(&mut self, k: &u64) -> bool {
-            let h = key_hash(*k);
-            let start = self.by_hash.partition_point(|&(x, _)| x < h);
-            for n in start..self.by_hash.len() {
-                let (x, i) = self.by_hash[n];
-                if x != h {
-                    break;
-                }
-                if !self.removed[n] && key_at(self.keys, i) == *k {
-                    self.removed[n] = true;
-                    self.left -= 1;
-                    return true;
-                }
-            }
-            false
-        }
-
-        /// True when every key is removed.
-        fn is_empty(&self) -> bool {
-            self.left == 0
-        }
-    }
-
-    /// Sorts `v` in place (a heapsort) and polls for interrupts once per sift (`poll`), so the
-    /// work between 2 polls is O(log n); a std sort has no poll. `Err` on termination. A poll
-    /// allocates nothing, so this is not a GC point.
-    fn sort_polled(cx: &mut Cx, v: &mut [(u32, u32)]) -> Res<()> {
-        fn sift_down(v: &mut [(u32, u32)], mut root: usize, end: usize) {
-            loop {
-                let mut child = 2 * root + 1;
-                if child >= end {
-                    return;
-                }
-                if child + 1 < end && v[child] < v[child + 1] {
-                    child += 1;
-                }
-                if v[root] >= v[child] {
-                    return;
-                }
-                v.swap(root, child);
-                root = child;
-            }
-        }
-        let n = v.len();
-        for root in (0..n / 2).rev() {
-            poll(cx)?;
-            sift_down(v, root, n);
-        }
-        for end in (1..n).rev() {
-            poll(cx)?;
-            v.swap(0, end);
-            sift_down(v, 0, end);
-        }
-        Ok(())
-    }
-
     // 10. If trapResult contains any duplicate entries, throw a TypeError exception.
     //     The keys are interned strings and symbols, so equal keys have equal bits. Sort the
     //     (content hash, index) pairs (`string::hash`, `symbol::hash`; no address goes into
@@ -1188,38 +1101,15 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     //     Inside a run, compare the keys by bits as an equality test only. Every step of
     //     this pass polls for interrupts (`poll`: no allocation), so it is not a GC point
     //     from the end of the loop to the check.
-    let mut by_hash: Vec<(u32, u32)> = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        poll(cx)?;
-        by_hash.push((key_hash(key_at(keys, i)), i));
-    }
-    sort_polled(cx, &mut by_hash)?;
-    let mut duplicate = false;
-    'scan: for run in by_hash.chunk_by(|a, b| a.0 == b.0) {
-        for (n, &(_, i)) in run.iter().enumerate() {
-            poll(cx)?;
-            let k = key_at(keys, i);
-            if run[n + 1..].iter().any(|&(_, j)| key_at(keys, j) == k) {
-                duplicate = true;
-                break 'scan;
-            }
-        }
-    }
-    if duplicate {
+    //     The same sorted pairs are uncheckedResultKeys of steps 19-24 (`keys` holds the keys
+    //     across the GC points below).
+    let mut unchecked = UncheckedKeys::new(cx, keys, len)?;
+    if unchecked.has_duplicate(cx)? {
         return Err(invariant(
             cx,
             &[Text("'ownKeys' on proxy: trap returned duplicate entries")],
         ));
     }
-    // uncheckedResultKeys of steps 19-24: the sorted (content hash, index) pairs and a removed
-    // flag per pair (no address in a hash input or an order, H12-Q2). `keys` holds the keys
-    // across the GC points below.
-    let seen = UncheckedKeys {
-        keys,
-        removed: vec![false; by_hash.len()],
-        left: by_hash.len(),
-        by_hash,
-    };
     // 11. Let extensibleTarget be ? IsExtensible(target).
     let extensible = target_extensible(cx, t.target)?;
     // 12. Let targetKeys be ? target.[[OwnPropertyKeys]]().
@@ -1248,12 +1138,11 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
         return Ok(keys);
     }
     // 19-21. Every non-configurable key must be in the trap result (removed as it is found).
-    let mut unchecked = seen;
     let target_key = |j: u32| object::array_get(target_keys, j).unwrap_or(UNDEFINED);
     for &j in &nonconfigurable {
         poll(cx)?;
         let k = target_key(j);
-        if !unchecked.remove(&k) {
+        if !unchecked.remove(cx, k)? {
             return Err(invariant(
                 cx,
                 &[
@@ -1272,7 +1161,7 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     for &j in &configurable {
         poll(cx)?;
         let k = target_key(j);
-        if !unchecked.remove(&k) {
+        if !unchecked.remove(cx, k)? {
             return Err(invariant(
                 cx,
                 &[
@@ -1295,6 +1184,147 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     // 25. Return trapResult.
     std::hint::black_box(target_keys);
     Ok(keys)
+}
+
+/// Element `i` of the dense key array `keys` that `own_property_keys` made. Not a GC point.
+fn key_at(keys: u64, i: u32) -> u64 {
+    object::array_get(keys, i).expect("a key at each index below len")
+}
+
+/// The content hash of the interned key `k` (`symbol::hash` or `string::hash`), never an
+/// address (H12-Q2). `k` is a string or a symbol. Not a GC point.
+fn key_hash(k: u64) -> u32 {
+    if is_symbol(k) {
+        crate::symbol::hash(k)
+    } else {
+        crate::string::hash(k)
+    }
+}
+
+/// uncheckedResultKeys of `own_property_keys` steps 19-24 (§10.5.11): the trap result's
+/// (content hash, index) pairs sorted by (hash, index), and a removed flag per pair. A lookup
+/// finds the run of the key's hash by a binary search, then compares the keys by bits as an
+/// equality test only, so no address goes into a hash input or an order (H12-Q2). The step 10
+/// duplicate check uses the same pairs. Every loop polls for interrupts (`poll`: no
+/// allocation), so no method is a GC point.
+struct UncheckedKeys {
+    /// The dense key array (the trap result; a Rust local of the caller roots it).
+    keys: u64,
+    by_hash: Vec<(u32, u32)>,
+    removed: Vec<bool>,
+    /// The number of pairs not removed.
+    left: usize,
+}
+
+impl UncheckedKeys {
+    /// The sorted pairs of the first `len` keys of `keys` (interned strings and symbols).
+    /// `Err` on termination.
+    fn new(cx: &mut Cx, keys: u64, len: u32) -> Res<Self> {
+        let mut by_hash: Vec<(u32, u32)> = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            poll(cx)?;
+            by_hash.push((key_hash(key_at(keys, i)), i));
+        }
+        sort_polled(cx, &mut by_hash)?;
+        Ok(UncheckedKeys {
+            keys,
+            removed: vec![false; by_hash.len()],
+            left: by_hash.len(),
+            by_hash,
+        })
+    }
+
+    /// Step 10: true if 2 pairs hold equal keys. Equal keys are in one equal-hash run. The
+    /// scan polls once per pair and once per comparison inside a run, so one repeated key (one
+    /// run of every pair) does not scan the run without a poll. `Err` on termination.
+    fn has_duplicate(&self, cx: &mut Cx) -> Res<bool> {
+        for (n, &(h, i)) in self.by_hash.iter().enumerate() {
+            poll(cx)?;
+            let k = key_at(self.keys, i);
+            for &(x, j) in &self.by_hash[n + 1..] {
+                if x != h {
+                    break;
+                }
+                poll(cx)?;
+                if key_at(self.keys, j) == k {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Removes the interned key `k`: true if it was in the set and not removed before. A
+    /// value that is not a string or a symbol (a target key list entry that the dense read
+    /// did not find gives UNDEFINED) is in no trap result: false, so the caller throws its
+    /// TypeError (the base `HashSet` lookup gave false too). The scan of the equal-hash run
+    /// polls once per pair. `Err` on termination.
+    fn remove(&mut self, cx: &mut Cx, k: u64) -> Res<bool> {
+        if !is_string(k) && !is_symbol(k) {
+            return Ok(false);
+        }
+        let h = key_hash(k);
+        let start = self.by_hash.partition_point(|&(x, _)| x < h);
+        for n in start..self.by_hash.len() {
+            let (x, i) = self.by_hash[n];
+            if x != h {
+                break;
+            }
+            poll(cx)?;
+            if !self.removed[n] && key_at(self.keys, i) == k {
+                self.removed[n] = true;
+                self.left -= 1;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// True when every key is removed.
+    fn is_empty(&self) -> bool {
+        self.left == 0
+    }
+}
+
+/// Tests: [`UncheckedKeys::remove`] of `k` from the uncheckedResultKeys of the dense key array
+/// `keys` (interned strings and symbols). Not a GC point.
+#[cfg(test)]
+pub(crate) fn unchecked_keys_remove(cx: &mut Cx, keys: u64, k: u64) -> Res<bool> {
+    let mut unchecked = UncheckedKeys::new(cx, keys, object::array_len(keys))?;
+    unchecked.remove(cx, k)
+}
+
+/// Sorts `v` in place (a heapsort) and polls for interrupts once per sift (`poll`), so the
+/// work between 2 polls is O(log n); a std sort has no poll. `Err` on termination. A poll
+/// allocates nothing, so this is not a GC point.
+fn sort_polled(cx: &mut Cx, v: &mut [(u32, u32)]) -> Res<()> {
+    fn sift_down(v: &mut [(u32, u32)], mut root: usize, end: usize) {
+        loop {
+            let mut child = 2 * root + 1;
+            if child >= end {
+                return;
+            }
+            if child + 1 < end && v[child] < v[child + 1] {
+                child += 1;
+            }
+            if v[root] >= v[child] {
+                return;
+            }
+            v.swap(root, child);
+            root = child;
+        }
+    }
+    let n = v.len();
+    for root in (0..n / 2).rev() {
+        poll(cx)?;
+        sift_down(v, root, n);
+    }
+    for end in (1..n).rev() {
+        poll(cx)?;
+        v.swap(0, end);
+        sift_down(v, 0, end);
+    }
+    Ok(())
 }
 
 /// CreateArrayFromList(args) (§7.3.18): a new array of `args` (rooted by the caller: the VM

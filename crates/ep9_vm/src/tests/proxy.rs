@@ -1456,3 +1456,145 @@ fn own_keys_keeps_apart_different_keys_with_one_hash() {
         });
     }
 }
+
+// ---- the ownKeys removal and run scan (M10-P0 HASH-SEED, Codex r2 F1, F2) -------------------
+
+/// Codex r2 F1: steps 19-23 can give `remove` a target key that is not a string or a symbol
+/// (a target key list past the dense limit reads as UNDEFINED). `remove` returns false for it
+/// (the caller then throws the step 21 or 23 TypeError, as the base `HashSet` lookup did), and
+/// does not hash it (`string::hash` of a non-cell panics). The real keys are still found once.
+#[test]
+fn own_keys_unchecked_remove_of_a_value_that_is_not_a_key_is_false() {
+    with_cx(false, |cx, rt| {
+        let (a, b) = (atom(rt, "a"), atom(rt, "b"));
+        let sym = cx.new_symbol(Local::undefined()).unwrap();
+        let list = cx.new_array();
+        for (n, k) in [a, b, sym.bits()].into_iter().enumerate() {
+            cx.set(
+                list,
+                n.to_string().as_str(),
+                Local::<'_, crate::JsValue>::from_bits(k),
+                true,
+            )
+            .unwrap();
+        }
+        let keys = list.bits();
+        for v in [
+            crate::frame::UNDEFINED,
+            NULL,
+            Local::int32(5).bits(),
+            Local::boolean(true).bits(),
+        ] {
+            assert_eq!(
+                proxy::unchecked_keys_remove(cx.inner(), keys, v),
+                Ok(false),
+                "{v:#x}"
+            );
+        }
+        for k in [a, b, sym.bits()] {
+            assert_eq!(proxy::unchecked_keys_remove(cx.inner(), keys, k), Ok(true));
+        }
+        assert_eq!(
+            proxy::unchecked_keys_remove(cx.inner(), keys, atom(rt, "c")),
+            Ok(false)
+        );
+    });
+}
+
+/// The length of the trap result of [`one_key_run_trap`]: every element is "a".
+const RUN_LEN: u32 = 256;
+
+std::thread_local! {
+    /// The interrupt budget that [`terminate_after_budget_a`] sets.
+    static RUN_BUDGET: core::cell::Cell<i64> = const { core::cell::Cell::new(1) };
+}
+
+/// A getter: counts the call, requests a termination and sets the interrupt budget to
+/// `RUN_BUDGET`, so poll number `RUN_BUDGET` after this call stops the isolate. Returns "a".
+fn terminate_after_budget_a<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    let a = cx.new_string("a")?.value();
+    let inner = cx.inner();
+    inner.rt().terminate.fetch_or(
+        crate::interp::interrupt::TERMINATE,
+        std::sync::atomic::Ordering::Release,
+    );
+    inner.budget = RUN_BUDGET.with(core::cell::Cell::get);
+    Ok(a)
+}
+
+/// An `ownKeys` trap: the array-like `{length: RUN_LEN, 0: "a", ..., get [RUN_LEN - 1]() {...}}`
+/// (one repeated key: one equal-hash run of every pair), whose last getter is
+/// `handler.getter`.
+fn one_key_run_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let getter = cx.get_v(this, "getter")?;
+    let o = cx.new_object();
+    cx.set(o, "length", Local::int32(RUN_LEN as i32), true)?;
+    for i in 0..RUN_LEN - 1 {
+        let s = cx.new_string("a")?;
+        cx.set(o, i.to_string().as_str(), s, true)?;
+    }
+    let desc = PropertyDescriptor {
+        get: Some(getter),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    cx.define_property_or_throw(o, (RUN_LEN - 1).to_string().as_str(), desc)?;
+    Ok(o.value())
+}
+
+/// Codex r2 F2: the termination request comes after the sort, inside the step 10 run scan.
+/// After the last getter, the pass polls `RUN_LEN` times (the hashes), then `RUN_LEN / 2` and
+/// `RUN_LEN - 1` times (the heapsort): `before` polls. The scan of the one run polls once for
+/// the first pair and once for its first comparison, which finds the duplicate. So a budget of
+/// `before + 1` or `before + 2` stops `[[OwnPropertyKeys]]` with the termination, and a budget
+/// of `before + 3` gives the duplicate TypeError (this pins `before`, so the termination comes
+/// from the scan, not from an earlier poll). With and without GC stress.
+#[test]
+fn own_keys_run_scan_stops_on_a_termination_after_the_sort() {
+    let before = i64::from(RUN_LEN + RUN_LEN / 2 + (RUN_LEN - 1));
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            for (budget, stops) in [(before + 1, true), (before + 2, true), (before + 3, false)] {
+                let target = cx.new_object();
+                let h = handler_of(cx, rt, &["ownKeys"], one_key_run_trap);
+                let g = host_fn(rt, terminate_after_budget_a, "get last");
+                cx.set(h, "getter", g, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                GETTER_CALLS.with(|c| c.set(0));
+                RUN_BUDGET.with(|c| c.set(budget));
+                let failed = cx.own_property_keys(p).is_err();
+                let terminating = rt.terminating.get();
+                // Clear the request before the asserts, so a failure does not stop the next run.
+                rt.terminating.set(false);
+                rt.terminate.fetch_and(
+                    !crate::interp::interrupt::TERMINATE,
+                    std::sync::atomic::Ordering::AcqRel,
+                );
+                assert_eq!(GETTER_CALLS.with(core::cell::Cell::get), 1);
+                assert!(failed, "budget {budget}: the keys came back");
+                assert_eq!(terminating, stops, "budget {budget}: termination");
+                if stops {
+                    assert_eq!(
+                        rt.take_pending(),
+                        crate::frame::UNDEFINED,
+                        "budget {budget}"
+                    );
+                } else {
+                    assert_eq!(take_error(cx, rt), DUPLICATE, "budget {budget}");
+                }
+            }
+        });
+    }
+}
