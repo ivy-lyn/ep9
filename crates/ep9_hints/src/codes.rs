@@ -84,6 +84,30 @@ code_list! {
         ThisExpression = 17,
         /// One declarator of a `var`, `let` or `const`.
         VariableDeclarator = 18,
+        /// `a + b` and the other binary operators.
+        BinaryExpression = 19,
+        /// `a && b`, `a || b`, `a ?? b`.
+        LogicalExpression = 20,
+        /// `a = b` and the compound assignments.
+        AssignmentExpression = 21,
+        /// `-a`, `!a`, `typeof a` and the other unary operators.
+        UnaryExpression = 22,
+        /// `a++`, `--a`.
+        UpdateExpression = 23,
+        /// `c ? a : b`.
+        ConditionalExpression = 24,
+        /// A number literal.
+        NumericLiteral = 25,
+        /// A string literal.
+        StringLiteral = 26,
+        /// `` `...${e}...` ``.
+        TemplateLiteral = 27,
+        /// `await e`.
+        AwaitExpression = 28,
+        /// `e as T`.
+        TSAsExpression = 29,
+        /// `e!`.
+        TSNonNullExpression = 30,
     }
 }
 

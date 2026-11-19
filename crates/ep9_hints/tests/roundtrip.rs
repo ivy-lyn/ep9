@@ -222,6 +222,18 @@ fn code_lists_are_append_only() {
             (16, "ArrayExpression"),
             (17, "ThisExpression"),
             (18, "VariableDeclarator"),
+            (19, "BinaryExpression"),
+            (20, "LogicalExpression"),
+            (21, "AssignmentExpression"),
+            (22, "UnaryExpression"),
+            (23, "UpdateExpression"),
+            (24, "ConditionalExpression"),
+            (25, "NumericLiteral"),
+            (26, "StringLiteral"),
+            (27, "TemplateLiteral"),
+            (28, "AwaitExpression"),
+            (29, "TSAsExpression"),
+            (30, "TSNonNullExpression"),
         ]
     );
     let reprs: Vec<(u8, &str)> = Repr::ALL.iter().map(|r| (r.code(), r.name())).collect();
@@ -245,13 +257,58 @@ fn code_lists_are_append_only() {
     for code in 0..=u16::MAX {
         assert_eq!(
             NodeKind::from_code(code).map(|k| k.code()),
-            (1..=18).contains(&code).then_some(code)
+            (1..=30).contains(&code).then_some(code)
         );
     }
     for code in 0..=u8::MAX {
         assert_eq!(
             Repr::from_code(code).map(|r| r.code()),
             (code <= 11).then_some(code)
+        );
+    }
+}
+
+#[test]
+fn r13_core_kinds_have_a_code() {
+    // The A1h gate counts the R13 core node kinds (H37:11; `CORE` in
+    // docs/research/artifacts/tsrs-type-oracle/scripts/join.py). The key holds the kind (S1),
+    // so each core kind needs a code. oxc's `FunctionExpression` is `Function` here.
+    let core = [
+        "IdentifierReference",
+        "StaticMemberExpression",
+        "ComputedMemberExpression",
+        "PrivateFieldExpression",
+        "CallExpression",
+        "NewExpression",
+        "BinaryExpression",
+        "LogicalExpression",
+        "AssignmentExpression",
+        "UnaryExpression",
+        "UpdateExpression",
+        "ThisExpression",
+        "ConditionalExpression",
+        "ArrayExpression",
+        "ObjectExpression",
+        "NumericLiteral",
+        "StringLiteral",
+        "TemplateLiteral",
+        "ArrowFunctionExpression",
+        "FunctionExpression",
+        "AwaitExpression",
+        "TSAsExpression",
+        "TSNonNullExpression",
+        "ParenthesizedExpression",
+    ];
+    assert_eq!(core.len(), 24);
+    for n in core {
+        let n = if n == "FunctionExpression" {
+            "Function"
+        } else {
+            n
+        };
+        assert!(
+            NodeKind::ALL.iter().any(|k| k.name() == n),
+            "core kind {n} has no code"
         );
     }
 }

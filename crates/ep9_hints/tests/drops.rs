@@ -274,7 +274,7 @@ fn bad_record() {
         ("kind 0", Box::new(|b| put_u16(b, rec(0, o::REC_KIND), 0))),
         (
             "kind unknown",
-            Box::new(|b| put_u16(b, rec(0, o::REC_KIND), 19)),
+            Box::new(|b| put_u16(b, rec(0, o::REC_KIND), 31)),
         ),
         ("repr unknown", Box::new(|b| b[rec(0, o::REC_REPR)] = 12)),
         (
