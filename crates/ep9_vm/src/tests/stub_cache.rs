@@ -1190,3 +1190,119 @@ fn a_string_symbol_or_bigint_at_a_megamorphic_site_never_probes() {
         t.release_all(kept);
     });
 }
+
+// ---- two names of one shape in one entry (M10 LEVER-12 Codex nm-r2 F2) ------------------------
+
+/// Two names (atoms of `t`, rooted by the handles) whose load entries for ShapeId `id` are the
+/// same entry (`stub_cache::index_of`). The index comes from the atom's address and the
+/// ShapeId, so a search finds them in each isolate (about 114 names on average for 8192
+/// entries). Each name the search makes stays rooted until the end of the search, so a freed
+/// atom's address cannot come back as a second name with the same bits.
+fn two_names_in_one_entry(t: &T, id: u32) -> ([String; 2], [GlobalHandle; 2]) {
+    let mut seen: std::collections::HashMap<usize, (String, GlobalHandle)> = Default::default();
+    for i in 0..100_000 {
+        let n = format!("c{i}");
+        let k = key(t.rt(), &n);
+        let h = t.keep(k);
+        let at = stub_cache::index_of(Op::Load, id, k);
+        if let Some((n0, h0)) = seen.remove(&at) {
+            for (_, (_, hx)) in seen.drain() {
+                t.release(hx);
+            }
+            let (k0, k1) = (key(t.rt(), &n0), key(t.rt(), &n));
+            assert_ne!(k0, k1);
+            assert_eq!(stub_cache::index_of(Op::Load, id, k0), at);
+            return ([n0, n], [h0, h]);
+        }
+        seen.insert(at, (n, h));
+    }
+    panic!("no two names in one entry");
+}
+
+/// Functions `f0(a)`: `return a.<n0>` and `f1(a)`: `return a.<n1>`, one-byte GetNamedProperty
+/// sites.
+fn two_name_sites(names: &[String; 2]) -> ep9_bytecode::VerifiedUnit {
+    let mut s = Asm::script(0);
+    for i in 0..2 {
+        let k = s.b.function_constant(ep9_bytecode::FunctionId(i + 1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(&format!("f{i}"));
+    }
+    s.b.lda_undefined().return_();
+    let mut fns = vec![s.finish()];
+    for (i, n) in names.iter().enumerate() {
+        let mut b = ep9_bytecode::FunctionBuilder::new(meta(&format!("f{i}"), 2, 0, 0, 0));
+        let a = b.parameter(0);
+        let slot = b.feedback_slot(ep9_bytecode::FeedbackSlotKind::LoadNamed);
+        let k = b.string_constant(n.as_str());
+        b.get_named_property(a, k, slot).return_();
+        fns.push(b.finish().unwrap());
+    }
+    unit("", fns)
+}
+
+/// Codex nm-r2 F2: two names of one receiver shape whose entries are the same stub cache
+/// entry. The entry holds the first name's case; a one-byte load of the second name at a
+/// megamorphic site must miss the fast probe (`stub_cache::probe_at` compares the name) and
+/// give its own value, never the first name's (both are fields of the prototype, so a hit
+/// with the wrong entry reads the other field). Then the entry holds the second name.
+#[test]
+fn a_second_name_in_the_same_stub_cache_entry_misses_the_fast_probe() {
+    each(|c| {
+        let every = c.heap.gc_stress;
+        let stress = every != 0;
+        let mut t = T { iso: isolate(c) };
+        let op = object_prototype(t.rt());
+        let p = object_with(t.rt(), op, &[("p", int(0))]);
+        let r = object_with(t.rt(), p, &[("own", int(0))]);
+        let kept_r = t.keep(r);
+        let rid = id(r);
+        // The search makes about 114 atoms: no GC stress there; the loads below have it.
+        t.rt().heap.set_gc_stress(0);
+        let (names, kept_k) = two_names_in_one_entry(&t, rid);
+        t.rt().heap.set_gc_stress(every);
+        props::own_define(t.rt(), p, key(t.rt(), &names[0]), int(1), attr::DEFAULT);
+        props::own_define(t.rt(), p, key(t.rt(), &names[1]), int(2), attr::DEFAULT);
+        assert_eq!(id(r), rid);
+        let u = two_name_sites(&names);
+        t.iso
+            .with_cx_checkpoint(|cx| cx.run_script(u, "two-names.js").map(|_| ()))
+            .unwrap();
+        // Both sites megamorphic (five other shapes, a missing name each).
+        let pads = ["a", "b", "c", "d", "e"];
+        let objs: [u64; 5] =
+            core::array::from_fn(|i| object_with(t.rt(), op, &[(pads[i], int(0))]));
+        let kept = t.keep_all(&objs);
+        for i in 0..2 {
+            for &o in &objs {
+                assert_eq!(t.ok(i, o, UNDEFINED), UNDEFINED);
+            }
+            assert_eq!(ic::state(t.vector(i), SLOT), State::Megamorphic);
+        }
+        // The first name: its entry is filled, then a fast-body hit.
+        assert_eq!(t.ok(0, r, UNDEFINED), int(1));
+        let f = fast_hits();
+        assert_eq!(t.ok(0, r, UNDEFINED), int(1));
+        if !stress {
+            assert_eq!(fast_hits(), f + 1);
+            assert!(entry(&t, Op::Load, r, &names[0]).is_some());
+            assert!(entry(&t, Op::Load, r, &names[1]).is_none());
+        }
+        // The second name, same shape, same entry: a fast-probe miss and its own value.
+        let f = fast_hits();
+        assert_eq!(t.ok(1, r, UNDEFINED), int(2));
+        assert_eq!(fast_hits(), f);
+        // Now the entry holds the second name: a hit for it, a miss for the first.
+        let f = fast_hits();
+        assert_eq!(t.ok(1, r, UNDEFINED), int(2));
+        if !stress {
+            assert_eq!(fast_hits(), f + 1);
+        }
+        let f = fast_hits();
+        assert_eq!(t.ok(0, r, UNDEFINED), int(1));
+        assert_eq!(fast_hits(), f);
+        t.release_all(kept);
+        t.release_all(kept_k.into());
+        t.release(kept_r);
+    });
+}
