@@ -80,10 +80,10 @@
 //! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else
 //! `MARGINAL: NO AGREEMENT` (also when a leg of a pair is not a valid run: a fresh full commit,
 //! the same commit on every leg, a clean binary, at least 31 rounds and the load guard passed
-//! in each build; and when a leg of either compare was not read or has no CPU model, as the
-//! same-model pairs are then not known). With a complete read and no same-model pair (or no
-//! `--linux-pathb`), the cell keeps the form above: the windows compare against the Linux
-//! thresholds, and its text names the CPU models.
+//! in each build; and when a leg of either compare was not read, has no CPU model, or is missing
+//! or given twice (each compare holds its 4 or 2 matrix legs once): the pairs are then not known).
+//! With a complete read and no same-model pair (or no `--linux-pathb`), the cell keeps the form
+//! above: the windows compare against the Linux thresholds, and its text names the CPU models.
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
 //! HEAD, or an ancestor with no change in the paths it measures since, and says that its tree
@@ -2372,6 +2372,10 @@ fn cross_side(pairs: &[(Span, Span)]) -> Option<bool> {
     }
 }
 
+/// The pathb legs of the exit-inputs matrix (ci.yml): pathb-w1..w4 and pathb-l1, pathb-l2. The
+/// same-model pairs are known only when each compare holds each of them once (EI2 Codex r2 F1).
+const MATRIX_LEGS: [(&str, usize); 2] = [("win32-x64", 4), ("linux-x64", 2)];
+
 /// The win-x64 same-CPU-model form of the readings `ids` of `builds` (V15-D16, see the module
 /// doc): the form and the evidence text. Err (the reason) when there is no same-model pair:
 /// the caller then reads the Path B form.
@@ -2402,6 +2406,32 @@ fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, Strin
         ));
     }
     let (win, lin) = (compare_legs(wj, "win32-x64"), compare_legs(lj, "linux-x64"));
+    // A leg that the reader did not give (no runners row) or gave twice is in neither check
+    // above: each compare must hold each matrix leg once (EI2 Codex r2 F1).
+    let short: Vec<String> = [(&win, MATRIX_LEGS[0]), (&lin, MATRIX_LEGS[1])]
+        .into_iter()
+        .filter_map(|(legs, (p, n))| {
+            let names: BTreeSet<&str> = legs.iter().map(|l| leg_name(l)).collect();
+            (legs.len() != n || names.len() != n).then(|| {
+                format!(
+                    "{p}: {} legs, {} names, {n} needed",
+                    legs.len(),
+                    names.len()
+                )
+            })
+        })
+        .collect();
+    if !short.is_empty() {
+        return Ok((
+            HostForm::NoAgreement,
+            format!(
+                "Windows / Linux x64 same-CPU-model form (V15-D16; {} and {}): the compares do not hold each pathb leg of the matrix once ({}), so the same-model pairs are not known; run the dispatch again",
+                wp.display(),
+                lp.display(),
+                short.join("; ")
+            ),
+        ));
+    }
     let pairs: Vec<(&Json, &Json)> = win
         .iter()
         .flat_map(|w| {
@@ -4401,6 +4431,42 @@ mod tests {
                 "{ev}"
             );
             assert!(!ev.contains("keeps the Path B form"), "{ev}");
+        }
+    }
+
+    /// EI2 Codex r2 F1: a matrix leg that the reader did not give (no runners row, so no read
+    /// error) or gave twice makes the same-model pairs not known: NO AGREEMENT, not the AGREE
+    /// above of the legs that are present, and not the Path B fallback.
+    #[test]
+    fn windows_cross_form_with_a_leg_omitted_reads_no_agreement() {
+        let r = repo("pathb-cross-omitted");
+        let unread = fixture("pathb-gha-linux-unread.json").replace(SHA, &r.head);
+        let l2 = ",\n  {\n   \"leg\": \"l2\",\n   \"cpu\": null,\n   \"platform\": null,\n   \"error\": \"no run-jit.json\"\n  }";
+        assert!(unread.contains(l2));
+        write(&r.root, "inputs/lin-omitted.json", &unread.replace(l2, ""));
+        let lin = fixture("pathb-gha-linux.json").replace(SHA, &r.head);
+        assert!(lin.contains("\"leg\": \"l2\""));
+        let twice = lin.replace("\"leg\": \"l2\"", "\"leg\": \"l1\"");
+        write(&r.root, "inputs/lin-twice.json", &twice);
+        for (f, want) in [
+            ("lin-omitted.json", "(linux-x64: 1 legs, 1 names, 2 needed)"),
+            ("lin-twice.json", "(linux-x64: 2 legs, 1 names, 2 needed)"),
+        ] {
+            let o = Options {
+                linux_pathb: Some(r.root.join("inputs").join(f)),
+                ..win_cross(&r, "pathb-gha-linux.json")
+            };
+            let rep = run(&o).unwrap();
+            for i in SPEED {
+                let ev = &rep.cells[i].evidence;
+                assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{f}: {ev}");
+                assert!(
+                    ev.contains("the compares do not hold each pathb leg of the matrix once")
+                        && ev.contains(want),
+                    "{f}: {ev}"
+                );
+                assert!(!ev.contains("keeps the Path B form"), "{f}: {ev}");
+            }
         }
     }
 
