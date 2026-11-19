@@ -2,10 +2,10 @@
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
 # the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
 # 70 tests: 11 month-2, 10 M3-P1, 22 M3-P2, 1 M3-P3, 7 M4-P3, 2 B0, 2 M7-P2, 4 INTL W2,
-# 1 INTL W3, 3 INTL W4, 1 TA sync 1, 3 TA-3 and 3 TA-4 tests. 7 of them also fail without
+# 1 INTL W3, 3 INTL W4, 1 TA sync 1, 3 TA-3 and 3 TA-4 tests. 6 of them also fail without
 # GC-stress and are listed in every expectations/test262.<triple>.jit.txt: the 5 month-2 tco-*
-# tests, the M3-P1 test two-digit-years.js and the INTL W4 test
-# compare-to-temporal-lunisolar.js. Since M7-P2 (the
+# tests and the M3-P1 test two-digit-years.js. Since INTL W5 (9de60b06) the INTL W4 test
+# compare-to-temporal-lunisolar.js passes without GC-stress (W5 took it out). Since M7-P2 (the
 # lone-surrogate shim, H05-Q3) the 8 shim tests pass without GC-stress (S7.4_A5.js, S7.4_A6.js
 # and the 6 M4-P3 tests below; M7-P2 fixer r2b took them out of the jit files, from CI
 # 42331111457), and ownkeys-linear.js passes too. Since INTL W4 (Intl.DateTimeFormat) the 2
@@ -165,8 +165,8 @@
 #   find calls and the assert message strings), not from the W4 code, and no W4 change can
 #   bring the test under the timeout;
 # - DateTimeFormat/prototype/formatToParts/compare-to-temporal-lunisolar.js: both runs past
-#   the 60 s timeout on windows-x64 only. It fails without GC-stress (Test262Error: the
-#   hebrew year "I 5809" is not numeric) and stays in every jit file. Alone under GC-stress
+#   the 60 s timeout on windows-x64 only. It passes without GC-stress since INTL W5 (before, the
+#   hebrew year "I 5809" was not numeric; now it is in no jit file). Alone under GC-stress
 #   48.1 s (about 24 s per run);
 # - fallback-locales-are-supported.js: both runs past the 60 s timeout on windows-x64 only. It
 #   passes without GC-stress (0.3 s). Alone under GC-stress 34.4 s (about 17 s per run).
