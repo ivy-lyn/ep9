@@ -1598,3 +1598,163 @@ fn own_keys_run_scan_stops_on_a_termination_after_the_sort() {
         });
     }
 }
+
+// ---- the target key list past the dense limit (M10-P1 HASH-SEED-2, PROXY-KEYLIST-PANIC) ----
+
+/// PROXY-KEYLIST-PANIC: `proxy::key_list_get` reads a key list that is DICTIONARY. A store at
+/// `arr::MAX_LENGTH` moves the list to DICTIONARY. Its keys at a low index and at the high
+/// index read back, where the dense-only `object::array_get` (the old read of steps 14-23)
+/// gives `None`. With and without GC stress.
+#[test]
+fn the_key_list_read_takes_a_dictionary_list() {
+    for stress in [false, true] {
+        with_cx(stress, |_cx, rt| {
+            let (a, b, c) = (atom(rt, "a"), atom(rt, "b"), atom(rt, "c"));
+            let list = object::new_array(rt, 0);
+            assert!(object::array_set(rt, list, 0, a));
+            assert!(object::array_set(rt, list, 1, b));
+            assert_eq!(proxy::key_list_get(list, 1), b, "a dense list");
+            let high = object::arr::MAX_LENGTH;
+            assert!(object::array_set(rt, list, high, c));
+            assert!(
+                crate::elements::dict_of(list).is_some(),
+                "a DICTIONARY list"
+            );
+            assert_eq!(object::array_len(list), high + 1);
+            for (j, k) in [(0, a), (1, b), (high, c)] {
+                assert_eq!(
+                    object::array_get(list, j),
+                    None,
+                    "the dense-only read at {j}"
+                );
+                assert_eq!(proxy::key_list_get(list, j), k, "index {j}");
+            }
+        });
+    }
+}
+
+/// `[[OwnPropertyKeys]]` of a proxy for `target` whose `ownKeys` trap returns new strings
+/// `names`: the keys as Rust text, or the error as "Name: message".
+fn trap_keys<'s>(
+    cx: &mut Cx<'s>,
+    rt: &Runtime,
+    target: Local<'s, JsObject>,
+    names: &[&str],
+) -> Result<Vec<String>, String> {
+    let list = cx.new_array();
+    for (i, name) in names.iter().enumerate() {
+        let s = cx.new_string(name).unwrap();
+        cx.set(list, i.to_string().as_str(), s, true).unwrap();
+    }
+    let h = handler_of(cx, rt, &["ownKeys"], list_trap);
+    cx.set(h, "list", list, true).unwrap();
+    let p = cx.proxy_create(target, h).unwrap();
+    match cx.own_property_keys(p) {
+        Ok(keys) => Ok(key_texts(cx, keys.into())),
+        Err(_) => Err(take_error(cx, rt)),
+    }
+}
+
+/// Steps 14-24 read the target keys through `key_list_get` and give the results and the
+/// TypeError texts of before (node v26.13.1 is the oracle). The target has "x"
+/// (non-configurable) and "y". Extensible: extra keys and a missing "y" pass, a missing "x"
+/// throws (step 21). Non-extensible: only the same keys pass (steps 21, 23, 24). With and
+/// without GC stress (and the check runs with and without `EP9_HASH_SEED`).
+#[test]
+fn own_keys_target_checks_keep_their_results_and_texts() {
+    let missing = "TypeError: 'ownKeys' on proxy: trap result did not include ";
+    let extra = "TypeError: 'ownKeys' on proxy: trap returned extra keys but proxy target is \
+                 non-extensible";
+    let ok = |v: &[&str]| Ok(v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+    let cases = [
+        (true, &["y", "x", "z"][..], ok(&["y", "x", "z"])),
+        (true, &["y"][..], Err(format!("{missing}'x'"))),
+        (true, &["x"][..], ok(&["x"])),
+        (false, &["y", "x"][..], ok(&["y", "x"])),
+        (false, &["y"][..], Err(format!("{missing}'x'"))),
+        (false, &["x"][..], Err(format!("{missing}'y'"))),
+        (false, &["x", "y", "z"][..], Err(extra.to_owned())),
+    ];
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            for (extensible, names, want) in &cases {
+                let target = cx.new_object();
+                let x = PropertyDescriptor::data(Local::int32(1), true, true, false);
+                cx.define_property_or_throw(target, "x", x).unwrap();
+                cx.set(target, "y", Local::int32(2), true).unwrap();
+                if !extensible {
+                    assert!(cx.prevent_extensions(target).unwrap());
+                }
+                let got = trap_keys(cx, rt, target, names);
+                assert_eq!(&got, want, "extensible {extensible}, {names:?}");
+            }
+        });
+    }
+}
+
+/// Sets the 9 named properties "p0" .. "p8" of `o`.
+fn nine_named<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>) {
+    for i in 0..9 {
+        cx.set(o, format!("p{i}").as_str(), Local::int32(i), true)
+            .unwrap();
+    }
+}
+
+/// PROXY-KEYLIST-PANIC end to end: a target with more than `arr::MAX_LENGTH` = 2^26 keys gives
+/// a DICTIONARY target key list. The targets are `new Uint8Array(2**26 + 1)` (configurable
+/// keys, extensible: steps 14-18) and `new String("a".repeat(2**26))` (2^26 + 1 keys with
+/// "length", non-configurable: steps 19-21), each with 9 named properties (more than 8 own
+/// properties: an indexed table, so a lookup hashes the key, `props_index::find_indexed`).
+/// The `ownKeys` trap returns []. Before the fix each key read as undefined: its lookup
+/// hashed undefined and panicked (a release panic). Not in CI: a peak RSS of about 15 GiB
+/// (M10-P1, aarch64 release, 51 s). Run: `cargo test -p ep9_vm --lib --release -- --ignored
+/// own_keys_takes_a_target_key_list_past_the_dense_limit`.
+#[test]
+#[ignore = "a peak RSS of about 15 GiB; run with --ignored --release"]
+fn own_keys_takes_a_target_key_list_past_the_dense_limit() {
+    let n = u64::from(object::arr::MAX_LENGTH);
+    with_cx(false, |cx, rt| {
+        let null = Local::null();
+        let buf = cx.allocate_array_buffer(null, n + 1, None).unwrap();
+        let view = cx.new_typed_array(null, 1, buf, 0, None).unwrap();
+        nine_named(cx, view);
+        assert_eq!(trap_keys(cx, rt, view, &[]), Ok(Vec::new()));
+        let text = cx.new_string(&"a".repeat(n as usize)).unwrap();
+        let wrapper = cx.to_object(text).unwrap();
+        nine_named(cx, wrapper);
+        let want = "TypeError: 'ownKeys' on proxy: trap result did not include '0'";
+        assert_eq!(trap_keys(cx, rt, wrapper, &[]), Err(want.to_owned()));
+    });
+}
+
+/// PROXY-KEYLIST-PANIC: the production reads of steps 14-23 go through `key_list_get`. A
+/// non-extensible target {x (non-configurable), y} with the trap result ["x", "y"] reads 4 target
+/// keys (steps 14-17: 2, steps 19-21: 1, step 23: 1). The same target, extensible, with
+/// ["y", "x"] reads 3 (steps 14-17: 2, steps 19-21: 1). If a read site goes back to the
+/// dense-only `object::array_get`, the count drops and the test fails. With and without GC
+/// stress (a collection at each `target_desc` GC point between the reads).
+#[test]
+fn own_keys_reads_each_target_key_through_the_key_list_read() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            for (extensible, names, reads) in [(false, ["x", "y"], 4), (true, ["y", "x"], 3)] {
+                let target = cx.new_object();
+                let x = PropertyDescriptor::data(Local::int32(1), true, true, false);
+                cx.define_property_or_throw(target, "x", x).unwrap();
+                cx.set(target, "y", Local::int32(2), true).unwrap();
+                if !extensible {
+                    assert!(cx.prevent_extensions(target).unwrap());
+                }
+                proxy::KEY_LIST_READS.with(|n| n.set(0));
+                let got = trap_keys(cx, rt, target, &names);
+                let want: Vec<String> = names.iter().map(|s| (*s).to_owned()).collect();
+                assert_eq!(got, Ok(want), "extensible {extensible}");
+                assert_eq!(
+                    proxy::KEY_LIST_READS.with(core::cell::Cell::get),
+                    reads,
+                    "the target key reads, extensible {extensible}"
+                );
+            }
+        });
+    }
+}
