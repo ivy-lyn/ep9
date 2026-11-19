@@ -17,7 +17,7 @@
 //! | # | Rule | Why |
 //! |---|---|---|
 //! | O1 | A register is *observable* if it is the receiver, a parameter or a named local (a binding, G1). Every write to it is emitted | the frame, the debugger and the arguments object read it |
-//! | O2 | Every load from a binding register (`Ldar` or `Mov` from a parameter or a named local) is emitted | H24 R4 "no binding folds": each read of a binding loads the binding |
+//! | O2 | Every `Mov` from a binding register (a parameter or a named local) is emitted. An `Ldar` from it is deferred (DEAD-LDAR): the accumulator joins the set of the binding and is not materialized. The `Ldar` is emitted before the next emitted instruction, a flush (O6), a handler-range start, an O7 or O8 materialization and the function end; it is dropped only when the next emitted instruction writes the accumulator and does not read it (`AccUse::Write`). An `Ldar` with a pending statement position is emitted (O9) | H24 R4 "no binding folds": each read of a binding reads the binding register (a load, or the register operand of the reading instruction); a load whose value nobody reads is dead (V8 `bytecode-register-optimizer.h` lazy accumulator) |
 //! | O3 | A transfer between the accumulator and temporaries is deferred: the destination joins the equivalence set of the source and is not materialized | BytecodeGen copies values to temporaries freely (G4) |
 //! | O4 | A register operand that is a temporary reads a materialized equivalent (never the accumulator). A call operand reads only a local, or a parameter or the receiver that the function never writes. A read of the accumulator, of a list, a pair or an in-out register materializes it | V8 `GetInputRegister`; lists and pairs must stay consecutive locals; JIT code passes call operands from frame slots, and a parameter's slot keeps its incoming value (Spike C `tier.rs`) |
 //! | O5 | Before a materialized register or the accumulator gets a new value, one other member of its set gets the value if no other member holds it and the member's value is not dead (a scan to its next write or release in the block) | no value is lost; this keeps the G4 hazard `a + (a = 1)` correct; a dead copy costs a `Mov` |
@@ -557,6 +557,11 @@ struct Replay<'b> {
     free: Vec<u32>,
     /// A position for the next emitted instruction of the function (builder rules).
     pending: Option<(u32, bool)>,
+    /// O2 (DEAD-LDAR): the binding of a deferred `Ldar`. It is valid while the accumulator is
+    /// not materialized and is in the set of the binding ([`Replay::emit_lazy`]).
+    lazy: Option<usize>,
+    /// Start labels of handler ranges (O2: a deferred `Ldar` is emitted before one).
+    starts: HashSet<Label>,
     /// Per key below `base`: the function writes this parameter or the receiver (O4).
     written: Vec<bool>,
     /// Labels that a jump, a jump table or a handler target uses (O6).
@@ -642,6 +647,8 @@ impl<'b> Replay<'b> {
             sets: Vec::new(),
             free: Vec::new(),
             pending: None,
+            lazy: None,
+            starts: handlers.iter().map(|h| h.start).collect(),
             used,
             handler_top,
             inner_at: HashMap::new(),
@@ -677,11 +684,14 @@ impl<'b> Replay<'b> {
                 Ev::Bind(l) => {
                     if self.used.contains(&l) {
                         self.flush();
+                    } else if self.starts.contains(&l) {
+                        self.emit_lazy();
                     }
                     self.inner_at.insert(l, self.b.instruction_count());
                     self.b.bind(l);
                 }
                 Ev::Stmt(o) => {
+                    self.emit_lazy();
                     self.save_binding_copies();
                     self.pending = Some((o, true));
                 }
@@ -713,6 +723,8 @@ impl<'b> Replay<'b> {
                 }
             }
         }
+        // O2: the function end.
+        self.emit_lazy();
     }
 
     // ---- Keys ----
@@ -812,6 +824,10 @@ impl<'b> Replay<'b> {
 
     /// Emits the transfer `dst = src` (no position).
     fn emit_transfer(&mut self, src: usize, dst: usize) {
+        if dst != ACC {
+            // O2: a deferred `Ldar` is dropped only before a write of the accumulator.
+            self.emit_lazy();
+        }
         if src == ACC {
             let d = self.reg(dst);
             self.b.star(d);
@@ -933,6 +949,10 @@ impl<'b> Replay<'b> {
 
     /// `k` is written next: save its value for its set, then make it a set of its own.
     fn prepare_output(&mut self, k: usize) {
+        if k == ACC {
+            // O2: a deferred `Ldar` that is not emitted now is dead.
+            self.lazy = None;
+        }
         if self.mat[k] {
             self.save_value(k);
         }
@@ -942,6 +962,10 @@ impl<'b> Replay<'b> {
 
     /// Makes register (or the accumulator) `k` hold its value.
     fn materialize(&mut self, k: usize) {
+        if k == ACC {
+            // O2: a deferred `Ldar` loads its own binding.
+            self.emit_lazy();
+        }
         if self.mat[k] {
             return;
         }
@@ -996,6 +1020,7 @@ impl<'b> Replay<'b> {
 
     /// O6: every live register holds its value; every set ends.
     fn flush(&mut self) {
+        self.emit_lazy();
         for s in 0..self.sets.len() {
             let members = std::mem::take(&mut self.sets[s]);
             if members.is_empty() {
@@ -1084,6 +1109,7 @@ impl<'b> Replay<'b> {
 
     /// O10: after a terminator.
     fn reset(&mut self) {
+        self.lazy = None;
         for s in 0..self.sets.len() {
             for &x in &self.sets[s] {
                 self.set[x] = NONE;
@@ -1101,15 +1127,43 @@ impl<'b> Replay<'b> {
         self.unmat = unmat;
     }
 
+    /// O2 (DEAD-LDAR): emits the deferred `Ldar` if the accumulator still waits for it. The
+    /// load reads its own binding, not another member of the set.
+    fn emit_lazy(&mut self) {
+        if let Some(b) = self.lazy.take()
+            && !self.mat[ACC]
+            && self.mat[b]
+            && self.same(b, ACC)
+        {
+            self.emit_transfer(b, ACC);
+            self.mat[ACC] = true;
+        }
+    }
+
     /// `Ldar`, `Star` or `Mov` from BytecodeGen: `dst = src`.
     fn transfer(&mut self, src: usize, dst: usize) {
         let stmt = matches!(self.pending, Some((_, true)));
-        if self.binding(src) || self.observable(dst) || stmt {
+        if dst == ACC && !self.same(src, ACC) {
+            // The accumulator gets a new value: a deferred `Ldar` is dead (O2).
+            self.lazy = None;
+        }
+        // O2: an `Ldar` from a binding is deferred; a `Mov` from a binding is emitted.
+        let lazy = dst == ACC && self.binding(src);
+        if (self.binding(src) && !lazy) || self.observable(dst) || stmt {
             self.real_transfer(src, dst);
             return;
         }
         // O9: the elided transfer drops its expression position.
         self.pending = None;
+        if lazy && self.same(src, ACC) {
+            // The accumulator holds the value of the binding: it waits for the `Ldar` too.
+            if self.mat[ACC] {
+                self.mat[ACC] = false;
+                self.unmat.push(ACC);
+            }
+            self.lazy = Some(src);
+            return;
+        }
         if self.same(src, dst) {
             return;
         }
@@ -1122,10 +1176,18 @@ impl<'b> Replay<'b> {
             self.mat[dst] = false;
             self.unmat.push(dst);
         }
+        if lazy {
+            // Set last: `save_value` above may emit, and an emit flushes a deferred `Ldar`.
+            self.lazy = Some(src);
+        }
     }
 
     /// An emitted transfer (O1, O2, O9). The source is any register that holds the value.
     fn real_transfer(&mut self, src: usize, dst: usize) {
+        if dst != ACC {
+            // O2: an emitted `Star` or `Mov` comes after the deferred `Ldar`.
+            self.emit_lazy();
+        }
         let from = if src == ACC {
             // `Mov holder, dst` instead of `Ldar holder; Star dst` (V8 OutputRegisterTransfer).
             match (self.mat[ACC], self.holder(ACC, ACC, true)) {
@@ -1157,6 +1219,11 @@ impl<'b> Replay<'b> {
         let args = &mut buf[..recorded.len()];
         let info = op.info();
         let flags = info.flags;
+        if info.acc.reads() || !info.acc.writes() {
+            // O2: only an instruction that writes the accumulator with no read drops a
+            // deferred `Ldar`.
+            self.emit_lazy();
+        }
         if flags.contains(OpcodeFlags::JUMP)
             || flags.contains(OpcodeFlags::SWITCH)
             || matches!(
@@ -1168,6 +1235,7 @@ impl<'b> Replay<'b> {
         } else if flags.contains(OpcodeFlags::THROWS) {
             let top = self.handler_top.get(at).copied().unwrap_or(u32::MAX);
             if top != u32::MAX {
+                self.emit_lazy();
                 self.save_for_handler(top);
             }
         }
