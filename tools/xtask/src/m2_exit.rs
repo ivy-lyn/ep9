@@ -25,7 +25,7 @@
 //! | Item | Cell |
 //! |---|---|
 //! | 1, 2, 3, 6 | the m2gate readings `octane7-vs-qjs` (>= 1.33x QuickJS), `v8v7-7-vs-node-jitless` (geomean >= 1.0x node --jitless; a kernel below 0.8x is parity debt, 09 section 5), `ts` (V12-D5) and `splay-vs-node-jitless` (>= 1.0x): PASS only when the reading's `gate` is `pass` in **both** builds, the jit preset and the jitless build (V12-D6); a `fail` is FAIL; a marginal or provisional reading, or a missing build, is OPEN |
-//! | 4 | MEMREAD: per build and v8-v7 kernel, the median peak RSS of ep9 over node --jitless <= 1.2 and over d8 --jitless <= 1.8 (G7, 02-architecture.md), >= 5 runs per row (class Mem), the load guard passed |
+//! | 4 | MEMREAD: per build and v8-v7 kernel, the median peak RSS of ep9 over node --jitless <= 1.2 and over d8 --jitless <= 1.8 (G7, 02-architecture.md), >= 5 runs per row (class Mem), the load guard passed. On `aarch64-unknown-linux-gnu` the d8 half is N/A by design (no linux-arm64 V8 in jsvu, DL:5351; plan v15 V15-D18): the node cap still gates |
 //! | 5 | the exec JSON by directory, by the G1 file rule (a file passes when its result is a pass; a skipped file fails): `language/` >= 95%, `annexB/` >= 90%, `built-ins/{Array, String, Object, Function, Math, JSON, Number, RegExp}` >= 95% each; and the FASTDIFF JSON: 0 mismatches, every fast path with >= 1 case (0 cases is OPEN) |
 //! | 7 | the JetStream run: every workload of `expectations/jetstream-m2.txt` has all its repetitions on each ep9 config and on node --jitless; the ratio is printed |
 //! | 8 | Fuzzilli >= 500 counted CPU-h, 0 open unique crashes (the m1-exit record rules) |
@@ -1142,6 +1142,10 @@ fn item4(c: &Ctx) -> Cell {
                 continue;
             };
             for (cmp, cap) in MEM_CAPS {
+                if cmp == "d8-jitless" && c.o.host == LINUX_A64 {
+                    // V15-D18: no linux-arm64 V8 in jsvu, so no d8 rows; the node cap gates.
+                    continue;
+                }
                 let Some(cv) =
                     row(k, cmp).and_then(|r| rss(r, &format!("{cmp} {k}"), &mut why, &mut status))
                 else {
@@ -1166,11 +1170,16 @@ fn item4(c: &Ctx) -> Cell {
         .map(|(k, (q, kernel))| format!("{k}: largest {q:.3} ({kernel})"))
         .collect::<Vec<_>>()
         .join("; ");
+    let d8_half = if c.o.host == LINUX_A64 {
+        "; the d8 --jitless half: N/A by design (no linux-arm64 V8 in jsvu, DL:5351; V15-D18)"
+    } else {
+        ""
+    };
     with_fresh(
         cell(
             status,
             format!(
-                "{}: median peak RSS of ep9 per v8-v7 kernel; {}{}",
+                "{}: median peak RSS of ep9 per v8-v7 kernel; {}{d8_half}{}",
                 p.display(),
                 if worst_text.is_empty() {
                     "no ratio"
@@ -4093,8 +4102,9 @@ mod tests {
 
     /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (1)): the per-platform MEMREAD and JetStream inputs of
     /// the exit-inputs job. Linux arm64 has no d8 (jsvu has no linux-arm64 V8 build,
-    /// third_party/shells.toml), so its MEMREAD run has no d8 rows and item 4 is OPEN there; with
-    /// the d8 rows it passes. The JetStream run names its node platform and arch per host.
+    /// third_party/shells.toml): since V15-D18 the d8 half is N/A by design there, so a run with
+    /// or without d8 rows passes on the node cap. The JetStream run names its node platform and
+    /// arch per host.
     #[test]
     fn per_platform_mem_and_jetstream_inputs() {
         let r = repo("per-platform");
@@ -4121,13 +4131,8 @@ mod tests {
         let c = mem("inputs/mem-arm.json");
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         let c = mem("inputs/mem-arm-no-d8.json");
-        assert_eq!(c.status, Status::Open);
-        assert!(
-            c.evidence
-                .contains("no d8-jitless row with a peak RSS for richards"),
-            "{}",
-            c.evidence
-        );
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("the d8 --jitless half: N/A by design"));
         for (host, platform, arch) in [
             (LINUX_A64, "linux", "arm64"),
             (WINDOWS_X64, "win32", "x64"),
@@ -4315,5 +4320,59 @@ mod tests {
         );
         // One pair straddles 0.9.
         assert_eq!(cross_side(&[p((0.85, 0.97), (0.98, 1.02))]), None);
+    }
+    /// V15-D18: the linux-a64 MEMREAD run of the exit-inputs job (fixture mem-linux-arm64.json:
+    /// no d8 rows, jsvu has no linux-arm64 V8) passes on the node cap, and its text says the d8
+    /// half is N/A by design. The node cap still gates there; on another host no d8 row is OPEN.
+    #[test]
+    fn item4_linux_a64_reads_the_node_cap_only() {
+        let r = repo("mem-la64");
+        let o = |f: PathBuf, host: &str| Options {
+            mem: Some(f),
+            ..opts(&r, host)
+        };
+        let c = &run(&o(input(&r, "mem-linux-arm64.json"), LINUX_A64))
+            .unwrap()
+            .cells[3];
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(
+            c.evidence.contains("vs node-jitless (cap 1.2): largest")
+                && !c.evidence.contains("vs d8-jitless")
+                && c.evidence.contains("; the d8 --jitless half: N/A by design (no linux-arm64 V8 in jsvu, DL:5351; V15-D18)"),
+            "{}",
+            c.evidence
+        );
+        let base = fixture("mem-linux-arm64.json").replace(SHA, &r.head);
+        let over = base.replacen(
+            "{ \"workload\": \"richards\", \"engine\": \"node-jitless\", \"n\": 5, \"median_bytes\": 50000000,",
+            "{ \"workload\": \"richards\", \"engine\": \"node-jitless\", \"n\": 5, \"median_bytes\": 30000000,",
+            1,
+        );
+        assert_ne!(over, base);
+        write(&r.root, "inputs/mem-la64-over.json", &over);
+        let c = &run(&o(r.root.join("inputs/mem-la64-over.json"), LINUX_A64))
+            .unwrap()
+            .cells[3];
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(
+            c.evidence.contains("x node-jitless (cap 1.2)"),
+            "{}",
+            c.evidence
+        );
+        let mac = base.replace(
+            "\"platform\": \"linux-arm64\"",
+            "\"platform\": \"darwin-arm64\"",
+        );
+        write(&r.root, "inputs/mem-mac-no-d8.json", &mac);
+        let c = &run(&o(r.root.join("inputs/mem-mac-no-d8.json"), HOST))
+            .unwrap()
+            .cells[3];
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(
+            c.evidence
+                .contains("no d8-jitless row with a peak RSS for richards"),
+            "{}",
+            c.evidence
+        );
     }
 }
