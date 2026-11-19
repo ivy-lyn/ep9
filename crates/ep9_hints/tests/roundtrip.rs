@@ -636,3 +636,71 @@ fn member_access_class_is_the_receiver() {
     h.records[1].class = Some(1);
     assert_eq!(write(&h), Err(WriteError::Invalid(DropReason::BadRecord)));
 }
+
+#[test]
+fn a1h_r4_class_id_needs_class_instance_off_member_kinds() {
+    // A1H-R4 option A (DL M10-P1-CLOSE-5, call 3): on each kind that is not a member access, a
+    // class id with a repr other than ClassInstance is refused by the writer and dropped by the
+    // reader. A member-access kind (3-5) keeps any repr with its receiver class. With no class
+    // id, every repr reads on every kind.
+    let mut h = Hints::default();
+    h.files.push(ep9_hints::FileEntry {
+        path: "m.ts".into(),
+        text_hash: hash(4),
+        has_type_errors: false,
+        first_record: 0,
+        record_count: 1,
+    });
+    h.classes.push(ep9_hints::ClassEntry {
+        decl: DeclRef { file: 0, offset: 0 },
+        slot_count: 1,
+        first_field: 0,
+        field_count: 0,
+    });
+    let mut r = record(0, 3, NodeKind::IdentifierReference);
+    r.repr = Repr::ClassInstance;
+    r.class = Some(0);
+    h.records.push(r);
+    let bytes = write(&h).unwrap();
+    assert_eq!(read(&bytes, &Expect::default()), Ok(h.clone()));
+    let at = bytes.len() - "m.ts".len() - RECORD_SIZE;
+    let member = [
+        NodeKind::StaticMemberExpression,
+        NodeKind::ComputedMemberExpression,
+        NodeKind::PrivateFieldExpression,
+    ];
+    let mut dropped = 0;
+    for &kind in NodeKind::ALL {
+        for &repr in Repr::ALL {
+            for class in [Some(0), None] {
+                let mut k = h.clone();
+                k.records[0].kind = kind;
+                k.records[0].repr = repr;
+                k.records[0].class = class;
+                let mut raw = bytes.clone();
+                put_u16(&mut raw, at + o::REC_KIND, kind.code());
+                raw[at + o::REC_REPR] = repr.code();
+                put_u32(&mut raw, at + o::REC_CLASS, class.unwrap_or(u32::MAX));
+                let why = format!("{} {} {class:?}", kind.name(), repr.name());
+                if class.is_some() && !member.contains(&kind) && repr != Repr::ClassInstance {
+                    dropped += 1;
+                    assert_eq!(
+                        write(&k),
+                        Err(WriteError::Invalid(DropReason::BadRecord)),
+                        "{why}"
+                    );
+                    assert_eq!(
+                        read(&raw, &Expect::default()),
+                        Err(DropReason::BadRecord),
+                        "{why}"
+                    );
+                } else {
+                    assert_eq!(write(&k).as_ref(), Ok(&raw), "{why}");
+                    assert_eq!(read(&raw, &Expect::default()), Ok(k), "{why}");
+                }
+            }
+        }
+    }
+    // 27 kinds that are not a member access x 11 reprs that are not ClassInstance.
+    assert_eq!(dropped, (NodeKind::ALL.len() - 3) * (Repr::ALL.len() - 1));
+}
