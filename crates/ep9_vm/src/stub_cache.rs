@@ -4,9 +4,9 @@
 //!
 //! ```text
 //!  megamorphic site (slot = hole, int32 MEGA)     Runtime::stub_cache (8192 entries, Rust memory)
-//!   hit path: ic::load / ic::store: a miss          index = hash(op, ShapeId, name)
-//!   0x21, 0x24, 0x25 cold bodies (M7-P1, M8-P0)     entry: key = op << 32 | ShapeId
-//!     ic::handler_mega_load / _store ──probe──>            name (an atom's bits)
+//!   ic::load / ic::store: a miss, then a probe in   index = hash(op, ShapeId, name)
+//!   the 0x21 fast body or 0x21/0x24/0x25 cold body  entry: key = op << 32 | ShapeId
+//!     ic::mega_fast, handler_mega_load / _store ─probe─>   name (an atom's bits)
 //!       None -> the runtime call below                     handler (a smi handler or an
 //!   miss path: slow::get_named / get_super / set_named     IC_HANDLER cell of ic.rs)
 //!     ic::mega_load / ic::mega_store ──probe──>
@@ -18,15 +18,15 @@
 //! ```
 //!
 //! Rules:
-//! - The probe is on the miss path, not in `ic::load` / `ic::store`: there it would cost every
-//!   monomorphic hit two more loads (the site's name operand and the runtime pointer; measured
-//!   +1.4% instructions on t0-prop, mac a64). The miss path still saves the generic lookup.
-//!   M7-P1 NAMEDLOAD: the `GetNamedProperty` (0x21) handler probes in its cold body, before
-//!   its runtime call (`ic::get_named_cold`; V8's load handler probes there too). The cold
-//!   body is a handler of its own (H15), so the hit path still loads neither value; a hit
-//!   there skips the runtime call (`slow::get_named`), which probes again only after a miss.
-//!   On TS (`octane-typescript`) 29.09 M of 29.16 M megamorphic loads hit there (-2.3% Ir,
-//!   mac a64). M8-P0 TS-STORE: 0x24 and 0x25 probe there too (`ic::handler_mega_store`).
+//! - The probe is not in `ic::load` / `ic::store`: there it would cost every monomorphic hit
+//!   two more loads (the site's name operand and the runtime pointer; measured +1.4%
+//!   instructions on t0-prop, mac a64). M7-P1 NAMEDLOAD: the `GetNamedProperty` (0x21)
+//!   handler probes in its cold body, before its runtime call (`ic::get_named_cold`). M10
+//!   LEVER-12: a one-byte 0x21 probes in its fast body, on the MEGA branch only
+//!   (`ic::load_or_mega`), so a mono hit still loads neither value; Wide and ExtraWide probe
+//!   in the cold body. A hit skips the runtime call (`slow::get_named`), which probes again
+//!   only after a miss. On TS 29.09 M of 29.16 M megamorphic loads hit (M7-P1, mac a64).
+//!   M8-P0 TS-STORE: 0x24 and 0x25 probe in their cold bodies (`ic::handler_mega_store`).
 //! - Handlers are the IC handlers of `ic.rs`, so a hit runs the same handler code as a
 //!   monomorphic or polymorphic case: smi field handlers and `ARRAY_LENGTH` (loads and stores),
 //!   `PROTO_LOAD` and `MISSING` (loads, through their validity cell), `ADD` (stores; a 0x24
@@ -152,9 +152,9 @@ fn index(op: Op, id: u32, name: u64) -> usize {
 
 /// The handler of the entry for (`op`, ShapeId `id`, `name`), or `None`. Called from the miss
 /// paths `ic::mega_load`, `ic::handler_mega_load` (the 0x21 cold body), `ic::handler_mega_store`
-/// (the 0x24 and 0x25 cold bodies, M8-P0 TS-STORE) and `ic::mega_store` (the 0x21 fast body
-/// probes through [`probe_at`], M10 LEVER-12); never allocates, never calls. A ShapeId of 0 (a
-/// string, a symbol or a BigInt) never matches.
+/// (the 0x24 and 0x25 cold bodies, M8-P0 TS-STORE) and `ic::mega_store`; the 0x21 fast body
+/// probes through [`probe_at`] (M10 LEVER-12). Never allocates, never calls. A ShapeId of 0
+/// (a string, a symbol or a BigInt) never matches.
 #[inline(always)]
 pub(crate) fn probe(rt: &Runtime, op: Op, id: u32, name: u64) -> Option<u64> {
     let e = &rt.stub_cache.entries[index(op, id, name)];

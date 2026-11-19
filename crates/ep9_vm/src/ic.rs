@@ -84,12 +84,12 @@
 //!   (OM-10), so an add-property case, which is made only for a fast shape, can never match a
 //!   non-extensible receiver. [`store`] also asserts it.
 //! - The megamorphic stub cache (M4-P3 IC2, `stub_cache.rs`, H16-Q3): a megamorphic named site
-//!   misses in the hit path ([`load`], [`store`] are unchanged, so a monomorphic hit costs no
-//!   more); its miss path first probes a per-isolate table by (operation, receiver ShapeId,
-//!   name) and runs the handler it finds with the code above ([`mega_load`], [`mega_store`];
-//!   0x21, 0x24, 0x25 in the cold body, [`get_named_cold`], [`handler_mega_store`]); on a table
-//!   miss it computes the case for an object receiver ([`skip_miss`], if [`MEGA_FILL`]) and
-//!   [`record`] puts it in the table (not `SLOW`, not a string). It is emptied at every GC.
+//!   misses in [`load`] and [`store`] (a monomorphic hit costs no more). A probe of a table
+//!   per isolate by (operation, receiver ShapeId, name) runs the handler it finds with the
+//!   code above: in the 0x21 fast body ([`load_or_mega`], M10), the 0x21, 0x24, 0x25 cold
+//!   bodies ([`get_named_cold`], [`handler_mega_store`]) and the miss path ([`mega_load`],
+//!   [`mega_store`]). A table miss computes the case for an object receiver ([`skip_miss`],
+//!   if [`MEGA_FILL`]) and [`record`] puts it in (not `SLOW`, not a string). Every GC empties it.
 //! - A string's method load (M4-P3 IC2) is a prototype case keyed on [`KEY_STRING`]: its chain
 //!   starts at %String.prototype% (which gets its PROTO_INFO, prototype mode, when the first
 //!   such case is recorded). Global and InstanceOf cases (`instance_ic.rs`) never reach the
@@ -107,7 +107,7 @@
 //!   operation itself when it is a field: a load reads through it ([`global_case_value`]), a
 //!   store writes through it ([`store_global_miss`]), so the miss scans each table once.
 
-use ep9_bytecode::{Instructions, Opcode, OperandKind};
+use ep9_bytecode::{Instructions, Opcode, OperandKind, OperandScale};
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
 
 use crate::error::FrameRef;
@@ -474,10 +474,10 @@ fn cross_check(rt: &Runtime, o: u64, key: u64, c: CellPtr) {
 /// (an index into the constants of `fi`): it feeds only the debug cross-check
 /// ([`cross_check`]); release builds do not read it.
 ///
-/// A megamorphic entry misses here: its miss path probes the stub cache ([`mega_load`]; 0x21
-/// in its cold body, [`get_named_cold`]). A probe here, even after the compares (M7-P1), costs
-/// each monomorphic hit two loads (the site's name operand and the runtime pointer, loaded
-/// before any branch; +1.4% instructions on t0-prop, mac a64), so the hit path stays as it was.
+/// A megamorphic entry misses here: 0x21 probes the stub cache in its fast body ([`load_or_mega`],
+/// M10) or cold body ([`get_named_cold`]), 0x22 in its miss path ([`mega_load`]). A probe here,
+/// even after the compares (M7-P1), costs each monomorphic hit two loads (the site's name operand
+/// and the runtime pointer, loaded before any branch; +1.4% instructions on t0-prop, mac a64).
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, name: u32) -> Option<u64> {
@@ -1802,7 +1802,7 @@ fn cold_case_matches(k: i32, chain: Chain, c: CellPtr) -> bool {
 // ---- the stub cache probe of the GetNamedProperty handler (M7-P1 NAMEDLOAD) ------------------
 
 /// The cold body of `GetNamedProperty` (0x21; M7-P1 NAMEDLOAD): `o.key` after the hit path
-/// ([`load`]) missed, with the site's name `key` (an atom) and slot `slot`. First the stub
+/// ([`load_or_mega`]) missed, with the site's name `key` (an atom) and slot `slot`. First the stub
 /// cache probe ([`handler_mega_load`]), then the runtime call (`slow::get_named`) if it gives
 /// nothing. The value, or 0 if an exception is pending (the runtime call's result). GC point
 /// (the runtime call); the probe is not one.
@@ -1822,16 +1822,16 @@ pub(crate) fn get_named_cold(
 }
 
 /// The stub cache probe of the `GetNamedProperty` handler: in its cold body
-/// ([`get_named_cold`]), after the monomorphic and polymorphic compares of [`load`] missed, and
-/// before the runtime call. V8's load handler probes its stub cache there too. If slot `slot`
+/// ([`get_named_cold`]), after the fast body ([`load_or_mega`]) missed, and before the runtime
+/// call. V8's load handler probes its stub cache there too. If slot `slot`
 /// of the vector of `fi` is megamorphic and the stub cache has an entry for `o`'s shape and
 /// the name `key` (an atom), the value its handler gives ([`load_with`]). `None`: the runtime
 /// call runs as before (it probes again, [`mega_load`], then takes the generic path, which
 /// fills the entry, [`record`]).
 ///
-/// The hit path ([`load`]) does not change: the cold body is a handler of its own (H15), so a
-/// monomorphic hit loads neither the name operand nor the runtime pointer (the +1.4% on
-/// t0-prop that the note of [`load`] names). A hit here skips the runtime call: the frame
+/// The cold body is a handler of its own (H15). A one-byte 0x21 probed the same entry in its
+/// fast body ([`load_or_mega`], M10 LEVER-12), so this probe gives `None` for it too; a
+/// Wide or ExtraWide 0x21 probes only here. A hit here skips the runtime call: the frame
 /// record (`Runtime::enter`), the call, and its vector and slot reads. No allocation, no JS,
 /// not a GC point.
 #[inline(always)]
@@ -2446,6 +2446,24 @@ pub(crate) fn load_global_fast(cx: &Cx, fi: &FunctionInfo, slot: u32) -> Option<
 
 // ---- the stub cache probe in the GetNamedProperty fast body (M10 LEVER-12 NAMED-MISS) -------
 
+/// The length of a one-byte-scale `GetNamedProperty`, from the opcode table (the length that
+/// the threaded handler adds to `pc` for `next`, `interp::dsl::one_byte_len`). A constant, so
+/// the `next` test of [`load_or_mega`] folds and adds no load.
+const GET_NAMED_LEN: usize = crate::interp::dsl::one_byte_len(Opcode::GetNamedProperty);
+
+/// The byte offset of the name operand of a one-byte-scale `GetNamedProperty` from its opcode
+/// byte, from the opcode table ([`mega_fast`] reads it).
+const GET_NAMED_NAME_AT: usize = Opcode::GetNamedProperty
+    .info()
+    .operand_offset(1, OperandScale::Single);
+
+// Operand 1 is the name (a constant index), one byte wide at one-byte scale.
+const _: () = {
+    let name = &Opcode::GetNamedProperty.info().operands[1];
+    assert!(matches!(name.kind, OperandKind::Const));
+    assert!(name.kind.size(OperandScale::Single) == 1);
+};
+
 /// The hit path of the `GetNamedProperty` (0x21) fast body (M10 LEVER-12 NAMED-MISS, form A):
 /// [`load`], and on a megamorphic entry of a one-byte-scale instruction the stub cache probe
 /// ([`mega_fast`]) before the branch to the cold body. The same answer as [`load`] then
@@ -2454,15 +2472,21 @@ pub(crate) fn load_global_fast(cx: &Cx, fi: &FunctionInfo, slot: u32) -> Option<
 /// `fp` is the frame of `fi`; `pc` and `next` are the start of the instruction and of the
 /// next one.
 ///
-/// - A monomorphic or polymorphic hit runs the same code as [`load`]: [`mega_fast`] reads the
-///   name operand, the FunctionInfo, its constant and the runtime pointer only on the
-///   megamorphic branch, after an empty `asm!` block, so LLVM does not hoist them onto the
-///   hit path (the +1.4% on t0-prop of the note of [`load`], M7-P1) or keep them in a register
-///   up to there (x86-64 has 5 free registers, `load_with_x86`; one more value is an entry
-///   save on every run, plan rule 81).
-/// - Only the one-byte scale probes here (`next` is `pc + 4`; the handlers know the scale, so
-///   the test folds): a `Wide` or `ExtraWide` instruction misses to its cold path, which
-///   probes as before, and the prefixed fast bodies do not change.
+/// - A monomorphic hit runs the same code as [`load`]: [`mega_fast`] reads the name operand,
+///   the FunctionInfo, its constant and the runtime pointer only on the megamorphic branch,
+///   after an empty `asm!` block, so LLVM does not hoist them onto the hit path (the +1.4% on
+///   t0-prop of the note of [`load`], M7-P1) or keep them in a register up to there (x86-64
+///   has 5 free registers, `load_with_x86`; one more value is an entry save on every run, plan
+///   rule 81).
+/// - A polymorphic hit runs the same case loop as [`load`] (a64: the same instruction count;
+///   x86-64: one less), in another block order: the megamorphic arm is the fall-through after
+///   the hole-key test, so the case loop is a taken forward branch, and a hit with a smi
+///   handler takes one more branch back to the shared decode block (2 more taken branches; a
+///   cell handler: 0 more). Ir does not count taken branches; if a poly-heavy row loses time,
+///   `core::hint::cold_path()` in the rarer arm is the fix to try (M10 LEVER-12 JIT review B1).
+/// - Only the one-byte scale probes here (`next` is `pc` + [`GET_NAMED_LEN`]; the handlers know
+///   the scale, so the test folds): a `Wide` or `ExtraWide` instruction misses to its cold
+///   path, which probes as before, and the prefixed fast bodies do not change.
 /// - A stub cache hit runs the same handler code as a monomorphic hit ([`load_hit`]: on
 ///   x86-64 [`load_with_x86`], with no jump table).
 /// - No `is_object` test (the cold body has one): a string, a symbol and a BigInt have
@@ -2504,9 +2528,9 @@ pub(crate) fn load_or_mega(
         return None;
     } else if is_cell_bits(value) {
         poly_case(value, id)?
-    } else if value == MEGA && next == pc.wrapping_add(4) {
-        // SAFETY: a one-byte-scale GetNamedProperty of verified code (4 bytes: the opcode,
-        // then the object, name and slot operands) in the live frame `fp`.
+    } else if value == MEGA && next == pc.wrapping_add(GET_NAMED_LEN) {
+        // SAFETY: a one-byte-scale GetNamedProperty of verified code (the opcode, then the
+        // object, name and slot operands, one byte each) in the live frame `fp`.
         let h = unsafe { mega_fast(cx, fp, pc, id) }?;
         #[cfg(any(test, feature = "ic-stats"))]
         {
@@ -2521,7 +2545,7 @@ pub(crate) fn load_or_mega(
     #[cfg(any(test, feature = "ic-stats"))]
     if stub && r.is_some() {
         // SAFETY: as above.
-        debug_assert_eq!(unsafe { *pc.add(2) } as u32, name);
+        debug_assert_eq!(unsafe { *pc.add(GET_NAMED_NAME_AT) } as u32, name);
         debug_assert!(kind::is_object(o));
         stub_stats!(Load, true);
         #[cfg(test)]
@@ -2568,8 +2592,8 @@ fn poly_case(value: u64, id: u32) -> Option<u64> {
 unsafe fn mega_fast(cx: &Cx, fp: *mut u64, pc: *const u8, id: u32) -> Option<u64> {
     // SAFETY: the block has no instructions.
     unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
-    // SAFETY: the name operand is byte 2 of the instruction (caller contract).
-    let n = unsafe { *pc.add(2) };
+    // SAFETY: the name operand is byte `GET_NAMED_NAME_AT` of the instruction (caller contract).
+    let n = unsafe { *pc.add(GET_NAMED_NAME_AT) };
     let k = FrameRef(fp).info().constant(u32::from(n));
     let i = stub_cache::index_of(stub_cache::Op::Load, id, k);
     // SAFETY: the block has no instructions.
