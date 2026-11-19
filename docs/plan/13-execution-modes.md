@@ -331,7 +331,7 @@ Rules:
 | T2 | T0 gets hot | TierHooks.on_hot -> T1 -> T2 (lowering `jit`, in the JIT accept list) | same (`jit` is in the hybrid accept list) | never re-tiers (P04:131) | yes | H14; S-2 |
 | T3 | AotOpt gets hot | n/a | budget counter -> T1 -> T2 | never | yes | H33:29; C-08 |
 | T4 | AotOpt speculation exits pass budget (O2: environment exits do not count) | n/a | PIN + start re-tier (H33-Q4 default, H33:83); PIN holds until the re-tier policy lifts it | PIN, final (H32:40-43; H32-Q4) | yes | C-07, C-08 |
-| T5 | eager deopt | frame -> T0; code stays (SCP:128); exit counter | frame -> T0; code stays until T4 [2026-11-19, M10-P0 MODES-TEXT-M10 (as 1.3 AotOpt row, 1.4):] in `jitless`-lowered code (accepted, 1.4) as the jitless column: SLOWPATH or DEOPT in budget, then T4 | SLOWPATH or DEOPT in budget (H32:37-47) | no | H29, H32 |
+| T5 | eager deopt | frame -> T0; code stays (SCP:128); exit counter | frame -> T0; code stays until T4 | SLOWPATH or DEOPT in budget (H32:37-47) | no | H29, H32 |
 | T6 | fuse pop | dependents Invalidated; lazy deopt; select() | same | GuardFuse code takes the slow path; InvalidatingFuse as JIT (H31:28-29) | yes | H31, H29 |
 | T7 | OSR into optimized code | T0 -> Opt at a loop header | same | n/a | yes + frame copy | H29-Q6 |
 | T8 | OSR out of AOT code | n/a | lazy deopt at the `JumpLoop` poll, then T7 | n/a | no | C-04 |
