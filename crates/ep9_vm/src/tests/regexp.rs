@@ -803,3 +803,55 @@ fn patterns_with_one_cache_hash_keep_their_own_programs() {
         });
     }
 }
+
+/// A left-deep rope of `n` (at least 13) units "a": 13 flat units, then 1 unit at a time
+/// (`s += "a"`), so each level past the first is a CONS cell.
+fn left_deep_rope(rt: &Runtime, n: usize) -> u64 {
+    let one = object_string(rt, "a");
+    let mut s = object_string(rt, &"a".repeat(13));
+    for _ in 13..n {
+        s = crate::string::concat(rt, s, one).unwrap();
+    }
+    assert_eq!(crate::string::str_len(s), n);
+    s
+}
+
+/// HB-6 r2 (Codex hs2-r2 F1): a pattern longer than the cache limit (4096 units) is never
+/// cached, so `compiled` takes no cache hash of it. A fresh left-deep rope of 4097 units
+/// compiles each time, and its hash field stays 0 (the hash walk of a rope keeps a stack entry
+/// for each level). A pattern of 4096 units is still cached: the second create, and a flat
+/// string of the same text, are hits. With and without GC stress.
+#[test]
+fn a_pattern_past_the_cache_limit_takes_no_hash() {
+    use crate::string::testing;
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let long = left_deep_rope(rt, 4097);
+            assert_eq!(testing::raw_hash_field(long), 0, "a fresh rope has no hash");
+            assert_eq!(create_count(cx, rt, long), 1, "a long pattern compiles");
+            assert_eq!(
+                testing::raw_hash_field(long),
+                0,
+                "no cache hash of a long pattern"
+            );
+            assert_eq!(
+                create_count(cx, rt, long),
+                1,
+                "a long pattern is never cached"
+            );
+            let edge = left_deep_rope(rt, 4096);
+            assert_eq!(create_count(cx, rt, edge), 1, "a new pattern compiles");
+            assert_eq!(
+                create_count(cx, rt, edge),
+                0,
+                "a 4096-unit pattern is a hit"
+            );
+            let flat = object_string(rt, &"a".repeat(4096));
+            assert_eq!(
+                create_count(cx, rt, flat),
+                0,
+                "a flat string of the text is a hit"
+            );
+        });
+    }
+}

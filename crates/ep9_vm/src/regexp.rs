@@ -706,10 +706,10 @@ fn program_index(cx: &mut Cx, re: u64) -> Res<i32> {
 fn compiled(cx: &mut Cx, source: u64, flags: Flags) -> Res<Rc<Compiled>> {
     let rt = cx.rt();
     let table = &rt.regexp_programs;
-    let hash = cache_hash(source);
-    let hit = string::with_text(source, |t| {
-        table.cache.borrow_mut().find(t, hash, flags.bits())
-    });
+    // `insert` keeps no pattern longer than CACHE_MAX_UNITS, so a longer one has no hash.
+    let hash = (string::str_len(source) <= CACHE_MAX_UNITS).then(|| cache_hash(source));
+    let find = |t: JsStr<'_>, h| table.cache.borrow_mut().find(t, h, flags.bits());
+    let hit = hash.and_then(|h| string::with_text(source, |t| find(t, h)));
     if let Some(c) = hit {
         return Ok(c);
     }
@@ -726,7 +726,7 @@ fn compiled(cx: &mut Cx, source: u64, flags: Flags) -> Res<Rc<Compiled>> {
     {
         cache.compiles += 1;
     }
-    cache.insert(hash, flags.bits(), &units, &c);
+    cache.insert(hash.unwrap_or(0), flags.bits(), &units, &c);
     Ok(c)
 }
 
