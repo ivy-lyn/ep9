@@ -1121,10 +1121,10 @@ op!(StaModuleVariable(st, cell: i32, depth: Depth) { Flow::Cold } cold {
 // ---- property access -----------------------------------------------------------------------
 
 // Named loads and stores run the IC hit path inline (H16, `ic.rs`); a miss runs the generic
-// operation and records a case (0x21 probes the stub cache first: `ic::get_named_cold`).
+// operation and records a case (0x21 probes the stub cache first: `ic::load_or_mega`).
 op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     let o = st.reg(object);
-    match ic::load(st.rt(), st.info(), o, s.0, name.0) {
+    match ic::load_or_mega(st.cx, st.fp, st.pc, st.next, st.info(), o, s.0, name.0) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;

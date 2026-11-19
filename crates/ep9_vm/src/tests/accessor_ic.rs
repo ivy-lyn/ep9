@@ -772,3 +772,49 @@ fn ops_of_reads_the_getter_and_setter_cases() {
         t.release_all(kept);
     });
 }
+
+/// M10 LEVER-12 NAMED-MISS: a getter on the prototype chain at a megamorphic site. The stub
+/// cache has no entry for it, so the probe in the `GetNamedProperty` fast body misses and
+/// every load calls the getter, with its receiver as `this`; a new getter is seen at once.
+#[test]
+fn an_inherited_getter_at_a_megamorphic_site_runs_on_every_load() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Get("x")]);
+        reset();
+        let op = object_prototype(t.rt());
+        let (ga, gb) = (host(t.rt(), get_this, "ga"), host(t.rt(), get_two, "gb"));
+        let holder = object_with(t.rt(), op, &[("h", int(0))]);
+        define_accessor(t.rt(), holder, "x", ga, UNDEFINED);
+        let pads = ["a", "b", "c", "d", "e", "f"];
+        let objs: Vec<u64> = pads
+            .iter()
+            .map(|&p| object_with(t.rt(), holder, &[(p, int(0))]))
+            .collect();
+        let kept = t.keep_all(&objs);
+        let kept_h = t.keep(holder);
+        for &o in &objs {
+            assert_eq!(t.ok(0, o, UNDEFINED), o);
+        }
+        assert_eq!(t.state(0), State::Megamorphic);
+        let fast = ic::FAST_PROBE_HITS.with(Cell::get);
+        for _ in 0..3 {
+            for &o in &objs {
+                assert_eq!(t.ok(0, o, UNDEFINED), o);
+            }
+        }
+        assert_eq!(calls()[0], 6 + 18);
+        assert_eq!(ic::FAST_PROBE_HITS.with(Cell::get), fast);
+        let x = key(t.rt(), "x");
+        let id = shape_of(objs[5]) as u32;
+        assert_eq!(
+            crate::stub_cache::probe(t.rt(), crate::stub_cache::Op::Load, id, x),
+            None
+        );
+        // A new pair on the holder: the next load calls the new getter.
+        define_accessor(t.rt(), holder, "x", gb, UNDEFINED);
+        assert_eq!(t.ok(0, objs[5], UNDEFINED), int(2));
+        assert_eq!(calls()[1], 1);
+        t.release(kept_h);
+        t.release_all(kept);
+    });
+}

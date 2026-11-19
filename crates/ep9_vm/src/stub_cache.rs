@@ -150,11 +150,11 @@ fn index(op: Op, id: u32, name: u64) -> usize {
     (h.wrapping_mul(0x9E37_79B1) >> (32 - BITS)) as usize
 }
 
-/// The handler of the entry for (`op`, ShapeId `id`, `name`), or `None`. Called only from the
-/// miss paths `ic::mega_load`, `ic::handler_mega_load` (the cold body of the 0x21 handler),
-/// `ic::handler_mega_store` (the cold bodies of the 0x24 and 0x25 handlers, M8-P0 TS-STORE)
-/// and `ic::mega_store`; never allocates, never calls. A ShapeId of 0 (a string or a symbol)
-/// never matches.
+/// The handler of the entry for (`op`, ShapeId `id`, `name`), or `None`. Called from the miss
+/// paths `ic::mega_load`, `ic::handler_mega_load` (the 0x21 cold body), `ic::handler_mega_store`
+/// (the 0x24 and 0x25 cold bodies, M8-P0 TS-STORE) and `ic::mega_store` (the 0x21 fast body
+/// probes through [`probe_at`], M10 LEVER-12); never allocates, never calls. A ShapeId of 0 (a
+/// string, a symbol or a BigInt) never matches.
 #[inline(always)]
 pub(crate) fn probe(rt: &Runtime, op: Op, id: u32, name: u64) -> Option<u64> {
     let e = &rt.stub_cache.entries[index(op, id, name)];
@@ -173,4 +173,30 @@ pub(crate) fn insert(rt: &Runtime, op: Op, id: u32, name: u64, handler: u64) {
     e.name.set(name);
     e.handler.set(handler);
     c.used.set(true);
+}
+
+/// The entry index of (`op`, ShapeId `id`, `name`) for [`probe_at`] (below [`ENTRIES`]).
+#[inline(always)]
+pub(crate) fn index_of(op: Op, id: u32, name: u64) -> usize {
+    index(op, id, name)
+}
+
+/// [`probe`] in two steps, for the 0x21 fast body (`ic::mega_fast`, M10 LEVER-12 NAMED-MISS):
+/// the handler of entry `i` = [`index_of`] (`op`, `id`, `name`) if it is the entry for them.
+/// The fast body reads the runtime pointer after the index, so on x86-64 the pointer is not
+/// live during the hash, and here the entry address is one register (an empty `asm!` block),
+/// so the table base and the index are not live beside the key compare (one more live value
+/// there is an entry save on every run of the handler).
+#[inline(always)]
+pub(crate) fn probe_at(rt: &Runtime, i: usize, op: Op, id: u32, name: u64) -> Option<u64> {
+    let mut e: *const Entry = &rt.stub_cache.entries[i];
+    // SAFETY: the block has no instructions and gives `e` back unchanged. It reads and writes
+    // no memory (`nomem`): it only hides the value of `e` from LLVM.
+    #[allow(clippy::pointers_in_nomem_asm_block)]
+    unsafe {
+        core::arch::asm!("/* {0} */", inout(reg) e, options(pure, nomem, nostack, preserves_flags))
+    };
+    // SAFETY: `e` is the address of entry `i` of the live table.
+    let e = unsafe { &*e };
+    (e.key.get() == entry_key(op, id) && e.name.get() == name).then(|| e.handler.get())
 }

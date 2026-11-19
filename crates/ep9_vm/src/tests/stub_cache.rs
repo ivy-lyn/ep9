@@ -12,9 +12,13 @@ use super::ic::{
     MASK, SLOT, Site, T, at_capacity, below_a_pad, collect_after_a_pad, each, grow_adds, int, key,
     object_prototype, object_with, own,
 };
+use super::{Asm, isolate, meta, unit};
+use ep9_heap::GlobalHandle;
+
 use crate::frame::UNDEFINED;
 use crate::ic::{self, KEY_STRING, State, hk, smi};
 use crate::object::{self, attr};
+use crate::property;
 use crate::props;
 use crate::runtime::Root;
 use crate::shape;
@@ -724,5 +728,247 @@ fn a_megamorphic_add_with_no_room_grows_through_the_stub_cache_entry() {
         for k in kept {
             t.release_all(k);
         }
+    });
+}
+
+// ---- the probe in the GetNamedProperty fast body (M10 LEVER-12 NAMED-MISS) ---------------------
+
+/// The number of loads that the probe in the fast body of `GetNamedProperty` answered
+/// (`ic::load_or_mega`; [`handler_hits`] counts them too).
+fn fast_hits() -> u32 {
+    ic::FAST_PROBE_HITS.with(|c| c.get())
+}
+
+/// `n` objects under `p`, each with its own first property (so each has its own shape) and
+/// then `name` = 100 + i, each rooted as it is made (a `Vec` is not on the stack, so the
+/// conservative scan does not see it): the objects and their handles.
+fn shapes(t: &T, p: u64, name: &str, n: usize) -> (Vec<u64>, Vec<GlobalHandle>) {
+    (0..n)
+        .map(|i| {
+            let pad = format!("pad{i}");
+            let o = object_with(
+                t.rt(),
+                p,
+                &[(pad.as_str(), int(0)), (name, int(100 + i as i32))],
+            );
+            (o, t.keep(o))
+        })
+        .unzip()
+}
+
+/// Loads `o.<name>` at site 0 of `t`: `want`, and a hit in the fast body only if the stub
+/// cache held an entry for it (without GC stress; under GC stress a collection may empty the
+/// table first, so only the value is checked). True if the fast body answered.
+fn load_counted(t: &mut T, o: u64, name: &str, want: u64, stress: bool) -> bool {
+    let held = entry(t, Op::Load, o, name).is_some();
+    let f = fast_hits();
+    assert_eq!(t.ok(0, o, UNDEFINED), want);
+    let hit = fast_hits() == f + 1;
+    assert!(stress || hit || fast_hits() == f);
+    assert!(stress || held || !hit, "a fast hit with no entry");
+    hit
+}
+
+#[test]
+fn the_fast_body_answers_a_megamorphic_site_with_forty_shapes() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Get("x")]);
+        let op = object_prototype(t.rt());
+        let (objs, kept) = shapes(&t, op, "x", 40);
+        // Each shape: the first load fills its entry (the runtime call), the second one is a
+        // hit in the fast body (not the cold body: both counts move by one).
+        for (i, &o) in objs.iter().enumerate() {
+            let want = int(100 + i as i32);
+            assert_eq!(t.ok(0, o, UNDEFINED), want);
+            let (h, f) = (handler_hits(), fast_hits());
+            assert_eq!(t.ok(0, o, UNDEFINED), want);
+            if !stress && i >= 4 {
+                assert_eq!((handler_hits(), fast_hits()), (h + 1, f + 1), "shape {i}");
+            }
+        }
+        assert_eq!(t.state(0), State::Megamorphic);
+        // Again, in another order: an entry that a conflict replaced misses and is filled
+        // again; every other load is a fast-body hit. The values are right in both cases.
+        for (i, &o) in objs.iter().enumerate().rev() {
+            let held = entry(&t, Op::Load, o, "x").is_some();
+            let f = fast_hits();
+            assert_eq!(t.ok(0, o, UNDEFINED), int(100 + i as i32));
+            if !stress {
+                assert_eq!(fast_hits(), f + u32::from(held), "shape {i}");
+            }
+        }
+        t.release_all(kept);
+    });
+}
+
+#[test]
+fn a_shape_the_stub_cache_does_not_hold_goes_to_the_cold_path() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Get("x")]);
+        let op = object_prototype(t.rt());
+        let objs = megamorphic(&mut t, op, "x");
+        let kept = t.keep_all(&objs);
+        // A new shape: no entry, so the fast body and the cold body both miss and the runtime
+        // call answers (and fills the entry).
+        let o = object_with(t.rt(), op, &[("new", int(0)), ("x", int(7))]);
+        assert!(entry(&t, Op::Load, o, "x").is_none());
+        let (h, f) = (handler_hits(), fast_hits());
+        assert_eq!(t.ok(0, o, UNDEFINED), int(7));
+        assert_eq!((handler_hits(), fast_hits()), (h, f));
+        let (h, f) = (handler_hits(), fast_hits());
+        assert_eq!(t.ok(0, o, UNDEFINED), int(7));
+        if !stress {
+            assert_eq!((handler_hits(), fast_hits()), (h + 1, f + 1));
+        }
+        // A GC empties the table: the next load misses in both bodies, and the runtime call
+        // fills the entry again.
+        t.collect();
+        assert!(entry(&t, Op::Load, o, "x").is_none());
+        let f = fast_hits();
+        assert_eq!(t.ok(0, o, UNDEFINED), int(7));
+        if !stress {
+            assert_eq!(fast_hits(), f);
+        }
+        fill_then_hit(&mut t, o, "x", int(7), stress);
+        // A value store to the field is not a shape change: the fast hit reads the new value.
+        assert!(props::own_replace(t.rt(), o, key(t.rt(), "x"), int(8)));
+        assert_eq!(t.ok(0, o, UNDEFINED), int(8));
+        // Not an object: a BigInt (ShapeId 0, as a string and a symbol) misses in the fast
+        // body and takes the generic load (which throws in v0: no BigInt.prototype).
+        let b = crate::bigint::alloc_literal(t.rt(), false, &[5]);
+        let (h, f) = (handler_hits(), fast_hits());
+        assert!(t.call(0, b, UNDEFINED).is_err());
+        assert!(t.call(0, b, UNDEFINED).is_err());
+        assert_eq!((handler_hits(), fast_hits()), (h, f));
+        t.release_all(kept);
+    });
+}
+
+#[test]
+fn a_dictionary_receiver_at_a_megamorphic_site_takes_the_generic_path() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Get("x")]);
+        let op = object_prototype(t.rt());
+        let objs = megamorphic(&mut t, op, "x");
+        let kept = t.keep_all(&objs);
+        // A dictionary-mode object (a delete that is not the last, OM-10): no entry for its
+        // shape, so every load is the generic one and reads the current value.
+        let d = object_with(t.rt(), op, &[("pad", int(0)), ("x", int(7))]);
+        let pad = key(t.rt(), "pad");
+        assert!(property::delete(&mut t.iso.cx, d, pad, true).unwrap());
+        assert!(shape::is_dictionary(shape::shape_of(d)));
+        let (h, f) = (handler_hits(), fast_hits());
+        for _ in 0..3 {
+            assert_eq!(t.ok(0, d, UNDEFINED), int(7));
+        }
+        assert_eq!((handler_hits(), fast_hits()), (h, f));
+        assert!(entry(&t, Op::Load, d, "x").is_none());
+        props::own_define(t.rt(), d, key(t.rt(), "x"), int(9), attr::DEFAULT);
+        assert_eq!(t.ok(0, d, UNDEFINED), int(9));
+        // A dictionary prototype holds `x` for a fast receiver: no entry either.
+        let dp = object_with(t.rt(), op, &[("pad", int(0)), ("x", int(11))]);
+        assert!(property::delete(&mut t.iso.cx, dp, pad, true).unwrap());
+        let child = object_with(t.rt(), dp, &[("c", int(0))]);
+        let f = fast_hits();
+        for _ in 0..3 {
+            assert_eq!(t.ok(0, child, UNDEFINED), int(11));
+        }
+        assert_eq!(fast_hits(), f);
+        props::own_define(t.rt(), dp, key(t.rt(), "x"), int(12), attr::DEFAULT);
+        assert_eq!(t.ok(0, child, UNDEFINED), int(12));
+        t.release_all(kept);
+    });
+}
+
+#[test]
+fn a_prototype_change_makes_the_fast_probe_hit_miss() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Get("m")]);
+        let op = object_prototype(t.rt());
+        let base = object_with(t.rt(), op, &[("m", int(1))]);
+        let other = object_with(t.rt(), op, &[("m", int(9))]);
+        let mid = object_with(t.rt(), base, &[]);
+        let kept_p = t.keep_all(&[base, other, mid]);
+        let objs = megamorphic(&mut t, mid, "q");
+        let kept = t.keep_all(&objs);
+        let o = object_with(t.rt(), mid, &[("lone", int(0))]);
+        let k = fill_then_hit(&mut t, o, "m", int(1), stress);
+        assert!(stress || k == PROTO_LOAD, "kind {k}");
+        let f = fast_hits();
+        assert_eq!(t.ok(0, o, UNDEFINED), int(1));
+        if !stress {
+            assert_eq!(fast_hits(), f + 1);
+        }
+        // `mid`'s prototype changes: the entry's validity cell goes invalid, so the fast probe
+        // finds the entry but its handler misses, and the runtime call finds `other.m`. The
+        // loads after it hit in the fast body only if the miss path put a new entry there.
+        assert!(property::set_prototype_of(t.rt(), mid, other));
+        assert!(stress || entry(&t, Op::Load, o, "m").is_some());
+        assert!(!load_counted(&mut t, o, "m", int(9), stress));
+        for _ in 0..2 {
+            assert!(load_counted(&mut t, o, "m", int(9), stress) || stress);
+        }
+        // `m` goes away from the holder `other`: undefined, never a stale 9; then the MISSING
+        // case hits in the fast body. `m` comes back: never a stale undefined.
+        assert!(props::own_delete(t.rt(), other, key(t.rt(), "m")).is_some());
+        assert!(!load_counted(&mut t, o, "m", UNDEFINED, stress));
+        assert!(load_counted(&mut t, o, "m", UNDEFINED, stress) || stress);
+        props::own_define(t.rt(), other, key(t.rt(), "m"), int(4), attr::DEFAULT);
+        assert!(!load_counted(&mut t, o, "m", int(4), stress));
+        assert!(load_counted(&mut t, o, "m", int(4), stress) || stress);
+        // The receiver's own prototype changes: it turns dictionary (no entry is ever made
+        // for it), and every load is the generic one, which follows the new chain.
+        assert!(property::set_prototype_of(t.rt(), o, base));
+        assert!(shape::is_dictionary(shape::shape_of(o)));
+        for _ in 0..2 {
+            assert!(!load_counted(&mut t, o, "m", int(1), stress));
+        }
+        t.release_all(kept);
+        t.release_all(kept_p);
+    });
+}
+
+/// Function `f0(a)`: `return a.x` with the name constant at index 300, so the load is a
+/// `Wide` GetNamedProperty.
+fn wide_site() -> ep9_bytecode::VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(ep9_bytecode::FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("f0");
+    s.b.lda_undefined().return_();
+    let mut b = ep9_bytecode::FunctionBuilder::new(meta("f0", 2, 0, 0, 0));
+    let a = b.parameter(0);
+    let slot = b.feedback_slot(ep9_bytecode::FeedbackSlotKind::LoadNamed);
+    for i in 0..300 {
+        b.number_constant(f64::from(i) + 0.5);
+    }
+    let k = b.string_constant("x");
+    assert!(k.index() >= 256);
+    b.get_named_property(a, k, slot).return_();
+    unit("", vec![s.finish(), b.finish().unwrap()])
+}
+
+#[test]
+fn a_wide_get_named_probes_in_its_cold_body_only() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut iso = isolate(c);
+        iso.with_cx_checkpoint(|cx| cx.run_script(wide_site(), "wide.js").map(|_| ()))
+            .unwrap();
+        let mut t = T { iso };
+        let op = object_prototype(t.rt());
+        let objs = megamorphic(&mut t, op, "x");
+        let kept = t.keep_all(&objs);
+        let o = object_with(t.rt(), op, &[("w", int(0)), ("x", int(5))]);
+        assert_eq!(t.ok(0, o, UNDEFINED), int(5));
+        let (h, f) = (handler_hits(), fast_hits());
+        assert_eq!(t.ok(0, o, UNDEFINED), int(5));
+        if !stress {
+            assert_eq!((handler_hits(), fast_hits()), (h + 1, f));
+        }
+        t.release_all(kept);
     });
 }

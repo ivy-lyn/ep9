@@ -2444,6 +2444,139 @@ pub(crate) fn load_global_fast(cx: &Cx, fi: &FunctionInfo, slot: u32) -> Option<
     Some(rd(c, off)).filter(|&v| v != HOLE)
 }
 
+// ---- the stub cache probe in the GetNamedProperty fast body (M10 LEVER-12 NAMED-MISS) -------
+
+/// The hit path of the `GetNamedProperty` (0x21) fast body (M10 LEVER-12 NAMED-MISS, form A):
+/// [`load`], and on a megamorphic entry of a one-byte-scale instruction the stub cache probe
+/// ([`mega_fast`]) before the branch to the cold body. The same answer as [`load`] then
+/// [`handler_mega_load`] (the first half of the cold body, [`get_named_cold`]): `None` sends
+/// the load to the cold body, which probes again and then makes the runtime call, as before.
+/// `fp` is the frame of `fi`; `pc` and `next` are the start of the instruction and of the
+/// next one.
+///
+/// - A monomorphic or polymorphic hit runs the same code as [`load`]: [`mega_fast`] reads the
+///   name operand, the FunctionInfo, its constant and the runtime pointer only on the
+///   megamorphic branch, after an empty `asm!` block, so LLVM does not hoist them onto the
+///   hit path (the +1.4% on t0-prop of the note of [`load`], M7-P1) or keep them in a register
+///   up to there (x86-64 has 5 free registers, `load_with_x86`; one more value is an entry
+///   save on every run, plan rule 81).
+/// - Only the one-byte scale probes here (`next` is `pc + 4`; the handlers know the scale, so
+///   the test folds): a `Wide` or `ExtraWide` instruction misses to its cold path, which
+///   probes as before, and the prefixed fast bodies do not change.
+/// - A stub cache hit runs the same handler code as a monomorphic hit ([`load_hit`]: on
+///   x86-64 [`load_with_x86`], with no jump table).
+/// - No `is_object` test (the cold body has one): a string, a symbol and a BigInt have
+///   ShapeId 0 (H16 K11) and no entry has ShapeId 0 (`stub_cache.rs`), so they miss, as the
+///   monomorphic compare takes the same fact.
+/// - Counts (`ic-stats`): a stub cache hit here is a load hit (`ic_count!(hit)` in the op)
+///   and a stub cache hit (`stub_stats!(Load, true)`). Tests: `FAST_PROBE_HITS` counts it,
+///   and `HANDLER_PROBE_HITS` counts it with the hits of the cold body.
+///
+/// No allocation, no call, not a GC point (H16 Rules: IC hit paths do not allocate or call).
+/// Inline in optimized builds; out of line in debug builds, so a debug handler frame (no
+/// tail calls there: each instruction nests one) does not grow by the probe code
+/// (`tests::profile` runs loops of `Wide` instructions, whose fast body runs this one).
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_or_mega(
+    cx: &Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    next: *const u8,
+    fi: &FunctionInfo,
+    o: u64,
+    slot: u32,
+    name: u32,
+) -> Option<u64> {
+    if !is_cell_bits(o) {
+        return None;
+    }
+    let (key, value) = entry(fi, slot)?;
+    let id = shape_id(o);
+    #[cfg(any(test, feature = "ic-stats"))]
+    let mut stub = false;
+    // [`handler_for`], with the megamorphic test in the arm of the hole key.
+    let h = if key as u32 == id {
+        value
+    } else if key != HOLE {
+        return None;
+    } else if is_cell_bits(value) {
+        poly_case(value, id)?
+    } else if value == MEGA && next == pc.wrapping_add(4) {
+        // SAFETY: a one-byte-scale GetNamedProperty of verified code (4 bytes: the opcode,
+        // then the object, name and slot operands) in the live frame `fp`.
+        let h = unsafe { mega_fast(cx, fp, pc, id) }?;
+        #[cfg(any(test, feature = "ic-stats"))]
+        {
+            stub = true;
+        }
+        h
+    } else {
+        return None;
+    };
+    // `move`: as in [`load`].
+    let r = load_hit(cx.rt(), o, id, move || fi.constant(name), h);
+    #[cfg(any(test, feature = "ic-stats"))]
+    if stub && r.is_some() {
+        // SAFETY: as above.
+        debug_assert_eq!(unsafe { *pc.add(2) } as u32, name);
+        debug_assert!(kind::is_object(o));
+        stub_stats!(Load, true);
+        #[cfg(test)]
+        HANDLER_PROBE_HITS.with(|c| c.set(c.get() + 1));
+        #[cfg(test)]
+        FAST_PROBE_HITS.with(|c| c.set(c.get() + 1));
+    }
+    r
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M10 LEVER-12 NAMED-MISS): how many loads the probe in the `GetNamedProperty`
+    /// fast body ([`load_or_mega`]) answered (they count in [`HANDLER_PROBE_HITS`] too).
+    pub(crate) static FAST_PROBE_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// The polymorphic half of [`handler_for`]: the handler of the case for ShapeId `id` in the
+/// POLY_IC cell `value`, or `None`. The same loop, so the same code.
+#[inline(always)]
+fn poly_case(value: u64, id: u32) -> Option<u64> {
+    let p = cell(value);
+    for i in 0..POLY_CASES {
+        if rd(p, case_key_off(i)) as u32 == id {
+            return Some(rd(p, case_key_off(i) + 8));
+        }
+    }
+    None
+}
+
+/// The stub cache handler for ShapeId `id` and the name of the one-byte-scale
+/// GetNamedProperty at `pc` in frame `fp` ([`load_or_mega`]), or `None`. Not a GC point.
+///
+/// Two empty `asm!` blocks that may read and write memory order the reads. The first one
+/// comes after the megamorphic test, so LLVM reads the name operand, the FunctionInfo, its
+/// constant and the runtime pointer below it, on this branch only: it cannot move a read to
+/// the hit path or reuse a value read before (which would stay live in a register up to
+/// here). The second one comes after the hash, so the runtime pointer is not live during it.
+///
+/// # Safety
+/// `pc` is a one-byte-scale GetNamedProperty of verified code whose function runs in the live
+/// frame `fp`.
+#[inline(always)]
+unsafe fn mega_fast(cx: &Cx, fp: *mut u64, pc: *const u8, id: u32) -> Option<u64> {
+    // SAFETY: the block has no instructions.
+    unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
+    // SAFETY: the name operand is byte 2 of the instruction (caller contract).
+    let n = unsafe { *pc.add(2) };
+    let k = FrameRef(fp).info().constant(u32::from(n));
+    let i = stub_cache::index_of(stub_cache::Op::Load, id, k);
+    // SAFETY: the block has no instructions.
+    unsafe { core::arch::asm!("/* {0} */", in(reg) i, options(nostack, preserves_flags)) };
+    stub_cache::probe_at(cx.rt(), i, stub_cache::Op::Load, id, k)
+}
+
 #[cfg(test)]
 mod x86_form_tests {
     //! [`load_with_x86`] answers as [`load_with`] (M8-P1 X86-SHAPE2). The form runs only on
