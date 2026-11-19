@@ -1,0 +1,164 @@
+# Fixture for the disasm.rs alignment column (M10-P1 X86-ALIGN): llvm-readobj --sections --symbols
+# of an ELF x86-64 object with -align-all-functions=6. Every hot handler starts on a 64-byte line;
+# the cold handler (section alignment 16) is not counted.
+File: frames.o
+Format: elf64-x86-64
+Arch: x86_64
+AddressSize: 64bit
+LoadName: <Not found>
+Sections [
+  Section {
+    Index: 0
+    Name:  (0)
+    Type: SHT_NULL (0x0)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x0
+    Size: 0
+    Link: 0
+    Info: 0
+    AddressAlignment: 0
+    EntrySize: 0
+  }
+  Section {
+    Index: 1
+    Name: .text.ep9h__sib__tail__Ldar (120)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x6)
+      SHF_ALLOC (0x2)
+      SHF_EXECINSTR (0x4)
+    ]
+    Address: 0x0
+    Offset: 0x40
+    Size: 96
+    Link: 0
+    Info: 0
+    AddressAlignment: 64
+    EntrySize: 0
+  }
+  Section {
+    Index: 2
+    Name: .text.ep9h__sib__tail__Star (160)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x6)
+      SHF_ALLOC (0x2)
+      SHF_EXECINSTR (0x4)
+    ]
+    Address: 0x0
+    Offset: 0xC0
+    Size: 30
+    Link: 0
+    Info: 0
+    AddressAlignment: 64
+    EntrySize: 0
+  }
+  Section {
+    Index: 3
+    Name: .text.ep9h__sib__exit__BadOpcode (200)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x6)
+      SHF_ALLOC (0x2)
+      SHF_EXECINSTR (0x4)
+    ]
+    Address: 0x0
+    Offset: 0x100
+    Size: 13
+    Link: 0
+    Info: 0
+    AddressAlignment: 64
+    EntrySize: 0
+  }
+  Section {
+    Index: 4
+    Name: .text.unlikely.ep9h__sib__tail__Foo_cold (240)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x6)
+      SHF_ALLOC (0x2)
+      SHF_EXECINSTR (0x4)
+    ]
+    Address: 0x0
+    Offset: 0x140
+    Size: 40
+    Link: 0
+    Info: 0
+    AddressAlignment: 16
+    EntrySize: 0
+  }
+]
+Symbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: frames.0 (300)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: File (0x4)
+    Other: 0
+    Section: Absolute (0xFFF1)
+  }
+  Symbol {
+    Name: ep9h__sib__tail__Ldar (320)
+    Value: 0x0
+    Size: 30
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text.ep9h__sib__tail__Ldar (0x1)
+  }
+  Symbol {
+    Name: ep9h__sib__tail__Mov (350)
+    Value: 0x40
+    Size: 30
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text.ep9h__sib__tail__Ldar (0x1)
+  }
+  Symbol {
+    Name: ep9h__sib__tail__Star (380)
+    Value: 0x0
+    Size: 30
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text.ep9h__sib__tail__Star (0x2)
+  }
+  Symbol {
+    Name: ep9h__sib__exit__BadOpcode (410)
+    Value: 0x0
+    Size: 13
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other [ (0x2)
+      STV_HIDDEN (0x2)
+    ]
+    Section: .text.ep9h__sib__exit__BadOpcode (0x3)
+  }
+  Symbol {
+    Name: ep9h__sib__tail__Foo_cold (440)
+    Value: 0x0
+    Size: 40
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text.unlikely.ep9h__sib__tail__Foo_cold (0x4)
+  }
+  Symbol {
+    Name: ep9_host_call (470)
+    Value: 0x0
+    Size: 0
+    Binding: Global (0x1)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+]

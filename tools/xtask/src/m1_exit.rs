@@ -372,7 +372,7 @@ const VERDICTS_HOW: &str = "the Spike C and SP-Facts Verdict tables (a markdown 
 /// Codex r3 (M5-P4-ORCH-14): also the root `.cargo/config.toml`. Cargo merges every cargo
 /// config file (`.cargo/config.toml`, or `.cargo/config` with no extension) of the directory it
 /// runs in and of each directory above it, so a `[build]` or `[target]` table there (rustflags,
-/// a linker) changes the spike-c build. Today the root one holds aliases only; spikes/ has none.
+/// a linker) changes the spike-c build. The root one holds aliases and the x86-64 `[target]` rustflags of form C (M10-PRE-ALIGN-FORM); spikes/ has none.
 /// Files outside the repo (cargo's home config, `RUSTFLAGS`) are out by design: the Verdict row
 /// records the host (protocol §8).
 /// The test `verdict_fresh_paths_are_the_spike_c_closure` reads the closure and compares.

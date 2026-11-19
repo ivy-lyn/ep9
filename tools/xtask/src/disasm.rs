@@ -10,7 +10,7 @@
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
 //! | match loop (`--match-loop`) | For SP-Dispatch, whose 20-opcode x86-64 match loop LLVM threads (`ep9loop__<expansion>__<fn>`). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only. T0 (`ep9_vm`) releases sibling calls on every target (H15 ADR, 2026-10-21), so for T0 the loop line is a report, not a gate. |
-//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. Every hot handler (every handler whose name does not end in `_cold`, and on x86-64 also the `HOT_COLD` list: `Wide_cold` and `ExtraWide_cold`, which run the `ops::prefix_set` fast bodies there through `interp::tails::wide`, M9-P1 X86-WIDE-FAST; MC-w43-2; and `CallProperty0_cold`..`CallProperty2_cold`, which run the host call of `slow::call_property` there, M9 OXC-W2-HOSTCALL; MC-w44-4) is scanned. The ones that build a frame on entry (the first instruction saves a register or grows the stack) or save a callee-saved register on entry (a red-zone `mov` save too; M9-P1-WPRE-3), with the callee-saved registers each one saves on entry (the leading prologue, where a push of another register, a stack alignment push, counts 0, then each callee-saved register that the entry code saves before its first conditional branch, call, return or tail jump, with an unconditional jump inside the handler followed; a store of a callee-saved register in a form that the check does not know fails it; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). Report only: an `any-path` line per hot handler that stores a callee-saved register on any path of its block (a shrink-wrapped save too; `any_path_saves`). |
+//! | frames (`--frames GOLDEN`) | Plan rule 81 (no new entry save on a hot x86 handler; docs/plan/10-quality.md, 2026-11-16 note). Its own check and CI step: it builds like the default mode and runs only this check. Every hot handler (every handler whose name does not end in `_cold`, and on x86-64 also the `HOT_COLD` list: `Wide_cold` and `ExtraWide_cold`, which run the `ops::prefix_set` fast bodies there through `interp::tails::wide`, M9-P1 X86-WIDE-FAST; MC-w43-2; and `CallProperty0_cold`..`CallProperty2_cold`, which run the host call of `slow::call_property` there, M9 OXC-W2-HOSTCALL; MC-w44-4) is scanned. The ones that build a frame on entry (the first instruction saves a register or grows the stack) or save a callee-saved register on entry (a red-zone `mov` save too; M9-P1-WPRE-3), with the callee-saved registers each one saves on entry (the leading prologue, where a push of another register, a stack alignment push, counts 0, then each callee-saved register that the entry code saves before its first conditional branch, call, return or tail jump, with an unconditional jump inside the handler followed; a store of a callee-saved register in a form that the check does not know fails it; `entry_saves`), must equal the golden file: one `<expansion> <handler> <saves>` row per handler and a `target` line. A new row, a lost row or a changed count fails; a change that is meant updates the golden in the same PR (`--bless` writes it). Report only: an `any-path` line per hot handler that stores a callee-saved register on any path of its block (a shrink-wrapped save too; `any_path_saves`). x86-64 alignment column (H15 x64 function alignment, M10-P1 X86-ALIGN; M10-PRE-ALIGN-FORM): one `align64 <expansion> <aligned>/<total>` line per expansion in the golden; each hot handler must start on a 64-byte line: the alignment of its section is 64 or more and its offset in that section is a multiple of 64 (`llvm-readobj --sections --symbols`: ELF `sh_addralign`, COFF `IMAGE_SCN_ALIGN_*`; the staticlib holds relocatable objects, so the symbol value alone is 0 with and without the flag; `align_rows`). A handler that does not fails, and so does a line that differs from the golden. The root `.cargo/config.toml` x86-64 `[target]` rustflags set the alignment; `RUSTFLAGS` in the environment replaces them, and this column then fails. aarch64 goldens have no `align64` line. |
 //! | Mach-O data in code | x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE). The check drops what `llvm-objdump -d` decodes from those bytes, so table data never counts as jumps, calls, returns or stack accesses, and decodes the code after each table again from the table end, so a decode that ran across the table end cannot hide an instruction there. |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
@@ -39,7 +39,8 @@ usage: cargo xtask disasm-check [options]
   --max-args N          handler argument limit (default 4)
   --match-loop          also check the match loop (ep9loop__* symbols; rule on x86-64 only)
   --frames GOLDEN       only the frame check: the hot handlers that build a frame on entry and
-                        their entry register saves must equal GOLDEN (one target, no --binary)
+                        their entry register saves must equal GOLDEN (one target, no --binary);
+                        on x86-64 also every hot handler starts on a 64-byte line (align64)
   --bless               with --frames: write GOLDEN from this build instead of checking it
   --objdump PATH, --nm PATH   tools (default: rustup llvm-tools, then PATH)
   -v, --verbose         one line per handler";
@@ -1544,6 +1545,34 @@ struct FrameRow {
     saves: usize,
 }
 
+/// The comment of the x86-64 alignment column in a frame golden (after [`FRAMES_HEAD`]; only a
+/// golden with `align64` lines has it, so the aarch64 goldens keep their text).
+const ALIGN_HEAD: &str = "\
+# x86-64 alignment column (H15 x64 function alignment; M10-PRE-ALIGN-FORM): one
+# `align64 <expansion> <aligned>/<total>` line. Of the <total> hot handlers, <aligned> start on a
+# 64-byte line: the alignment of the handler's section is 64 or more and its offset in that section
+# is a multiple of 64. A handler that does not fails the check (the x86-64 rustflags of the root
+# .cargo/config.toml are lost: RUSTFLAGS in the environment replaces them), and so does a line that
+# differs from this file.
+";
+
+/// One `align64` line of the frame golden (x86-64 only; [`align_rows`]): of the `total` hot
+/// handlers of expansion `exp`, `aligned` start on a 64-byte line.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AlignRow {
+    exp: String,
+    aligned: usize,
+    total: usize,
+}
+
+/// A frame golden file: its target, its `align64` lines and its frame rows, each sorted.
+#[derive(Debug, PartialEq, Eq)]
+struct Golden {
+    target: String,
+    align: Vec<AlignRow>,
+    rows: Vec<FrameRow>,
+}
+
 /// Registers that one prologue instruction saves, or `None` if the instruction is not part of
 /// a prologue. x86-64: a `push` of a callee-saved register ([`callee_saved`]: rbx, rbp, r12-r15)
 /// saves 1, a `push` of any other register (a stack alignment push, `push %rax`) saves 0
@@ -1953,19 +1982,27 @@ fn frame_rows(arch: Arch, handlers: &[Handler], blocks: &[Block]) -> Result<Vec<
         .collect())
 }
 
-/// The golden file text for `rows` of `target`.
-fn frames_text(target: &str, rows: &[FrameRow]) -> String {
-    let mut s = format!("{FRAMES_HEAD}target {target}\n");
+/// The golden file text for the `align64` lines `align` and the frame rows `rows` of `target`.
+fn frames_text(target: &str, align: &[AlignRow], rows: &[FrameRow]) -> String {
+    let mut s = FRAMES_HEAD.to_string();
+    if !align.is_empty() {
+        s.push_str(ALIGN_HEAD);
+    }
+    s.push_str(&format!("target {target}\n"));
+    for a in align {
+        s.push_str(&format!("align64 {} {}/{}\n", a.exp, a.aligned, a.total));
+    }
     for r in rows {
         s.push_str(&format!("{} {} {}\n", r.exp, r.op, r.saves));
     }
     s
 }
 
-/// Reads a golden file: its target and its rows, sorted.
-fn parse_frames(text: &str) -> Result<(String, Vec<FrameRow>), String> {
+/// Reads a golden file: its target, its `align64` lines and its rows, sorted.
+fn parse_frames(text: &str) -> Result<Golden, String> {
     let mut target: Option<String> = None;
     let mut rows = Vec::new();
+    let mut align = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let l = line.trim();
         if l.is_empty() || l.starts_with('#') {
@@ -1977,6 +2014,25 @@ fn parse_frames(text: &str) -> Result<(String, Vec<FrameRow>), String> {
                     return Err(format!("frame golden line {}: a second target line", n + 1));
                 }
             }
+            ["align64", exp, frac] => {
+                let bad = || {
+                    format!(
+                        "frame golden line {}: not `align64 <expansion> <aligned>/<total>`: {l:?}",
+                        n + 1
+                    )
+                };
+                let (a, t) = frac.split_once('/').ok_or_else(bad)?;
+                let (aligned, total) =
+                    (a.parse().map_err(|_| bad())?, t.parse().map_err(|_| bad())?);
+                if aligned > total {
+                    return Err(bad());
+                }
+                align.push(AlignRow {
+                    exp: exp.to_string(),
+                    aligned,
+                    total,
+                });
+            }
             [exp, op, saves] => rows.push(FrameRow {
                 exp: exp.to_string(),
                 op: op.to_string(),
@@ -1986,7 +2042,7 @@ fn parse_frames(text: &str) -> Result<(String, Vec<FrameRow>), String> {
             }),
             _ => {
                 return Err(format!(
-                    "frame golden line {}: not `target <triple>` or `<expansion> <handler> <saves>`: {l:?}",
+                    "frame golden line {}: not `target <triple>`, `align64 <expansion> <aligned>/<total>` or `<expansion> <handler> <saves>`: {l:?}",
                     n + 1
                 ));
             }
@@ -2000,19 +2056,58 @@ fn parse_frames(text: &str) -> Result<(String, Vec<FrameRow>), String> {
     {
         return Err(format!("frame golden: {} {} twice", w[0].exp, w[0].op));
     }
-    Ok((target, rows))
+    align.sort();
+    if let Some(w) = align.windows(2).find(|w| w[0].exp == w[1].exp) {
+        return Err(format!("frame golden: align64 {} twice", w[0].exp));
+    }
+    Ok(Golden {
+        target,
+        align,
+        rows,
+    })
 }
 
-/// The differences between the rows `got` of this build of `target` and the golden `text`;
-/// empty if they are equal. Every difference fails: a new frame or more saves breaks rule 81,
-/// and a lost frame or fewer saves leaves a stale golden that would hide a later return.
-fn frames_verdict(target: &str, text: &str, got: &[FrameRow]) -> Result<Vec<String>, String> {
-    let (want_target, want) = parse_frames(text)?;
+/// The differences between the `align64` lines `align` and the rows `got` of this build of
+/// `target` and the golden `text`; empty if they are equal. Every difference fails: a new frame
+/// or more saves breaks rule 81, and a lost frame or fewer saves leaves a stale golden that would
+/// hide a later return. An `align64` line that is new, lost or changed fails too (an aarch64
+/// build has none).
+fn frames_verdict(
+    target: &str,
+    text: &str,
+    align: &[AlignRow],
+    got: &[FrameRow],
+) -> Result<Vec<String>, String> {
+    let Golden {
+        target: want_target,
+        align: want_align,
+        rows: want,
+    } = parse_frames(text)?;
     let mut p = Vec::new();
     if want_target != target {
         p.push(format!(
             "the golden is for {want_target}, this build is for {target}"
         ));
+    }
+    let frac = |a: &AlignRow| format!("{}/{}", a.aligned, a.total);
+    let wa: BTreeMap<_, String> = want_align
+        .iter()
+        .map(|a| (a.exp.clone(), frac(a)))
+        .collect();
+    let ga: BTreeMap<_, String> = align.iter().map(|a| (a.exp.clone(), frac(a))).collect();
+    for (exp, g) in &ga {
+        match wa.get(exp) {
+            None => p.push(format!("new align64 line: {exp} {g}")),
+            Some(w) if w != g => p.push(format!("align64 changed: {exp} {w} -> {g}")),
+            Some(_) => {}
+        }
+    }
+    for (exp, w) in &wa {
+        if !ga.contains_key(exp) {
+            p.push(format!(
+                "no align64 line now: {exp} (golden: {w}; this build has no alignment column)"
+            ));
+        }
     }
     let key = |r: &FrameRow| (r.exp.clone(), r.op.clone());
     let w: BTreeMap<_, usize> = want.iter().map(|r| (key(r), r.saves)).collect();
@@ -2037,8 +2132,10 @@ fn frames_verdict(target: &str, text: &str, got: &[FrameRow]) -> Result<Vec<Stri
     Ok(p)
 }
 
-/// The frame check (`--frames`) of one built file: compares the frame rows with the golden
-/// file, or writes it (`--bless`). Prints every row, so a CI log holds the new golden.
+/// The frame check (`--frames`) of one built file: compares the frame rows (and on x86-64 the
+/// `align64` lines, [`align_rows`]) with the golden file, or writes it (`--bless`). Prints every
+/// row, so a CI log holds the new golden. A hot x86-64 handler that does not start on a 64-byte
+/// line fails the check, and `--bless` then writes nothing.
 fn check_frames(
     tools: &Tools,
     file: &Path,
@@ -2055,6 +2152,36 @@ fn check_frames(
     };
     let rows = frame_rows(l.arch, &l.handlers, &l.blocks)?;
     println!("== {target} ({}, {}): {}", l.abi, l.format, file.display());
+    let (align, misaligned) = if l.arch == Arch::X64 {
+        let readobj = find_tool("llvm-readobj", &None)?;
+        let mut places = BTreeMap::new();
+        let mut members: Vec<&str> = l.handlers.iter().map(|h| h.member.as_str()).collect();
+        members.sort();
+        members.dedup();
+        for m in members {
+            let out = in_member(tools, file, m, |obj| {
+                run_quiet(
+                    Command::new(&readobj)
+                        .args(["--sections", "--symbols"])
+                        .arg(obj),
+                )
+            })?;
+            for (name, ps) in parse_places(&out)? {
+                places.insert((m.to_string(), name), ps);
+            }
+        }
+        align_rows(&l.handlers, &places)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    if l.arch == Arch::X64 {
+        println!(
+            "   alignment: hot handlers that start on a 64-byte line, per expansion (align64 <expansion> <aligned>/<total>):"
+        );
+    }
+    for a in &align {
+        println!("   align64 {} {}/{}", a.exp, a.aligned, a.total);
+    }
     println!(
         "   frames: {} hot handler rows build a frame on entry (<expansion> <handler> <saves>):",
         rows.len()
@@ -2063,14 +2190,29 @@ fn check_frames(
         println!("   frame {} {} {}", r.exp, r.op, r.saves);
     }
     print_any_path(l.arch, &l.handlers, &l.blocks, &rows)?;
+    for line in &misaligned {
+        println!("   FAIL {line}");
+    }
+    if !misaligned.is_empty() {
+        println!(
+            "   A hot x86-64 handler does not start on a 64-byte line (H15 x64 function alignment). \
+             The x86-64 [target] rustflags of the root .cargo/config.toml set it \
+             (-C llvm-args=-align-all-functions=6); RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS in the \
+             environment replaces them. Build without them. --bless writes no golden then."
+        );
+    }
     if bless {
-        fs::write(golden, frames_text(target, &rows))
+        if !misaligned.is_empty() {
+            println!("   RESULT frames {}: FAIL (not written)", l.abi);
+            return Ok(false);
+        }
+        fs::write(golden, frames_text(target, &align, &rows))
             .map_err(|e| format!("{}: {e}", golden.display()))?;
         println!("   wrote {}", golden.display());
         return Ok(true);
     }
     let text = fs::read_to_string(golden).map_err(|e| format!("{}: {e}", golden.display()))?;
-    let p = frames_verdict(target, &text, &rows)?;
+    let p = frames_verdict(target, &text, &align, &rows)?;
     for line in &p {
         println!("   FAIL {line}");
     }
@@ -2078,17 +2220,18 @@ fn check_frames(
         println!(
             "   The hot handler frames differ from {}. A new frame or a new entry save on a hot \
              handler breaks plan rule 81 (docs/plan/10-quality.md). If the change is meant, run \
-             this command again with --bless (or copy the rows above after `frame`) and commit \
-             the golden in the same PR.",
+             this command again with --bless (or copy the rows above after `frame`, and the \
+             `align64` lines) and commit the golden in the same PR.",
             golden.display()
         );
     }
+    let ok = p.is_empty() && misaligned.is_empty();
     println!(
         "   RESULT frames {}: {}",
         l.abi,
-        if p.is_empty() { "PASS" } else { "FAIL" }
+        if ok { "PASS" } else { "FAIL" }
     );
-    Ok(p.is_empty())
+    Ok(ok)
 }
 
 /// The callee-saved registers of the handler ABI ([`callee_saved`]) that handler block `b` stores
@@ -2171,6 +2314,203 @@ fn print_any_path(
         );
     }
     Ok(())
+}
+
+/// The x86-64 start alignment that the frame check holds (H15 x64 function alignment; the
+/// `-C llvm-args=-align-all-functions=6` rustflags of the root `.cargo/config.toml`).
+const START_ALIGN: u64 = 64;
+
+/// Where a symbol is in its object: the alignment of its section and its offset in that section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Place {
+    align: u64,
+    offset: u64,
+}
+
+/// A number as `llvm-readobj` prints it: `0x` and hex digits, or decimal digits.
+fn readobj_num(s: &str) -> Option<u64> {
+    match s.strip_prefix("0x") {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// Reads `llvm-readobj --sections --symbols` (the LLVM output style) of one ELF or COFF object:
+/// each symbol in a section, with its places (a name can be in the symbol table more than once).
+/// The section alignment is ELF `AddressAlignment` (`sh_addralign`) or the COFF
+/// `IMAGE_SCN_ALIGN_<n>BYTES` flag (16 when the flag is not there, the PE default). The offset is
+/// the symbol value minus the section address (0 in a relocatable object). The staticlib holds
+/// relocatable objects with one section per function, so a handler symbol value is 0 with and
+/// without the alignment flag: only the section alignment shows the flag. Other formats (Mach-O)
+/// are an error: no x86-64 golden is for them.
+fn parse_places(out: &str) -> Result<BTreeMap<String, Vec<Place>>, String> {
+    let format = out
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Format: "))
+        .unwrap_or("");
+    let coff = format.starts_with("COFF");
+    if !coff && !format.starts_with("elf") {
+        return Err(format!(
+            "the alignment column reads ELF and COFF objects only, not {format:?}"
+        ));
+    }
+    let mut sections: BTreeMap<u64, Place> = BTreeMap::new();
+    let mut syms: Vec<(String, u64, u64)> = Vec::new();
+    let mut depth = 0usize;
+    let mut kind = "";
+    let mut fields: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut flag_align: Option<u64> = None;
+    for line in out.lines() {
+        let t = line.trim();
+        if let Some(k) = t.strip_suffix('{') {
+            depth += 1;
+            if depth == 1 {
+                kind = k.trim();
+                fields.clear();
+                flag_align = None;
+            }
+            continue;
+        }
+        if t == "}" {
+            if depth == 1 {
+                let num = |k: &str| fields.get(k).and_then(|v| readobj_num(v));
+                match kind {
+                    "Section" => {
+                        let (n, align, addr) = if coff {
+                            (
+                                num("Number"),
+                                flag_align.or(Some(16)),
+                                num("VirtualAddress"),
+                            )
+                        } else {
+                            (num("Index"), num("AddressAlignment"), num("Address"))
+                        };
+                        match (n, align, addr) {
+                            (Some(n), Some(align), Some(offset)) => {
+                                sections.insert(n, Place { align, offset });
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "llvm-readobj: a section with no number, alignment or address: {fields:?}"
+                                ));
+                            }
+                        }
+                    }
+                    "Symbol" => {
+                        // ELF: `Name: <name> (<string table offset>)`; COFF: `Name: <name>`.
+                        let name = fields.get("Name").map(|v| match v.rsplit_once(" (") {
+                            Some((n, _)) if !coff => n,
+                            _ => v,
+                        });
+                        // `Section: <name> (<number>)`; an undefined or absolute symbol has a
+                        // number that names no section (or does not parse) and is skipped.
+                        let sec = fields
+                            .get("Section")
+                            .and_then(|v| v.rsplit_once(" ("))
+                            .and_then(|(_, n)| readobj_num(n.trim_end_matches(')')));
+                        if let (Some(name), Some(value), Some(sec)) = (name, num("Value"), sec) {
+                            syms.push((name.to_string(), value, sec));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if depth != 1 {
+            continue;
+        }
+        if let Some(r) = t.strip_prefix("IMAGE_SCN_ALIGN_") {
+            flag_align = r.split_once("BYTES").and_then(|(n, _)| n.parse().ok());
+        } else if let Some((k, v)) = t.split_once(": ") {
+            fields.insert(k, v);
+        }
+    }
+    let mut places: BTreeMap<String, Vec<Place>> = BTreeMap::new();
+    for (name, value, sec) in syms {
+        // Section 0 is "undefined" in ELF and COFF.
+        let Some(s) = sections.get(&sec).filter(|_| sec != 0) else {
+            continue;
+        };
+        let offset = value.checked_sub(s.offset).ok_or_else(|| {
+            format!(
+                "llvm-readobj: {name} at {value:#x} is before its section ({:#x})",
+                s.offset
+            )
+        })?;
+        places.entry(name).or_default().push(Place {
+            align: s.align,
+            offset,
+        });
+    }
+    Ok(places)
+}
+
+/// The x86-64 alignment column of the frame check (H15 x64 function alignment; M10-P1
+/// X86-ALIGN, M10-PRE-ALIGN-FORM): per expansion, the hot handlers ([`is_hot`]) that start on a
+/// 64-byte line and all hot handlers, and one FAIL line per expansion with a handler that does
+/// not. A handler starts on a 64-byte line when each of its places (`places`, keyed by archive
+/// member and symbol name; [`parse_places`]) is in a section with an alignment of 64 or more, at
+/// an offset that is a multiple of 64. A hot handler with no place is an error.
+fn align_rows(
+    handlers: &[Handler],
+    places: &BTreeMap<(String, String), Vec<Place>>,
+) -> Result<(Vec<AlignRow>, Vec<String>), String> {
+    // (expansion, handler) -> its places, each handler once.
+    let mut hot: BTreeMap<(String, String), &[Place]> = BTreeMap::new();
+    for h in handlers {
+        let op = h.name.rsplit("__").next().unwrap_or(&h.name);
+        if !is_hot(Arch::X64, op) {
+            continue;
+        }
+        let ps = places
+            .get(&(h.member.clone(), h.raw.clone()))
+            .filter(|ps| !ps.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "{}: no section in llvm-readobj --sections --symbols",
+                    h.name
+                )
+            })?;
+        hot.insert((h.exp.clone(), h.name.clone()), ps);
+    }
+    let mut per: BTreeMap<String, (usize, usize, Vec<String>)> = BTreeMap::new();
+    for ((exp, name), ps) in &hot {
+        let e = per.entry(exp.clone()).or_default();
+        e.1 += 1;
+        match ps
+            .iter()
+            .find(|p| p.align < START_ALIGN || p.offset % START_ALIGN != 0)
+        {
+            None => e.0 += 1,
+            Some(p) => e.2.push(format!(
+                "{name} (section alignment {}, offset {:#x})",
+                p.align, p.offset
+            )),
+        }
+    }
+    let mut rows = Vec::new();
+    let mut fails = Vec::new();
+    for (exp, (aligned, total, bad)) in per {
+        if !bad.is_empty() {
+            let more = if bad.len() > 3 {
+                format!(", and {} more", bad.len() - 3)
+            } else {
+                String::new()
+            };
+            fails.push(format!(
+                "x86-64 alignment: {exp} {aligned}/{total} hot handlers start on a 64-byte line; not: {}{more}",
+                bad[..bad.len().min(3)].join(", ")
+            ));
+        }
+        rows.push(AlignRow {
+            exp,
+            aligned,
+            total,
+        });
+    }
+    Ok((rows, fails))
 }
 
 #[cfg(test)]
@@ -2743,18 +3083,22 @@ Section
         assert_eq!(names, [("BadOpcode", 0), ("CallProperty0", 2)]);
         let golden = frames_fixture("golden.txt");
         assert_eq!(
-            frames_verdict(FRAMES_TARGET, &golden, &rows).unwrap(),
+            frames_verdict(FRAMES_TARGET, &golden, &[], &rows).unwrap(),
             Vec::<String>::new()
         );
         // --bless writes a file that passes and reads back the same rows.
-        let text = frames_text(FRAMES_TARGET, &rows);
+        let text = frames_text(FRAMES_TARGET, &[], &rows);
         assert!(text.starts_with(FRAMES_HEAD));
         assert_eq!(
             parse_frames(&text).unwrap(),
-            (FRAMES_TARGET.to_string(), rows.clone())
+            Golden {
+                target: FRAMES_TARGET.to_string(),
+                align: Vec::new(),
+                rows: rows.clone()
+            }
         );
         assert!(
-            frames_verdict(FRAMES_TARGET, &text, &rows)
+            frames_verdict(FRAMES_TARGET, &text, &[], &rows)
                 .unwrap()
                 .is_empty()
         );
@@ -2765,7 +3109,7 @@ Section
         let rows = fixture_rows("head.txt");
         let golden = frames_fixture("golden.txt");
         assert_eq!(
-            frames_verdict(FRAMES_TARGET, &golden, &rows).unwrap(),
+            frames_verdict(FRAMES_TARGET, &golden, &[], &rows).unwrap(),
             [
                 "more saves: sib CallProperty0 2 -> 3",
                 "new frame: sib GetNamedProperty (1 saves on entry)",
@@ -2774,7 +3118,7 @@ Section
         // The golden of another target fails even with equal rows.
         let base = fixture_rows("base.txt");
         assert_eq!(
-            frames_verdict("x86_64-pc-windows-msvc", &golden, &base).unwrap(),
+            frames_verdict("x86_64-pc-windows-msvc", &golden, &[], &base).unwrap(),
             [
                 "the golden is for x86_64-unknown-linux-gnu, this build is for x86_64-pc-windows-msvc"
             ]
@@ -2800,10 +3144,17 @@ Section
             ),
         ] {
             let (_, _, before) = dump_rows(base);
-            let golden = frames_text(target, &before);
-            assert!(frames_verdict(target, &golden, &before).unwrap().is_empty());
+            let golden = frames_text(target, &[], &before);
+            assert!(
+                frames_verdict(target, &golden, &[], &before)
+                    .unwrap()
+                    .is_empty()
+            );
             let (_, _, after) = dump_rows(head);
-            assert_eq!(frames_verdict(target, &golden, &after).unwrap(), [more]);
+            assert_eq!(
+                frames_verdict(target, &golden, &[], &after).unwrap(),
+                [more]
+            );
         }
     }
 
@@ -2840,10 +3191,14 @@ Section
             let (_, _, before) = dump_rows(base);
             let got: Vec<(&str, usize)> = before.iter().map(|r| (r.op.as_str(), r.saves)).collect();
             assert_eq!(got, rows);
-            let golden = frames_text(target, &before);
-            assert!(frames_verdict(target, &golden, &before).unwrap().is_empty());
+            let golden = frames_text(target, &[], &before);
+            assert!(
+                frames_verdict(target, &golden, &[], &before)
+                    .unwrap()
+                    .is_empty()
+            );
             let (_, _, after) = dump_rows(head);
-            assert_eq!(frames_verdict(target, &golden, &after).unwrap(), more);
+            assert_eq!(frames_verdict(target, &golden, &[], &after).unwrap(), more);
         }
     }
 
@@ -2871,14 +3226,14 @@ Section
         let rows = fixture_rows("head.txt");
         let golden = frames_fixture("golden-head.txt");
         assert!(
-            frames_verdict(FRAMES_TARGET, &golden, &rows)
+            frames_verdict(FRAMES_TARGET, &golden, &[], &rows)
                 .unwrap()
                 .is_empty()
         );
         // The reverse (a lost frame, fewer saves) fails too, so the golden never goes stale.
         let base = fixture_rows("base.txt");
         assert_eq!(
-            frames_verdict(FRAMES_TARGET, &golden, &base).unwrap(),
+            frames_verdict(FRAMES_TARGET, &golden, &[], &base).unwrap(),
             [
                 "fewer saves: sib CallProperty0 3 -> 2 (a gain: update the golden)",
                 "no frame now: sib GetNamedProperty (golden: 1 saves; a gain: update the golden)",
@@ -2914,7 +3269,7 @@ Section
         assert_eq!(
             parse_frames("# c\r\ntarget t\r\n\r\nsib Foo 1\r\n")
                 .unwrap()
-                .1
+                .rows
                 .len(),
             1
         );
@@ -3088,11 +3443,11 @@ Section
     fn frames_mov_first_save_makes_a_row() {
         let (_, _, before) = dump_rows("movfirst-x64-base.txt");
         assert!(before.is_empty());
-        let golden = frames_text(FRAMES_TARGET, &before);
+        let golden = frames_text(FRAMES_TARGET, &[], &before);
         let (_, _, after) = dump_rows("movfirst-x64-head.txt");
         assert_eq!(after, [row("RedZone", 1)]);
         assert_eq!(
-            frames_verdict(FRAMES_TARGET, &golden, &after).unwrap(),
+            frames_verdict(FRAMES_TARGET, &golden, &[], &after).unwrap(),
             ["new frame: sib RedZone (1 saves on entry)"]
         );
     }
@@ -3107,9 +3462,9 @@ Section
         let (_, _, after) = dump_rows("alignpush-x64-head.txt");
         assert_eq!(before, [row("StaAlign", 1)]);
         assert_eq!(after, [row("StaAlign", 1)]);
-        let golden = frames_text(FRAMES_TARGET, &before);
+        let golden = frames_text(FRAMES_TARGET, &[], &before);
         assert!(
-            frames_verdict(FRAMES_TARGET, &golden, &after)
+            frames_verdict(FRAMES_TARGET, &golden, &[], &after)
                 .unwrap()
                 .is_empty()
         );
@@ -3166,14 +3521,185 @@ Section
         assert_eq!((abi, handlers), ("x64-sysv", 5));
         let hot = ["CallProperty0_cold", "ExtraWide_cold", "Wide_cold"];
         assert_eq!(rows, hot.map(|op| row(op, 1)));
-        let golden = frames_text(FRAMES_TARGET, &[]);
+        let golden = frames_text(FRAMES_TARGET, &[], &[]);
         assert_eq!(
-            frames_verdict(FRAMES_TARGET, &golden, &rows).unwrap(),
+            frames_verdict(FRAMES_TARGET, &golden, &[], &rows).unwrap(),
             hot.map(|op| format!("new frame: sib {op} (1 saves on entry)"))
         );
         assert!(is_hot(Arch::X64, "Wide_cold") && is_hot(Arch::X64, "Ldar"));
         assert!(is_hot(Arch::X64, "CallProperty1_cold") && is_hot(Arch::X64, "CallProperty2_cold"));
         assert!(!is_hot(Arch::X64, "Call_cold") && !is_hot(Arch::A64, "CallProperty0_cold"));
         assert!(!is_hot(Arch::X64, "Add_cold") && !is_hot(Arch::A64, "ExtraWide_cold"));
+    }
+
+    /// The `align64` lines and the FAIL lines of a `llvm-readobj` fixture (tests/disasm_frames,
+    /// M10-P1 X86-ALIGN), with its handlers taken from the symbol names (nm gives them in the
+    /// real check; one object, so the archive member is empty).
+    fn fixture_align(name: &str) -> (Vec<AlignRow>, Vec<String>) {
+        let ps = parse_places(&frames_fixture(name)).unwrap();
+        let handlers: Vec<Handler> = ps
+            .keys()
+            .filter_map(|raw| {
+                let (name, exp, class) = parse_handler(raw)?;
+                Some(Handler {
+                    raw: raw.clone(),
+                    name,
+                    exp,
+                    class,
+                    member: String::new(),
+                    addr: 0,
+                })
+            })
+            .collect();
+        let places = ps
+            .into_iter()
+            .map(|(n, p)| ((String::new(), n), p))
+            .collect();
+        align_rows(&handlers, &places).unwrap()
+    }
+
+    fn arow(exp: &str, aligned: usize, total: usize) -> AlignRow {
+        AlignRow {
+            exp: exp.to_string(),
+            aligned,
+            total,
+        }
+    }
+
+    /// The pass case: every hot handler is in a section with alignment 64 at an offset that is a
+    /// multiple of 64 (Mov at 0x40 of the Ldar section); the cold handler (alignment 16) is not
+    /// counted. The golden that --bless writes has the column and passes.
+    #[test]
+    fn align_column_passes() {
+        let ps = parse_places(&frames_fixture("align-x64-elf.txt")).unwrap();
+        assert_eq!(
+            ps["ep9h__sib__tail__Mov"],
+            [Place {
+                align: 64,
+                offset: 0x40
+            }]
+        );
+        // Undefined and absolute symbols have no place.
+        assert!(!ps.contains_key("ep9_host_call") && !ps.contains_key("frames.0"));
+        let (align, fails) = fixture_align("align-x64-elf.txt");
+        assert_eq!(align, [arow("sib", 4, 4)]);
+        assert!(fails.is_empty());
+        let rows = fixture_rows("base.txt");
+        let text = frames_text(FRAMES_TARGET, &align, &rows);
+        assert!(text.starts_with(&format!(
+            "{FRAMES_HEAD}{ALIGN_HEAD}target {FRAMES_TARGET}\n"
+        )));
+        assert!(text.contains("\nalign64 sib 4/4\n"));
+        assert_eq!(
+            parse_frames(&text).unwrap(),
+            Golden {
+                target: FRAMES_TARGET.to_string(),
+                align: align.clone(),
+                rows: rows.clone()
+            }
+        );
+        assert!(
+            frames_verdict(FRAMES_TARGET, &text, &align, &rows)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// The misaligned case (the flag is lost): a section with alignment 16 and a handler at
+    /// offset 0x20 of a 64-aligned section each fail, and the golden of the aligned build fails
+    /// too.
+    #[test]
+    fn align_column_misaligned_fails() {
+        let (align, fails) = fixture_align("align-x64-elf-misaligned.txt");
+        assert_eq!(align, [arow("sib", 2, 4)]);
+        assert_eq!(
+            fails,
+            [
+                "x86-64 alignment: sib 2/4 hot handlers start on a 64-byte line; not: \
+                 ep9h__sib__tail__Mov (section alignment 64, offset 0x20), \
+                 ep9h__sib__tail__Star (section alignment 16, offset 0x0)"
+            ]
+        );
+        let rows = fixture_rows("base.txt");
+        let golden = frames_text(FRAMES_TARGET, &[arow("sib", 4, 4)], &rows);
+        assert_eq!(
+            frames_verdict(FRAMES_TARGET, &golden, &align, &rows).unwrap(),
+            ["align64 changed: sib 4/4 -> 2/4"]
+        );
+    }
+
+    /// COFF: the alignment is the IMAGE_SCN_ALIGN_<n>BYTES flag (16 when there is none); the
+    /// AuxSectionDef `Number` of a section symbol is not a section number.
+    #[test]
+    fn align_column_coff() {
+        let (align, fails) = fixture_align("align-x64-coff.txt");
+        assert_eq!(align, [arow("ics", 1, 3)]);
+        assert_eq!(
+            fails,
+            [
+                "x86-64 alignment: ics 1/3 hot handlers start on a 64-byte line; not: \
+                 ep9h__ics__tail__Add (section alignment 16, offset 0x0), \
+                 ep9h__ics__tail__Star (section alignment 16, offset 0x0)"
+            ]
+        );
+        assert!(
+            parse_places("File: x.o\nFormat: Mach-O 64-bit x86-64\n")
+                .unwrap_err()
+                .contains("ELF and COFF objects only")
+        );
+        // A hot handler with no section is an error, never a silent pass.
+        let h = parse_handler("ep9h__ics__tail__Ldar").unwrap();
+        let handler = Handler {
+            raw: h.0.clone(),
+            name: h.0,
+            exp: h.1,
+            class: h.2,
+            member: String::new(),
+            addr: 0,
+        };
+        assert!(
+            align_rows(&[handler], &BTreeMap::new())
+                .unwrap_err()
+                .contains("no section")
+        );
+    }
+
+    /// The golden form of the column: a new, lost or changed `align64` line fails, and a bad
+    /// line is an error.
+    #[test]
+    fn align_golden_lines() {
+        let t = "target x86_64-unknown-linux-gnu\n";
+        let rows = fixture_rows("base.txt");
+        // An x86-64 golden from before the column: the new lines fail.
+        let old = frames_text(FRAMES_TARGET, &[], &rows);
+        assert_eq!(
+            frames_verdict(
+                FRAMES_TARGET,
+                &old,
+                &[arow("ics", 2, 2), arow("sib", 4, 4)],
+                &rows
+            )
+            .unwrap(),
+            ["new align64 line: ics 2/2", "new align64 line: sib 4/4"]
+        );
+        // A build with no column (aarch64) against a golden with one fails.
+        let with = frames_text(FRAMES_TARGET, &[arow("sib", 4, 4)], &rows);
+        assert_eq!(
+            frames_verdict(FRAMES_TARGET, &with, &[], &rows).unwrap(),
+            ["no align64 line now: sib (golden: 4/4; this build has no alignment column)"]
+        );
+        for (bad, err) in [
+            ("align64 sib 5/4\n", "line 2"),
+            ("align64 sib 4\n", "line 2"),
+            ("align64 sib x/4\n", "line 2"),
+            ("align64 sib 4/4\nalign64 sib 4/4\n", "align64 sib twice"),
+        ] {
+            assert!(
+                parse_frames(&format!("{t}{bad}"))
+                    .unwrap_err()
+                    .contains(err),
+                "{bad:?}"
+            );
+        }
     }
 }

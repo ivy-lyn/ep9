@@ -5,7 +5,15 @@
 # in the CI disasm job (rule 81: no new entry save on a hot x86 handler; docs/plan/10-quality.md,
 # 2026-11-16 note). A new row, a lost row or a changed count fails. A change that is meant
 # updates this file in the same PR: run that command with `--bless`, or copy the CI `frame` rows.
+# x86-64 alignment column (H15 x64 function alignment; M10-PRE-ALIGN-FORM): one
+# `align64 <expansion> <aligned>/<total>` line. Of the <total> hot handlers, <aligned> start on a
+# 64-byte line: the alignment of the handler's section is 64 or more and its offset in that section
+# is a multiple of 64. A handler that does not fails the check (the x86-64 rustflags of the root
+# .cargo/config.toml are lost: RUSTFLAGS in the environment replaces them), and so does a line that
+# differs from this file.
 target x86_64-unknown-linux-gnu
+align64 ics 166/166
+align64 sib 166/166
 ics BadOpcode 0
 ics CallAnyReceiver 4
 ics CallProperty 4
