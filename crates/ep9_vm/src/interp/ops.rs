@@ -1137,7 +1137,7 @@ op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     }
 } cold {
     let (o, k) = (st.reg(object), st.constant(name));
-    let r = ic::get_named_cold(st.cx, st.fp, st.pc, o, k, s.0);
+    let r = ic::get_named_cold_at(st.cx, st.fp, st.pc, st.next, o, k, s.0);
     st.result(r)
 });
 // The accumulator holds the home object; the IC is keyed on its prototype (the lookup start)

@@ -1801,11 +1801,11 @@ fn cold_case_matches(k: i32, chain: Chain, c: CellPtr) -> bool {
 
 // ---- the stub cache probe of the GetNamedProperty handler (M7-P1 NAMEDLOAD) ------------------
 
-/// The cold body of `GetNamedProperty` (0x21; M7-P1 NAMEDLOAD): `o.key` after the hit path
-/// ([`load_or_mega`]) missed, with the site's name `key` (an atom) and slot `slot`. First the stub
-/// cache probe ([`handler_mega_load`]), then the runtime call (`slow::get_named`) if it gives
-/// nothing. The value, or 0 if an exception is pending (the runtime call's result). GC point
-/// (the runtime call); the probe is not one.
+/// The cold body of a `Wide` or `ExtraWide` `GetNamedProperty` (0x21; M7-P1 NAMEDLOAD;
+/// [`get_named_cold_at`]): `o.key` after the hit path ([`load_or_mega`]) missed, with the name
+/// `key` (an atom) and slot `slot`. First the stub cache probe ([`handler_mega_load`]), then the
+/// runtime call (`slow::get_named`) if it gives nothing. The value, or 0 if an exception is
+/// pending (the runtime call's result). GC point (the runtime call); the probe is not one.
 #[inline(always)]
 pub(crate) fn get_named_cold(
     cx: &mut Cx,
@@ -1830,10 +1830,10 @@ pub(crate) fn get_named_cold(
 /// fills the entry, [`record`]).
 ///
 /// The cold body is a handler of its own (H15). A one-byte 0x21 probed the same entry in its
-/// fast body ([`load_or_mega`], M10 LEVER-12), so this probe gives `None` for it too; a
-/// Wide or ExtraWide 0x21 probes only here. A hit here skips the runtime call: the frame
-/// record (`Runtime::enter`), the call, and its vector and slot reads. No allocation, no JS,
-/// not a GC point.
+/// fast body ([`load_or_mega`], M10 LEVER-12), so its cold body does not run this probe
+/// ([`get_named_cold_at`]); Wide and ExtraWide 0x21 probe only here. A hit here skips the
+/// runtime call: the frame record (`Runtime::enter`), the call, and its vector and slot reads.
+/// No allocation, no JS, not a GC point.
 #[inline(always)]
 fn handler_mega_load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, key: u64) -> Option<u64> {
     if !kind::is_object(o) {
@@ -2467,8 +2467,9 @@ const _: () = {
 /// The hit path of the `GetNamedProperty` (0x21) fast body (M10 LEVER-12 NAMED-MISS, form A):
 /// [`load`], and on a megamorphic entry of a one-byte-scale instruction the stub cache probe
 /// ([`mega_fast`]) before the branch to the cold body. The same answer as [`load`] then
-/// [`handler_mega_load`] (the first half of the cold body, [`get_named_cold`]): `None` sends
-/// the load to the cold body, which probes again and then makes the runtime call, as before.
+/// [`handler_mega_load`] (the first half of the cold body of a `Wide` or `ExtraWide` 0x21,
+/// [`get_named_cold`]): `None` sends the load to the cold body ([`get_named_cold_at`]), which
+/// makes the runtime call (a one-byte 0x21 does not probe there again).
 /// `fp` is the frame of `fi`; `pc` and `next` are the start of the instruction and of the
 /// next one.
 ///
@@ -2599,6 +2600,36 @@ unsafe fn mega_fast(cx: &Cx, fp: *mut u64, pc: *const u8, id: u32) -> Option<u64
     // SAFETY: the block has no instructions.
     unsafe { core::arch::asm!("/* {0} */", in(reg) i, options(nostack, preserves_flags)) };
     stub_cache::probe_at(cx.rt(), i, stub_cache::Op::Load, id, k)
+}
+
+/// The cold body of `GetNamedProperty` (0x21, `ops.rs`) at the scale of the instruction at
+/// `pc` (`next` is the instruction after it): a one-byte 0x21 makes the runtime call
+/// (`slow::get_named`) at once; a `Wide` or `ExtraWide` one runs [`get_named_cold`] (the stub
+/// cache probe, then the runtime call). The value, or 0 if an exception is pending. GC point.
+///
+/// A one-byte 0x21 at a megamorphic object miss probed this entry in its fast body
+/// ([`load_or_mega`]), and nothing between that probe and this body fills the table or makes
+/// an invalid handler valid (no allocation, no JS), so a probe of the cold body gave `None`
+/// every time: one more hash and table read on each such miss (M10 LEVER-12 Codex nm-r1 F1).
+/// On any other one-byte miss (not a cell, no vector, not megamorphic) that probe gave `None`
+/// at its first test. The runtime call probes once more ([`mega_load`]), as before this lever,
+/// and counts the miss (`ic-stats`), so a miss counts once. The scale test folds: each handler
+/// has one scale (as the `next` test of [`load_or_mega`]).
+#[inline(always)]
+pub(crate) fn get_named_cold_at(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    next: *const u8,
+    o: u64,
+    key: u64,
+    slot: u32,
+) -> u64 {
+    if next == pc.wrapping_add(GET_NAMED_LEN) {
+        slow::get_named(cx, fp, pc, o, key, slot)
+    } else {
+        get_named_cold(cx, fp, pc, o, key, slot)
+    }
 }
 
 #[cfg(test)]

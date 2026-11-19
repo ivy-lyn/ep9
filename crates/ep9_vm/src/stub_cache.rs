@@ -157,6 +157,8 @@ fn index(op: Op, id: u32, name: u64) -> usize {
 /// (a string, a symbol or a BigInt) never matches.
 #[inline(always)]
 pub(crate) fn probe(rt: &Runtime, op: Op, id: u32, name: u64) -> Option<u64> {
+    #[cfg(test)]
+    count_probe();
     let e = &rt.stub_cache.entries[index(op, id, name)];
     (e.key.get() == entry_key(op, id) && e.name.get() == name).then(|| e.handler.get())
 }
@@ -189,6 +191,8 @@ pub(crate) fn index_of(op: Op, id: u32, name: u64) -> usize {
 /// there is an entry save on every run of the handler).
 #[inline(always)]
 pub(crate) fn probe_at(rt: &Runtime, i: usize, op: Op, id: u32, name: u64) -> Option<u64> {
+    #[cfg(test)]
+    count_probe();
     let mut e: *const Entry = &rt.stub_cache.entries[i];
     // SAFETY: the block has no instructions and gives `e` back unchanged. It reads and writes
     // no memory (`nomem`): it only hides the value of `e` from LLVM.
@@ -199,4 +203,17 @@ pub(crate) fn probe_at(rt: &Runtime, i: usize, op: Op, id: u32, name: u64) -> Op
     // SAFETY: `e` is the address of entry `i` of the live table.
     let e = unsafe { &*e };
     (e.key.get() == entry_key(op, id) && e.name.get() == name).then(|| e.handler.get())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (M10 LEVER-12 Codex nm-r1 F1): the probes ([`probe`], [`probe_at`]) on this thread,
+    /// so a test can count the probes of one load.
+    pub(crate) static PROBES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Counts one probe ([`PROBES`]).
+#[cfg(test)]
+fn count_probe() {
+    PROBES.with(|c| c.set(c.get() + 1));
 }

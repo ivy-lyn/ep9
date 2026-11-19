@@ -972,3 +972,78 @@ fn a_wide_get_named_probes_in_its_cold_body_only() {
         t.release_all(kept);
     });
 }
+
+// ---- the probes of one megamorphic miss (M10 LEVER-12 Codex nm-r1 F1) -------------------------
+
+/// The stub cache probes (`stub_cache::PROBES`) of one load `f0(o)` of `t`, which gives `want`.
+fn probes_of(t: &mut T, o: u64, want: u64) -> u32 {
+    let p = stub_cache::PROBES.with(|c| c.get());
+    assert_eq!(t.ok(0, o, UNDEFINED), want);
+    stub_cache::PROBES.with(|c| c.get()) - p
+}
+
+/// A dictionary-mode object under `p` with `x` = 7 (a delete that is not the last, OM-10):
+/// no stub cache entry is ever made for its shape, so each load of `x` at a megamorphic site
+/// misses. The caller roots it.
+fn dictionary_with_x(t: &mut T, p: u64) -> u64 {
+    let d = object_with(t.rt(), p, &[("pad", int(0)), ("x", int(7))]);
+    let pad = key(t.rt(), "pad");
+    assert!(property::delete(&mut t.iso.cx, d, pad, true).unwrap());
+    assert!(shape::is_dictionary(shape::shape_of(d)));
+    d
+}
+
+/// Codex nm-r1 F1: a megamorphic miss of a one-byte GetNamedProperty probes the stub cache
+/// twice, in the fast body (`ic::load_or_mega`) and in the runtime call (`ic::mega_load`), as
+/// the cold-body probe and the runtime call did before M10 LEVER-12: its cold body does not
+/// probe the same entry again (`ic::get_named_cold_at`). A `Wide` one probes in its cold body
+/// and in the runtime call (twice too). A hit in either body probes once. GC does not probe,
+/// so the miss counts hold under GC stress too.
+#[test]
+fn a_megamorphic_miss_probes_the_stub_cache_twice() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Get("x")]);
+        let op = object_prototype(t.rt());
+        let objs = megamorphic(&mut t, op, "x");
+        let kept = t.keep_all(&objs);
+        let d = dictionary_with_x(&mut t, op);
+        let kept_d = t.keep(d);
+        for _ in 0..3 {
+            assert_eq!(probes_of(&mut t, d, int(7)), 2);
+        }
+        // A new shape: the first load misses (two probes) and fills the entry; the next one
+        // hits in the fast body (one probe).
+        let o = object_with(t.rt(), op, &[("new", int(0)), ("x", int(8))]);
+        let kept_o = t.keep(o);
+        assert_eq!(probes_of(&mut t, o, int(8)), 2);
+        let n = probes_of(&mut t, o, int(8));
+        assert!(n == 1 || (stress && n == 2), "{n} probes");
+        t.release(kept_o);
+        t.release(kept_d);
+        t.release_all(kept);
+    });
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut iso = isolate(c);
+        iso.with_cx_checkpoint(|cx| cx.run_script(wide_site(), "wide.js").map(|_| ()))
+            .unwrap();
+        let mut t = T { iso };
+        let op = object_prototype(t.rt());
+        let objs = megamorphic(&mut t, op, "x");
+        let kept = t.keep_all(&objs);
+        let d = dictionary_with_x(&mut t, op);
+        let kept_d = t.keep(d);
+        for _ in 0..3 {
+            assert_eq!(probes_of(&mut t, d, int(7)), 2);
+        }
+        let o = object_with(t.rt(), op, &[("w", int(0)), ("x", int(5))]);
+        let kept_o = t.keep(o);
+        assert_eq!(probes_of(&mut t, o, int(5)), 2);
+        let n = probes_of(&mut t, o, int(5));
+        assert!(n == 1 || (stress && n == 2), "{n} probes");
+        t.release(kept_o);
+        t.release(kept_d);
+        t.release_all(kept);
+    });
+}
