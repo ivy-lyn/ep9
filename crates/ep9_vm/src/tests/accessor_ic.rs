@@ -784,14 +784,18 @@ fn an_inherited_getter_at_a_megamorphic_site_runs_on_every_load() {
         let op = object_prototype(t.rt());
         let (ga, gb) = (host(t.rt(), get_this, "ga"), host(t.rt(), get_two, "gb"));
         let holder = object_with(t.rt(), op, &[("h", int(0))]);
-        define_accessor(t.rt(), holder, "x", ga, UNDEFINED);
-        let pads = ["a", "b", "c", "d", "e", "f"];
-        let objs: Vec<u64> = pads
-            .iter()
-            .map(|&p| object_with(t.rt(), holder, &[(p, int(0))]))
-            .collect();
-        let kept = t.keep_all(&objs);
         let kept_h = t.keep(holder);
+        define_accessor(t.rt(), holder, "x", ga, UNDEFINED);
+        // Each receiver is rooted as it is made (GC stress: the conservative scan does not see
+        // a `Vec`'s buffer; Codex nm-r1 F3).
+        let (mut objs, mut kept) = (vec![], vec![]);
+        for p in ["a", "b", "c", "d", "e", "f"] {
+            let o = object_with(t.rt(), holder, &[(p, int(0))]);
+            kept.push(t.keep(o));
+            objs.push(o);
+        }
+        // A collection: the receivers live on through their handles only.
+        t.collect();
         for &o in &objs {
             assert_eq!(t.ok(0, o, UNDEFINED), o);
         }

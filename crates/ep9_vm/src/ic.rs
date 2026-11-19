@@ -2562,6 +2562,10 @@ thread_local! {
     /// Tests (M10 LEVER-12 NAMED-MISS): how many loads the probe in the `GetNamedProperty`
     /// fast body ([`load_or_mega`]) answered (they count in [`HANDLER_PROBE_HITS`] too).
     pub(crate) static FAST_PROBE_HITS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    /// Tests (M10 LEVER-12 Codex nm-r1 F2): how many times the fast body ran [`mega_fast`],
+    /// counted before it reads the name operand, so a `Wide` or `ExtraWide` instruction that
+    /// got past the scale test of [`load_or_mega`] counts even if that read is out of bounds.
+    pub(crate) static FAST_PROBE_TRIES: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 /// The polymorphic half of [`handler_for`]: the handler of the case for ShapeId `id` in the
@@ -2593,6 +2597,8 @@ fn poly_case(value: u64, id: u32) -> Option<u64> {
 unsafe fn mega_fast(cx: &Cx, fp: *mut u64, pc: *const u8, id: u32) -> Option<u64> {
     // SAFETY: the block has no instructions.
     unsafe { core::arch::asm!("", options(nostack, preserves_flags)) };
+    #[cfg(test)]
+    FAST_PROBE_TRIES.with(|c| c.set(c.get() + 1));
     // SAFETY: the name operand is byte `GET_NAMED_NAME_AT` of the instruction (caller contract).
     let n = unsafe { *pc.add(GET_NAMED_NAME_AT) };
     let k = FrameRef(fp).info().constant(u32::from(n));

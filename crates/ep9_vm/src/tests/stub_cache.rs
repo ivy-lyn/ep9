@@ -962,6 +962,7 @@ fn a_wide_get_named_probes_in_its_cold_body_only() {
         let op = object_prototype(t.rt());
         let objs = megamorphic(&mut t, op, "x");
         let kept = t.keep_all(&objs);
+        let tries = fast_tries();
         let o = object_with(t.rt(), op, &[("w", int(0)), ("x", int(5))]);
         assert_eq!(t.ok(0, o, UNDEFINED), int(5));
         let (h, f) = (handler_hits(), fast_hits());
@@ -969,6 +970,8 @@ fn a_wide_get_named_probes_in_its_cold_body_only() {
         if !stress {
             assert_eq!((handler_hits(), fast_hits()), (h + 1, f));
         }
+        // The scale test of the fast body (Codex nm-r1 F2): no probe was tried at all.
+        assert_eq!(fast_tries(), tries);
         t.release_all(kept);
     });
 }
@@ -1046,4 +1049,85 @@ fn a_megamorphic_miss_probes_the_stub_cache_twice() {
         t.release(kept_d);
         t.release_all(kept);
     });
+}
+
+// ---- the scale test of the fast-body probe (M10 LEVER-12 Codex nm-r1 F2) ----------------------
+
+/// The runs of the fast-body probe (`ic::mega_fast`), counted before it reads the name operand.
+fn fast_tries() -> u32 {
+    ic::FAST_PROBE_TRIES.with(|c| c.get())
+}
+
+/// Function `f0(a)`: `return a.x`, with `pad` feedback slots before the site's slot (its index
+/// is `pad`) and a pool of one constant, the name. So the load is a `Wide` (pad >= 256) or
+/// `ExtraWide` (pad >= 65536) GetNamedProperty that only its slot operand widens: the byte that
+/// a one-byte read of the name operand would take (byte 2, the register operand's low byte,
+/// 0xfe for `a`) is no index in the pool. The unit and the prefix byte.
+fn slot_widened_site(pad: u32) -> (ep9_bytecode::VerifiedUnit, u8) {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(ep9_bytecode::FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("f0");
+    s.b.lda_undefined().return_();
+    let mut b = ep9_bytecode::FunctionBuilder::new(meta("f0", 2, 0, 0, 0));
+    let a = b.parameter(0);
+    for _ in 0..pad {
+        b.feedback_slot(ep9_bytecode::FeedbackSlotKind::LoadNamed);
+    }
+    let slot = b.feedback_slot(ep9_bytecode::FeedbackSlotKind::LoadNamed);
+    let k = b.string_constant("x");
+    assert_eq!(k.index(), 0);
+    b.get_named_property(a, k, slot).return_();
+    let u = unit("", vec![s.finish(), b.finish().unwrap()]);
+    let code = &u.functions[1].bytecode;
+    assert_eq!(code[1], ep9_bytecode::Opcode::GetNamedProperty as u8);
+    assert_eq!(u.functions[1].constants.len(), 1);
+    let prefix = code[0];
+    (u, prefix)
+}
+
+/// Codex nm-r1 F2: a `Wide` and an `ExtraWide` GetNamedProperty that only the slot operand
+/// widens, with a pool of one constant, at a megamorphic site: the fast body never tries its
+/// probe (the scale test of `ic::load_or_mega`: a one-byte read of the name operand there would
+/// take the register byte 0xfe as a constant index, out of the pool). The cold body probes, so
+/// the second load of a shape hits there. The values are right in every case.
+#[test]
+fn a_slot_widened_get_named_never_tries_the_fast_probe() {
+    each(slot_widened_at::<256, { ep9_bytecode::Opcode::Wide as u8 }>);
+    each(slot_widened_at::<65_536, { ep9_bytecode::Opcode::ExtraWide as u8 }>);
+}
+
+/// [`a_slot_widened_get_named_never_tries_the_fast_probe`] for [`slot_widened_site`] with
+/// `PAD`, which must give the prefix `PREFIX`, under the preset `c`.
+fn slot_widened_at<const PAD: u32, const PREFIX: u8>(c: crate::IsolateConfig) {
+    let stress = c.heap.gc_stress != 0;
+    let (u, got) = slot_widened_site(PAD);
+    assert_eq!(got, PREFIX);
+    let mut iso = isolate(c);
+    iso.with_cx_checkpoint(|cx| cx.run_script(u, "slot-wide.js").map(|_| ()))
+        .unwrap();
+    let mut t = T { iso };
+    let op = object_prototype(t.rt());
+    let tries = fast_tries();
+    let pads = ["a", "b", "c", "d", "e", "f"];
+    let mut kept = vec![];
+    let mut objs = vec![];
+    for (i, p) in pads.iter().enumerate() {
+        let o = object_with(t.rt(), op, &[(p, int(0)), ("x", int(10 + i as i32))]);
+        kept.push(t.keep(o));
+        objs.push(o);
+    }
+    for (i, &o) in objs.iter().enumerate().take(5) {
+        assert_eq!(t.ok(0, o, UNDEFINED), int(10 + i as i32));
+    }
+    assert_eq!(ic::state(t.vector(0), PAD), State::Megamorphic);
+    let o = objs[5];
+    assert_eq!(t.ok(0, o, UNDEFINED), int(15));
+    let (h, f) = (handler_hits(), fast_hits());
+    assert_eq!(t.ok(0, o, UNDEFINED), int(15));
+    if !stress {
+        assert_eq!((handler_hits(), fast_hits()), (h + 1, f));
+    }
+    assert_eq!(fast_tries(), tries);
+    t.release_all(kept);
 }
