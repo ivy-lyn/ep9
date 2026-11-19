@@ -1,0 +1,237 @@
+//! The binary on the fixture project (tests/fixture; its README lists the files). Each run is
+//! its own process, because tsrs keeps process-wide state (src/oracle.rs).
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use ep9_hints::{Expect, Hints, TsFlags, read};
+use sha2::{Digest, Sha256};
+
+const BIN: &str = env!("CARGO_BIN_EXE_ep9-typecheck");
+
+/// The UTF-16 file that the tests add to a copy of the fixture.
+const UTF16_TEXT: &str = "export const u: string = \"\u{e9}\u{1f600}\";\n";
+
+fn fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixture")
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// A copy of the fixture in `dir/p`, with `src/utf16.ts` (UTF-16 LE with its BOM).
+fn fixture_copy(dir: &Path) -> PathBuf {
+    let p = dir.join("p");
+    copy_dir(&fixture(), &p);
+    let mut utf16 = vec![0xff, 0xfe];
+    for unit in UTF16_TEXT.encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    std::fs::write(p.join("src/utf16.ts"), utf16).unwrap();
+    p
+}
+
+fn run(cwd: &Path, args: &[&str]) -> Output {
+    Command::new(BIN)
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Runs the check of `project` to `out` and returns the bytes.
+fn check(cwd: &Path, project: &Path, out: &Path) -> Vec<u8> {
+    let o = run(
+        cwd,
+        &[project.to_str().unwrap(), "--out", out.to_str().unwrap()],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    std::fs::read(out).unwrap()
+}
+
+/// The fixture's flags: target es2022 gives useDefineForClassFields; experimentalDecorators set.
+fn flags() -> TsFlags {
+    TsFlags {
+        use_define_for_class_fields: true,
+        experimental_decorators: true,
+        emit_decorator_metadata: false,
+    }
+}
+
+fn hints(bytes: &[u8]) -> Hints {
+    let expect = Expect {
+        fact_schema_version: ep9_typecheck::FACT_SCHEMA_VERSION,
+        ts_flags: flags(),
+    };
+    read(bytes, &expect).expect("ep9_hints::read accepts the output")
+}
+
+fn sha(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+fn table(h: &Hints) -> Vec<(&str, bool)> {
+    h.files
+        .iter()
+        .map(|f| (f.path.as_str(), f.has_type_errors))
+        .collect()
+}
+
+#[test]
+fn fixture_gives_the_header_and_the_file_table() {
+    let dir = scratch("table");
+    let p = fixture_copy(&dir);
+    let h = hints(&check(&dir, &p, &dir.join("out.ep9h")));
+    assert_eq!(Some(h.header.tsrs_commit), ep9_typecheck::tsrs_commit());
+    assert_eq!(
+        h.header.fact_schema_version,
+        ep9_typecheck::FACT_SCHEMA_VERSION
+    );
+    assert_eq!(h.header.ts_flags, flags());
+    assert_eq!(
+        table(&h),
+        [
+            ("src/bad.ts", true),
+            ("src/bom.ts", false),
+            ("src/ok.ts", false),
+            ("src/utf16.ts", false),
+        ]
+    );
+    assert!(h.records.is_empty() && h.classes.is_empty() && h.fields.is_empty());
+
+    // The hash is of the decoded UTF-8 text after the BOM strip (H37-Q3).
+    let raw = |name: &str| std::fs::read(p.join("src").join(name)).unwrap();
+    let hash = |i: usize| h.files[i].text_hash;
+    assert_eq!(hash(0), sha(&raw("bad.ts")));
+    let bom = raw("bom.ts");
+    assert_eq!(&bom[..3], b"\xef\xbb\xbf");
+    assert_eq!(hash(1), sha(&bom[3..]));
+    assert_ne!(hash(1), sha(&bom));
+    let ok = raw("ok.ts");
+    assert!(std::str::from_utf8(&ok).unwrap().contains("größe € 😀"));
+    assert_eq!(hash(2), sha(&ok));
+    // UTF-16: the hash of the UTF-8 form, never of the UTF-16 bytes.
+    let utf16 = raw("utf16.ts");
+    assert_eq!(hash(3), sha(UTF16_TEXT.as_bytes()));
+    assert_ne!(hash(3), sha(&utf16));
+    assert_ne!(hash(3), sha(&utf16[2..]));
+}
+
+#[test]
+fn same_input_twice_gives_the_same_bytes() {
+    let dir = scratch("twice");
+    let a = check(&fixture(), Path::new("tsconfig.json"), &dir.join("a.ep9h"));
+    let b = check(&dir, &fixture(), &dir.join("b.ep9h"));
+    let c = check(&dir, &fixture().join("tsconfig.json"), &dir.join("c.ep9h"));
+    assert_eq!(a, b, "another current directory gives other bytes");
+    assert_eq!(a, c, "the dir and its tsconfig.json give other bytes");
+    assert_eq!(
+        table(&hints(&a)),
+        [
+            ("src/bad.ts", true),
+            ("src/bom.ts", false),
+            ("src/ok.ts", false)
+        ]
+    );
+}
+
+#[test]
+fn verify_reads_the_file_back() {
+    let dir = scratch("verify");
+    let out = dir.join("f.ep9h");
+    let bytes = check(&dir, &fixture(), &out);
+    let o = run(&dir, &["--verify", out.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = String::from_utf8(o.stdout).unwrap();
+    assert!(
+        text.starts_with("ok: schema 1 fact-schema 2 tsrs "),
+        "{text}"
+    );
+    assert!(
+        text.contains("files 3 (type errors 1), classes 0, records 0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  src/bad.ts has_type_errors=1 sha256="),
+        "{text}"
+    );
+    // A trailing byte is dropped.
+    let mut bad = bytes;
+    bad.push(0);
+    std::fs::write(&out, &bad).unwrap();
+    let o = run(&dir, &["--verify", out.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("dropped: trailing-bytes"));
+}
+
+#[test]
+fn a_syntax_error_does_not_hide_the_type_errors_of_other_files() {
+    // get_diagnostics_of_any_program skips every semantic check after a syntax error; the
+    // oracle does not (src/oracle.rs), so bad.ts still has its type error.
+    let dir = scratch("syntax");
+    let p = fixture_copy(&dir);
+    std::fs::write(p.join("src/syntax.ts"), "export const = ;\n").unwrap();
+    let h = hints(&check(&dir, &p, &dir.join("out.ep9h")));
+    assert_eq!(
+        table(&h),
+        [
+            ("src/bad.ts", true),
+            ("src/bom.ts", false),
+            ("src/ok.ts", false),
+            ("src/syntax.ts", true),
+            ("src/utf16.ts", false),
+        ]
+    );
+}
+
+#[test]
+fn an_error_in_no_table_file_marks_every_file() {
+    // A types entry that does not exist (TS2688) names no source file of the table.
+    let dir = scratch("global");
+    let p = fixture_copy(&dir);
+    let config = std::fs::read_to_string(p.join("tsconfig.json")).unwrap();
+    let config = config.replace("\"types\": []", "\"types\": [\"no-such-types\"]");
+    std::fs::write(p.join("tsconfig.json"), config).unwrap();
+    let o = run(&dir, &[p.to_str().unwrap(), "--out", "out.ep9h"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("TS2688"));
+    let h = hints(&std::fs::read(dir.join("out.ep9h")).unwrap());
+    assert_eq!(h.files.len(), 4);
+    assert!(h.files.iter().all(|f| f.has_type_errors), "{:?}", table(&h));
+}
+
+#[test]
+fn bad_arguments_and_a_missing_config() {
+    let dir = scratch("args");
+    for args in [
+        &[][..],
+        &["p"],
+        &["--out", "x"],
+        &["--verify"],
+        &["a", "b", "c"],
+    ] {
+        assert_eq!(run(&dir, args).status.code(), Some(2), "{args:?}");
+    }
+    let o = run(&dir, &["no-such-dir", "--out", "x.ep9h"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(!dir.join("x.ep9h").exists());
+    let o = run(&dir, &["--verify", "no-such-file.ep9h"]);
+    assert_eq!(o.status.code(), Some(1));
+}
