@@ -87,6 +87,10 @@ test("pairing: the first 2 legs of the first platform and CPU model with 2, in l
   assert.deepEqual(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "B"), l("w4", "C")]), { cpu: "B", boxes: [l("w2", "B"), l("w3", "B")] });
   assert.equal(pairLegs([l("w1", "A"), l("w2", "B"), l("w3", "C"), l("w4", "D")]), null);
   assert.equal(pairLegs([l("w1", null), l("w2", null)]), null);
+  // EI2 Codex r1 F4: "unknown" is the cpuModel sentinel of a failed detection (host.mjs), not a model.
+  assert.equal(pairLegs([l("w1", "unknown"), l("w2", "unknown")]), null);
+  assert.equal(pairLegs([l("w1", " "), l("w2", " ")]), null);
+  assert.deepEqual(pairLegs([l("w1", "unknown"), l("w2", "A"), l("w3", "unknown"), l("w4", "A")]).boxes.map((x) => x.name), ["w2", "w4"]);
   // V15-D16: the Linux x64 legs are in the same dispatch; one CPU model on 2 platforms is no pair.
   assert.equal(pairLegs([l("w1", "A"), l("l1", "A", "linux-x64")]), null);
   assert.deepEqual(pairLegs([l("w1", "A"), l("l1", "A", "linux-x64"), l("l2", "A", "linux-x64"), l("w2", "A")]), { cpu: "A", boxes: [l("w1", "A"), l("w2", "A")] });

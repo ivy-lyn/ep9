@@ -2212,8 +2212,13 @@ fn compare_legs<'a>(j: &'a Json, platform: &str) -> Vec<&'a Json> {
         .collect()
 }
 
+/// The CPU model of a leg: None when it is missing, empty, or the host.mjs `cpuModel` sentinel
+/// `unknown` (the detection failed: no model is known, so the leg is in no pair).
 fn leg_cpu(l: &Json) -> Option<&str> {
-    l.get("cpu").and_then(Json::str).filter(|s| !s.is_empty())
+    l.get("cpu")
+        .and_then(Json::str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "unknown")
 }
 
 fn leg_name(l: &Json) -> &str {
@@ -4388,6 +4393,37 @@ mod tests {
                 "{ev}"
             );
             assert!(!ev.contains("keeps the Path B form"), "{ev}");
+        }
+    }
+
+    /// EI2 Codex r1 F4: "unknown" is the host.mjs `cpuModel` sentinel of a failed detection. A
+    /// Windows and a Linux leg that both say it are no same-model pair: the cell reads NO
+    /// AGREEMENT and names each such leg ("no CPU model").
+    #[test]
+    fn windows_cross_form_never_pairs_the_unknown_cpu_sentinel() {
+        let r = repo("pathb-cross-unknown");
+        let m = "AMD EPYC 7763 64-Core Processor";
+        for (f, src) in [
+            ("win-unknown.json", "pathb-win.json"),
+            ("lin-unknown.json", "pathb-gha-linux.json"),
+        ] {
+            let text = fixture(src).replace(SHA, &r.head).replace(m, "unknown");
+            write(&r.root, &format!("inputs/{f}"), &text);
+        }
+        let o = Options {
+            pathb: Some(r.root.join("inputs/win-unknown.json")),
+            linux_pathb: Some(r.root.join("inputs/lin-unknown.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("not read (w2: no CPU model; w3: no CPU model; l1: no CPU model; l2: no CPU model)"),
+                "{ev}"
+            );
+            assert!(!ev.contains("pairs w2/l1"), "{ev}");
         }
     }
 

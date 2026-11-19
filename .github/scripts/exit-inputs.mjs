@@ -200,14 +200,18 @@ export function boxValue(gate, spec, build) {
   return box(r.value ?? null, r.interval ?? null, [metric, r.status].filter(Boolean).join(", "));
 }
 
+/** A CPU model that names a model: not null, not empty, not the cpuModel sentinel "unknown". */
+export const knownCpu = (cpu) => typeof cpu === "string" && cpu.trim() !== "" && cpu.trim() !== "unknown";
+
 /**
  * Pairs the legs: the first 2 of the first (platform, CPU model) group that has 2, in the order
- * given. A leg with no CPU model is never in a pair.
+ * given. A leg with no CPU model, or with the cpuModel sentinel "unknown" (host.mjs), is never
+ * in a pair.
  */
 export function pairLegs(legs) {
   const by = new Map();
   for (const l of legs) {
-    if (l.cpu == null) continue;
+    if (!knownCpu(l.cpu)) continue;
     const k = JSON.stringify([l.platform ?? null, l.cpu]);
     if (!by.has(k)) by.set(k, []);
     by.get(k).push(l);
