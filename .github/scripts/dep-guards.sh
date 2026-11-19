@@ -516,4 +516,10 @@ else
   ok "(26) ep9_intl does not exist yet"
 fi
 
+# 27) The ep9-typecheck lock is the tsrs lock plus only ep9-typecheck and ep9_hints (H26:42;
+#     08 section 7): each other package has the tsrs version, source and checksum. The script
+#     prints its own PASS or FAIL lines; with a lock absent (no tsrs sync, as in this job) it
+#     passes with a note. sp-tsrs-win runs it after the sync.
+bash tools/ep9-typecheck/lock-guard.sh || fail=1
+
 exit "$fail"
