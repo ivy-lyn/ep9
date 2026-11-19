@@ -1,0 +1,14 @@
+[package]
+name = "ep9_hints"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# No dependencies of any kind: normal, build and dev (H37 Rules; docs/plan/08-repo.md section 7).
+# .github/scripts/dep-guards.sh check 3 reads the normal and build ones. The callers compute
+# the SHA-256 text hash (H37-Q3), so this crate needs no hash crate.
+
+[lints]
+workspace = true
