@@ -1057,3 +1057,174 @@ fn the_abi_creates_and_revokes_a_proxy() {
         });
     }
 }
+
+// ---- the ownKeys duplicate check by content hash (M10-P0 HASH-SEED, HB-3) ------------------
+
+/// The `ownKeys` duplicate error (§10.5.11 step 10).
+const DUPLICATE: &str = "TypeError: 'ownKeys' on proxy: trap returned duplicate entries";
+
+/// An `ownKeys` trap: `["a", "b", "a"]` (new strings, not atoms).
+fn dup_strings_trap<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let a = cx.new_string("a")?.value();
+    let b = cx.new_string("b")?.value();
+    let a2 = cx.new_string("a")?.value();
+    Ok(cx.create_array_from_list(&[a, b, a2])?.value())
+}
+
+/// An `ownKeys` trap: `[handler.sym, "x", handler.sym]`.
+fn dup_symbol_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let sym = cx.get_v(this, "sym")?;
+    let x = cx.new_string("x")?.value();
+    Ok(cx.create_array_from_list(&[sym, x, sym])?.value())
+}
+
+/// An `ownKeys` trap: 40 new strings "k0" to "k39", then "k7" again if `handler.dup` is
+/// true. Each string is a new allocation (a collection under GC stress).
+fn many_keys_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let dup = cx.get_v(this, "dup")?;
+    let dup = cx.to_boolean(dup);
+    let list = cx.new_array();
+    let n = if dup { 41 } else { 40 };
+    for i in 0..n {
+        let k = cx.new_string(&format!("k{}", if i == 40 { 7 } else { i }))?;
+        cx.set(list, i.to_string().as_str(), k, true)?;
+    }
+    Ok(list.value())
+}
+
+std::thread_local! {
+    /// The calls of the element-2 getters below.
+    static GETTER_CALLS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// A getter: counts the call and returns 5 (not a property key).
+fn count_then_5<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    Ok(Local::int32(5))
+}
+
+/// A getter: counts the call and returns "b".
+fn count_then_b<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    Ok(cx.new_string("b")?.value())
+}
+
+/// An `ownKeys` trap: the array-like `{length: 3, 0: "a", 1: "a", get 2() {...}}`, whose
+/// getter is `handler.getter`.
+fn array_like_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let getter = cx.get_v(this, "getter")?;
+    let o = cx.new_object();
+    cx.set(o, "length", Local::int32(3), true)?;
+    for i in ["0", "1"] {
+        let a = cx.new_string("a")?;
+        cx.set(o, i, a, true)?;
+    }
+    let desc = PropertyDescriptor {
+        get: Some(getter),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    cx.define_property_or_throw(o, "2", desc)?;
+    Ok(o.value())
+}
+
+/// HB-3: a trap result with a duplicate string (`["a", "b", "a"]`) or a duplicate symbol
+/// throws the duplicate TypeError (§10.5.11 step 10), with and without GC stress.
+#[test]
+fn own_keys_duplicate_entries_still_throw() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let target = cx.new_object();
+            let h = handler_of(cx, rt, &["ownKeys"], dup_strings_trap);
+            let p = cx.proxy_create(target, h).unwrap();
+            assert!(cx.own_property_keys(p).is_err());
+            assert_eq!(take_error(cx, rt), DUPLICATE);
+
+            let h = handler_of(cx, rt, &["ownKeys"], dup_symbol_trap);
+            let sym = cx.new_symbol(Local::undefined()).unwrap();
+            cx.set(h, "sym", sym, true).unwrap();
+            let p = cx.proxy_create(target, h).unwrap();
+            assert!(cx.own_property_keys(p).is_err());
+            assert_eq!(take_error(cx, rt), DUPLICATE);
+        });
+    }
+}
+
+/// HB-3 with GC stress (a collection before every allocation): 40 keys, each a new string
+/// that the check interns, give no false duplicate and keep their order; one more "k7"
+/// throws the duplicate TypeError.
+#[test]
+fn own_keys_duplicate_check_under_gc_stress() {
+    with_cx(true, |cx, rt| {
+        let target = cx.new_object();
+        let h = handler_of(cx, rt, &["ownKeys"], many_keys_trap);
+        let p = cx.proxy_create(target, h).unwrap();
+        let keys = cx.own_property_keys(p).unwrap();
+        let want: Vec<String> = (0..40).map(|i| format!("k{i}")).collect();
+        assert_eq!(key_texts(cx, keys.into()), want);
+        cx.set(h, "dup", Local::boolean(true), true).unwrap();
+        assert!(cx.own_property_keys(p).is_err());
+        assert_eq!(take_error(cx, rt), DUPLICATE);
+    });
+}
+
+/// HB-3, the spec order (§10.5.11 steps 9-10, §7.3.18 CreateListFromArrayLike): every element
+/// is read and type-checked before the duplicate check. For `{length: 3, 0: "a", 1: "a",
+/// get 2() {...}}` the getter runs once; if it returns 5 the TypeError is the one of element
+/// 2, not the duplicate error; if it returns "b" the TypeError is the duplicate error (node
+/// v26.13.1 gives both results).
+#[test]
+fn own_keys_reads_every_element_before_the_duplicate_check() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let target = cx.new_object();
+            for (getter, want) in [
+                (
+                    count_then_5 as HostFn,
+                    "TypeError: 5 is not a valid property name",
+                ),
+                (count_then_b as HostFn, DUPLICATE),
+            ] {
+                let h = handler_of(cx, rt, &["ownKeys"], array_like_trap);
+                let g = host_fn(rt, getter, "get 2");
+                cx.set(h, "getter", g, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                GETTER_CALLS.with(|c| c.set(0));
+                assert!(cx.own_property_keys(p).is_err());
+                assert_eq!(take_error(cx, rt), want);
+                assert_eq!(GETTER_CALLS.with(core::cell::Cell::get), 1, "{want}");
+            }
+        });
+    }
+}

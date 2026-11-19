@@ -1062,8 +1062,9 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     // 8. Let trapResultArray be ? Call(trap, handler, « target »).
     let array = call_trap(cx, &t, &[t.target])?;
     // 9. Let trapResult be ? CreateListFromArrayLike(trapResultArray, property-key).
-    //    The list is a new array (`keys`, a Rust local: a root); `seen` holds the bits of
-    //    its keys (interned strings and symbols compare by bits).
+    //    The list is a new array (`keys`, a Rust local: a root). Every element is read and
+    //    type-checked before the duplicate check of step 10 (a later getter runs, and a
+    //    later element that is not a key throws its own TypeError).
     if !is_object(array) {
         return Err(throw_error(
             cx,
@@ -1081,7 +1082,6 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     }
     let len = len as u32;
     let keys = object::new_array(cx.rt(), len as usize);
-    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
     for i in 0..len {
         poll(cx)?;
         // GC point: `array`, `keys` and the target live in Rust locals.
@@ -1092,15 +1092,34 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
         }
         // Not a GC point.
         let k = intern_key(cx.rt(), v);
-        // 10. If trapResult contains any duplicate entries, throw a TypeError exception.
-        if !seen.insert(k) {
-            return Err(invariant(
-                cx,
-                &[Text("'ownKeys' on proxy: trap returned duplicate entries")],
-            ));
-        }
         object::array_set(cx.rt(), keys, i, k);
     }
+    // 10. If trapResult contains any duplicate entries, throw a TypeError exception.
+    //     The keys are interned strings and symbols, so equal keys have equal bits. Sort them
+    //     by content hash (`string::hash`, `symbol::hash`; no address, H12-Q2), then by bits:
+    //     equal keys are then adjacent. Not a GC point from the end of the loop to the check.
+    let mut by_hash: Vec<(u32, u64)> = (0..len)
+        .map(|i| {
+            // The loop above stored each element at its index (a dense array).
+            let k = object::array_get(keys, i).expect("a key at each index below len");
+            let h = if is_symbol(k) {
+                crate::symbol::hash(k)
+            } else {
+                crate::string::hash(k)
+            };
+            (h, k)
+        })
+        .collect();
+    by_hash.sort_unstable();
+    if by_hash.windows(2).any(|w| w[0] == w[1]) {
+        return Err(invariant(
+            cx,
+            &[Text("'ownKeys' on proxy: trap returned duplicate entries")],
+        ));
+    }
+    // uncheckedResultKeys of steps 19-24: an ordered set of the key bits (no hash of an
+    // address, H12-Q2). `keys` holds the keys across the GC points below.
+    let seen: std::collections::BTreeSet<u64> = by_hash.into_iter().map(|(_, k)| k).collect();
     // 11. Let extensibleTarget be ? IsExtensible(target).
     let extensible = target_extensible(cx, t.target)?;
     // 12. Let targetKeys be ? target.[[OwnPropertyKeys]]().
