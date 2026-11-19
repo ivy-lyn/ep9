@@ -266,7 +266,13 @@ fn expected_outputs_match_node() {
     // An older node gives false diffs (node 22 has no Promise.try; CI-NODE-PIN-CHECK), so
     // fail with one line when node is older than the setup-node pin of ci.yml.
     let v = String::from_utf8_lossy(&version.stdout).trim().to_string();
-    let major = |s: &str| s.trim_start_matches('v').split('.').next()?.parse::<u32>().ok();
+    let major = |s: &str| {
+        s.trim_start_matches('v')
+            .split('.')
+            .next()?
+            .parse::<u32>()
+            .ok()
+    };
     let ci = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/ci.yml");
     let ci = std::fs::read_to_string(&ci).expect("read .github/workflows/ci.yml");
     let pin = ci
