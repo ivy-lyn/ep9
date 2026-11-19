@@ -210,6 +210,13 @@ test("compare: the Linux x64 legs, --platform, and the m2-exit fixtures pathb-gh
   const other = compare([lin("l1", epyc4), lin("l2", epyc4)], { readGate });
   assert.deepEqual(other.legs.map((x) => x.cpu), [epyc4, epyc4]);
   fixture("pathb-gha-linux-other.json", other);
+  // EI2 Codex r1 F1: l2 was not read (a read error), so it is in `runners` only, not in `legs`;
+  // m2-exit then knows no full set of same-model pairs (pathb-gha-linux-unread.json).
+  const l2 = { name: "l2", cpu: null, platform: null, jit: null, jitless: null, error: "no run-jit.json" };
+  const unread = compare([lin("l1"), l2], { readGate });
+  assert.deepEqual(unread.legs.map((x) => x.leg), ["l1"]);
+  assert.deepEqual(unread.runners.map((x) => [x.leg, x.error]), [["l1", null], ["l2", "no run-jit.json"]]);
+  fixture("pathb-gha-linux-unread.json", unread);
 });
 
 /**

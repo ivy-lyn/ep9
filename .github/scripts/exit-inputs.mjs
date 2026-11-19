@@ -36,6 +36,8 @@
 //       `cargo xtask m2-exit --host x86_64-pc-windows-msvc --pathb <windows compare>
 //       --linux-pathb <linux-x64 compare>` pairs each Windows leg with each Linux x64 leg of the
 //       same CPU model from these legs (the 09:66 cross-host form).
+//       A leg that was not read is in `runners` only (with its `error`): m2-exit then reads
+//       NO AGREEMENT, as the same-model pairs of the dispatch are not known.
 //
 // Exit status: 0 done; 2 usage error or an input that cannot be read; 3 no baseline (host) or
 // no pair (pathb).

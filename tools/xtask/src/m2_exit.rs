@@ -79,8 +79,10 @@
 //! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else
 //! `MARGINAL: NO AGREEMENT` (also when a leg of a pair is not a valid run: a fresh full commit,
 //! the same commit on every leg, a clean binary, at least 31 rounds and the load guard passed
-//! in each build). With no same-model pair (or no `--linux-pathb`), the cell keeps the form
-//! above: the windows compare against the Linux thresholds, and its text names the CPU models.
+//! in each build; and when a leg of either compare was not read or has no CPU model, as the
+//! same-model pairs are then not known). With a complete read and no same-model pair (or no
+//! `--linux-pathb`), the cell keeps the form above: the windows compare against the Linux
+//! thresholds, and its text names the CPU models.
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
 //! HEAD, or an ancestor with no change in the paths it measures since, and says that its tree
@@ -2218,6 +2220,36 @@ fn leg_name(l: &Json) -> &str {
     l.get("leg").and_then(Json::str).unwrap_or("?")
 }
 
+/// The legs of a Path B compare of `platform` that were not read (a `runners` row with an
+/// `error`) or that have no CPU model or no platform in `legs`, each as "<leg>: <why>". A
+/// runner of another known platform (not read by `--platform`) is not of this set.
+fn unread_legs(j: &Json, platform: &str) -> Vec<String> {
+    let of = |x: &Json| {
+        x.get("platform")
+            .and_then(Json::str)
+            .is_none_or(|p| p == platform)
+    };
+    let runners = j.get("runners").and_then(Json::arr).unwrap_or(&[]);
+    let legs = j.get("legs").and_then(Json::arr).unwrap_or(&[]);
+    runners
+        .iter()
+        .filter(|r| of(r))
+        .filter_map(|r| {
+            let e = r.get("error").and_then(Json::str)?;
+            Some(format!("{}: {e}", leg_name(r)))
+        })
+        .chain(legs.iter().filter(|l| of(l)).filter_map(|l| {
+            if l.get("platform").and_then(Json::str).is_none() {
+                Some(format!("{}: no platform", leg_name(l)))
+            } else if leg_cpu(l).is_none() {
+                Some(format!("{}: no CPU model", leg_name(l)))
+            } else {
+                None
+            }
+        }))
+        .collect()
+}
+
 /// The CPU models of `legs`, each once, or "none".
 fn models(legs: &[&Json]) -> String {
     let m: BTreeSet<&str> = legs.iter().filter_map(|l| leg_cpu(l)).collect();
@@ -2339,6 +2371,23 @@ fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, Strin
             "no --linux-pathb input (the Linux x64 GitHub legs of the exit-inputs dispatch)".into(),
         );
     };
+    // V15-D16 reads every same-model pair of the dispatch: a leg that was not read, or that has
+    // no CPU model, makes that set unknown, so no verdict and no fallback (EI2 Codex r1 F1).
+    let unread: Vec<String> = unread_legs(wj, "win32-x64")
+        .into_iter()
+        .chain(unread_legs(lj, "linux-x64"))
+        .collect();
+    if !unread.is_empty() {
+        return Ok((
+            HostForm::NoAgreement,
+            format!(
+                "Windows / Linux x64 same-CPU-model form (V15-D16; {} and {}): a leg of the dispatch was not read ({}), so the same-model pairs are not known; run the dispatch again",
+                wp.display(),
+                lp.display(),
+                unread.join("; ")
+            ),
+        ));
+    }
     let (win, lin) = (compare_legs(wj, "win32-x64"), compare_legs(lj, "linux-x64"));
     let pairs: Vec<(&Json, &Json)> = win
         .iter()
@@ -4302,6 +4351,44 @@ mod tests {
         );
         args[1] = WINDOWS_X64.into();
         assert!(parse_args(&args, r.root.clone()).is_ok());
+    }
+
+    /// EI2 Codex r1 F1: a leg of the dispatch that was not read makes the same-model pairs not
+    /// known. One Linux leg not read (l1 alone would give AGREE above), or both (no pair at all,
+    /// which would fall back to the Path B form): the cell reads NO AGREEMENT and names the leg.
+    #[test]
+    fn windows_cross_form_with_a_leg_not_read_reads_no_agreement() {
+        let r = repo("pathb-cross-unread");
+        let rep = run(&win_cross(&r, "pathb-gha-linux-unread.json")).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("a leg of the dispatch was not read (l2: no run-jit.json), so the same-model pairs are not known"),
+                "{ev}"
+            );
+        }
+        let none = format!(
+            "{{\"schema\": \"{PATHB_SCHEMA}\", \"pair\": null, \"runners\": [{}], \"legs\": []}}",
+            ["l1", "l2"]
+                .map(|l| format!("{{\"leg\": \"{l}\", \"cpu\": null, \"platform\": null, \"error\": \"no run-jit.json\"}}"))
+                .join(", ")
+        );
+        write(&r.root, "inputs/lin-none.json", &none);
+        let o = Options {
+            linux_pathb: Some(r.root.join("inputs/lin-none.json")),
+            ..win_cross(&r, "pathb-gha-linux.json")
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("not read (l1: no run-jit.json; l2: no run-jit.json)"),
+                "{ev}"
+            );
+            assert!(!ev.contains("keeps the Path B form"), "{ev}");
+        }
     }
 
     /// The part rule of the same-CPU-model form: every low end >= 0.9 is above, every high end
