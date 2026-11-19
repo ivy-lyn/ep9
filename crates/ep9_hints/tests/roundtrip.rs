@@ -157,9 +157,8 @@ fn golden_bytes_of_a_tiny_file() {
     // flags 7, counts 2, 3, 4 and 5, string bytes 12, reserved 0). In each other part, one
     // entry (file 1, class 2, every field entry, record 1) gives each field a value that no
     // other field of that entry has. So a swap of any two offsets of one part in the shared
-    // offsets module changes the bytes or the decoded hints and fails here (checked by hand
-    // for every pair), as does a width change or a null-value change in the reader or the
-    // writer.
+    // offsets module changes the bytes or the decoded hints and fails here (checked for every
+    // pair in a scratch copy).
     let mut h = Hints::default();
     h.header.fact_schema_version = 9;
     h.header.ts_flags = TsFlags::from_bits(7).unwrap();
