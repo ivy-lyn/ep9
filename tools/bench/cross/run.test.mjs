@@ -262,6 +262,13 @@ test("versions.txt, host files and options", () => {
   assert.deepEqual(v.shells.quickjs, { version: "2026-06-04 (3d5e064e)", path: "/x/src/qjs" });
   assert.equal(platformId("darwin", "arm64"), "darwin_arm64");
   assert.equal(platformId("win32", "x64"), "windows_x64");
+  // The windows-x64 pathb legs (plan v15 V15-D17): sync-shells.sh builds qjs.exe, and the job's
+  // cygpath -m step gives the native path; the engine qjs reads it as any other shell line.
+  const w = parseVersions(
+    "# host: windows_x64\r\nnode      v24.22.0 v8=13.6.233.17-node.57  D:/a/ep9/ep9/third_party/shells/node-24.22.0/node-v24.22.0-win-x64/node.exe\r\nquickjs   2026-06-04 (3d5e064e9dd67c70f7962836505a7fa067bf0a4e)  D:/a/ep9/ep9/third_party/shells/quickjs-2026-06-04/src/qjs.exe\r\n",
+  );
+  assert.equal(w.host, "windows_x64");
+  assert.deepEqual(w.shells.quickjs, { version: "2026-06-04 (3d5e064e9dd67c70f7962836505a7fa067bf0a4e)", path: "D:/a/ep9/ep9/third_party/shells/quickjs-2026-06-04/src/qjs.exe" });
 
   const t = parseToml('id = "x" # c\n# comment\nn = 1.5\nb = true\na = [1, 2.5]\n[t]\ns = "y"\n');
   assert.deepEqual(t, { id: "x", n: 1.5, b: true, a: [1, 2.5], t: { s: "y" } });

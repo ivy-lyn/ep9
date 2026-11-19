@@ -106,15 +106,21 @@ sync_d8() {
 }
 
 sync_quickjs() {
-  local v c d; v="$(need quickjs version)"; c="$(need quickjs commit)"; d="$out/quickjs-$v"
-  [ "$plat" != windows_x64 ] || { echo "quickjs: not built on Windows (skipped)"; return 0; }
+  local v c d mk=(make); v="$(need quickjs version)"; c="$(need quickjs commit)"; d="$out/quickjs-$v"
+  # Windows (Git Bash): the Makefile's own Windows form, CONFIG_WIN32=y, with the mingw gcc on PATH.
+  # CROSS_PREFIX is empty, so the build is native (qjsc.exe makes repl.c). GNU make, else mingw32-make.
+  if [ "$plat" = windows_x64 ]; then command -v make > /dev/null || mk=(mingw32-make); mk+=(CONFIG_WIN32=y CROSS_PREFIX=); fi
   if ! fresh "$d" "$c"; then
     rm -rf "$d"; git_at "$d/src" "$(need quickjs repo)" "$c"
-    make -s -C "$d/src" -j "$(getconf _NPROCESSORS_ONLN 2> /dev/null || echo 4)" qjs > "$d/build.log" 2>&1 ||
+    "${mk[@]}" -s -C "$d/src" -j "$(getconf _NPROCESSORS_ONLN 2> /dev/null || echo 4)" "qjs$exe" > "$d/build.log" 2>&1 ||
       { tail -20 "$d/build.log" >&2; exit 1; }
+    # mingw links qjs.exe to libwinpthread-1.dll (the Makefile's Windows note): put it next to qjs.exe.
+    if [ "$plat" = windows_x64 ]; then
+      local dll; dll="$(dirname "$(command -v gcc)")/libwinpthread-1.dll"; [ ! -f "$dll" ] || cp "$dll" "$d/src/"
+    fi
     echo "$c" > "$d/.ep9-stamp"
   fi
-  qjs_bin="$d/src/qjs"
+  qjs_bin="$d/src/qjs$exe"
 }
 
 sync_bun() {

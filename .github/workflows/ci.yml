@@ -1451,7 +1451,8 @@ jobs:
   #     Linux arm64 has no d8 (jsvu has no linux-arm64 V8 build): no d8 cap there.
   #   pathb-w1..w4 (windows-x64): the Path B M2 set (V14-D12): run.mjs --workloads m2, 31 paired
   #     rounds, both builds in each round (--ep9-jitless, V14-D11), node --jitless, the load guard
-  #     on the typeperf source. No QuickJS on Windows (sync-shells.sh), so no item 1 interval.
+  #     on the typeperf source, and QuickJS (sync-shells.sh builds the pinned qjs.exe with the
+  #     runner's mingw gcc; plan v15 V15-D17), so item 1 gets an interval.
   # The legs give the runs only. The reader downloads the 4 pathb artifacts and runs
   # `node .github/scripts/exit-inputs.mjs pathb --leg <dir> x4 --out pathb.json`: it pairs the
   # first 2 runners of one CPU model; no pair (exit 3): dispatch `pathb` once more, then the
@@ -1520,14 +1521,16 @@ jobs:
       - if: ${{ matrix.kind != 'off' }}
         run: bash scripts/sync-bench.sh bench-octane bench-v8v7 bench-jetstream
       # The pinned node (the node --jitless cap) and d8 (jsvu; none on linux-arm64, the script
-      # skips it). One retry: the downloads are the network steps. On Windows the script writes
-      # Git Bash paths (/d/a/...), which node cannot start: cygpath -m turns them into D:/a/...
+      # skips it); the pathb legs take the pinned QuickJS (item 1; built from source, on Windows
+      # with the mingw gcc, V15-D17). One retry: the downloads are the network steps. On Windows
+      # the script writes Git Bash paths (/d/a/...), which node cannot start: cygpath -m turns
+      # them into D:/a/...
       - name: reference shells
         if: ${{ matrix.kind != 'off' }}
         env:
           KIND: ${{ matrix.kind }}
         run: |
-          shells=(node); [ "$KIND" = memjs ] && shells=(node d8)
+          shells=(node quickjs); [ "$KIND" = memjs ] && shells=(node d8)
           bash scripts/sync-shells.sh "${shells[@]}" || { echo "sync-shells failed; one more try in 30 s"; sleep 30; bash scripts/sync-shells.sh "${shells[@]}"; }
           if [ "$RUNNER_OS" = Windows ]; then
             f=third_party/shells/versions.txt
@@ -1583,7 +1586,7 @@ jobs:
           LEG: ${{ matrix.name }}
         run: |
           node tools/bench/cross/run.mjs --ep9 "target/release/ep9$EXE" --ep9-jitless "target/jitless/release/ep9$EXE" \
-            --engines ep9,node-jitless --workloads m2 --harness base --rounds 31 --host out/host.toml \
+            --engines ep9,qjs,node-jitless --workloads m2 --harness base --rounds 31 --host out/host.toml \
             --label "exit-inputs $LEG" --out out/run-jit.json --out-jitless out/run-jitless.json --md out/run.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && matrix.kind != 'off' }}
