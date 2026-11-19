@@ -241,3 +241,24 @@ fn regress_parser_named_reference_plus_sign_escape_throws() {
         }
     }
 }
+
+/// regress through its public flag strings (`regress::Flags::from`): `"v"` sets only
+/// `unicode_sets`, not `unicode` as `Rx0::compile` does. `v` is Unicode mode all the same, so a
+/// `\u` that is not a RegExpUnicodeEscapeSequence is a SyntaxError (node: the same).
+#[test]
+fn regress_flag_string_plus_sign_escape_throws() {
+    for letters in ["u", "v"] {
+        for pattern in [
+            r"[\u+fff-z]",
+            r"\u+0ff",
+            r"\u{+1F600}",
+            r"\uD83D\u+DE00",
+            r"[\uD83D\u+DE00]",
+        ] {
+            assert!(
+                regress::Regex::with_flags(pattern, letters).is_err(),
+                "/{pattern}/{letters}"
+            );
+        }
+    }
+}
