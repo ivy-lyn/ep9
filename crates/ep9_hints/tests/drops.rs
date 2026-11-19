@@ -350,6 +350,17 @@ fn unsorted_records() {
         }),
         DropReason::UnsortedRecords
     );
+    // Same start and kind, two ends (`a.b` then `a.b.c`): ascending ends read, reversed ends drop.
+    let mut b = sample_bytes();
+    put_u16(&mut b, rec(0, o::REC_KIND), 3);
+    put_u32(&mut b, rec(0, o::REC_END), 3);
+    assert!(read(&b, &expect()).is_ok());
+    put_u32(&mut b, rec(0, o::REC_END), 9);
+    assert_eq!(drop_of(&b), DropReason::UnsortedRecords);
+    // The end sorts before the kind: (0, 3, kind 3) then (0, 5, kind 2) reads.
+    put_u32(&mut b, rec(0, o::REC_END), 3);
+    put_u16(&mut b, rec(1, o::REC_KIND), 2);
+    assert!(read(&b, &expect()).is_ok());
     // The order restarts at each file: record 3 (file 1) starts below record 2 (file 0).
     assert!(read(&sample_bytes(), &expect()).is_ok());
 }
