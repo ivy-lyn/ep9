@@ -889,3 +889,71 @@ fn mix_is_keyed_siphash13_of_the_key_bits() {
         assert_eq!(table::mix(k), keyed_sip13(&[k]) as u32, "key {k:#x}");
     }
 }
+
+/// The bucket of each live entry of the table `t` (a walk of each bucket chain in the cell,
+/// as `table::find` walks it), as (key, bucket) pairs, and the longest chain.
+fn chain_walk(t: u64) -> (Vec<(u64, usize)>, usize) {
+    let c = cell(t);
+    let field = |off: usize| object::rd_i32(c, off);
+    let (buckets, width) = (
+        field(table::otf::BUCKETS) as usize,
+        field(table::otf::WIDTH) as usize,
+    );
+    let mut placed = Vec::new();
+    let mut longest = 0;
+    for b in 0..buckets {
+        let mut n = 0;
+        let mut i = field(table::otf::DATA + 8 * b);
+        while i >= 0 {
+            let e = table::otf::DATA + 8 * (buckets + i as usize * width);
+            let k = object::rd(c, e);
+            if k != HOLE {
+                placed.push((k, b));
+            }
+            n += 1;
+            i = field(e + 8 * (width - 1));
+        }
+        longest = longest.max(n);
+    }
+    (placed, longest)
+}
+
+/// Codex r1 next step (HB-2 through the real insert and lookup): 2,000 number keys with one
+/// low 32 bits of the old hash (one bucket of any table under the old mix), added to a Map
+/// and to a Set by `Cx::collection_set`. In the table cell, each key is in the chain of the
+/// bucket of `table::mix` (the keyed hash), no chain is longer than 16 (est. bound; the mean
+/// is about 2), and `Cx::collection_has` finds each key, for any per-process key.
+#[test]
+fn map_and_set_place_number_keys_by_the_keyed_hash() {
+    let offset = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
+    let keys: Vec<u64> = (1..u64::from(u32::MAX))
+        .map(|hi| old_finalizer_inverse((hi << 32) | 0x5EED_0001))
+        .filter(|&x| {
+            let d = f64::from_bits(x.wrapping_sub(offset));
+            d.is_finite() && num(d) == x && table::normalize(x) == x
+        })
+        .take(2000)
+        .collect();
+    assert_eq!(keys.len(), 2000);
+    with_cx(|cx| {
+        for class in [ObjectClass::Map, ObjectClass::Set] {
+            let o = cx.new_collection(Local::null(), class);
+            for &k in &keys {
+                let key: Local<'_> = Local::from_bits(k);
+                cx.collection_set(o, class, key, Local::int32(1)).unwrap();
+            }
+            let t = table::table_of(o.bits());
+            let buckets = object::rd_i32(cell(t), table::otf::BUCKETS) as usize;
+            let (placed, longest) = chain_walk(t);
+            assert_eq!(placed.len(), keys.len(), "{class:?}");
+            for (k, b) in placed {
+                assert_eq!(b, table::mix(k) as usize & (buckets - 1), "{class:?}");
+            }
+            assert!(longest <= 16, "{class:?}: a chain of {longest}");
+            for &k in &keys {
+                let key: Local<'_> = Local::from_bits(k);
+                assert!(cx.collection_has(o, class, key).unwrap());
+            }
+        }
+    });
+}

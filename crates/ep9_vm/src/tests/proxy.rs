@@ -1299,3 +1299,160 @@ fn own_keys_unchecked_keys_match_by_content_not_address() {
         });
     }
 }
+
+// ---- the ownKeys duplicate pass polls (M10-P0 HASH-SEED, Codex r1 F1) ----------------------
+
+/// A getter: counts the call, then requests a termination and sets the interrupt budget to 1,
+/// so the next poll stops the isolate. Returns "c".
+fn terminate_then_c<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    let c = cx.new_string("c")?.value();
+    let inner = cx.inner();
+    inner.rt().terminate.fetch_or(
+        crate::interp::interrupt::TERMINATE,
+        std::sync::atomic::Ordering::Release,
+    );
+    inner.budget = 1;
+    Ok(c)
+}
+
+/// An `ownKeys` trap: the array-like `{length: 3, 0: "a", 1: "b", get 2() {...}}`, whose
+/// getter is `handler.getter`. No duplicate.
+fn array_like_abc_trap<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let getter = cx.get_v(this, "getter")?;
+    let o = cx.new_object();
+    cx.set(o, "length", Local::int32(3), true)?;
+    for (i, k) in [("0", "a"), ("1", "b")] {
+        let s = cx.new_string(k)?;
+        cx.set(o, i, s, true)?;
+    }
+    let desc = PropertyDescriptor {
+        get: Some(getter),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    cx.define_property_or_throw(o, "2", desc)?;
+    Ok(o.value())
+}
+
+/// Codex r1 F1: the getter of the last trap-result element requests a termination (and the
+/// budget runs out at the next poll). The pass after the read loop (step 10 and the
+/// uncheckedResultKeys build) polls, so `[[OwnPropertyKeys]]` stops with the termination: for
+/// an empty extensible target (no poll in steps 11-18) it does not return the keys, and for an
+/// empty non-extensible target it does not throw the step 24 TypeError. With and without GC
+/// stress.
+#[test]
+fn own_keys_stops_on_a_termination_from_the_last_getter() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            for extensible in [true, false] {
+                let target = cx.new_object();
+                if !extensible {
+                    assert!(cx.prevent_extensions(target).unwrap());
+                }
+                let h = handler_of(cx, rt, &["ownKeys"], array_like_abc_trap);
+                let g = host_fn(rt, terminate_then_c, "get 2");
+                cx.set(h, "getter", g, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                GETTER_CALLS.with(|c| c.set(0));
+                let failed = cx.own_property_keys(p).is_err();
+                let terminating = rt.terminating.get();
+                let pending = rt.take_pending();
+                // Clear the request before the asserts, so a failure does not stop the next run.
+                rt.terminating.set(false);
+                rt.terminate.fetch_and(
+                    !crate::interp::interrupt::TERMINATE,
+                    std::sync::atomic::Ordering::AcqRel,
+                );
+                assert_eq!(GETTER_CALLS.with(core::cell::Cell::get), 1);
+                assert!(failed, "extensible {extensible}: the keys came back");
+                assert!(terminating, "extensible {extensible}: not a termination");
+                assert_eq!(
+                    pending,
+                    crate::frame::UNDEFINED,
+                    "extensible {extensible}: a TypeError, not the termination"
+                );
+            }
+        });
+    }
+}
+
+/// 2 different texts "h<i>" with the same 30-bit table hash (`string::hash_text`) under this
+/// process's SipHash key: a birthday search (about 2^15 texts; any key works).
+fn same_hash_texts() -> (String, String) {
+    let mut by_hash = std::collections::HashMap::new();
+    for i in 0..(1u32 << 24) {
+        let s = format!("h{i}");
+        let (_, h) = crate::string::hash_text(crate::string::JsStr::Latin1(s.as_bytes()));
+        if let Some(t) = by_hash.insert(h, s.clone()) {
+            return (t, s);
+        }
+    }
+    panic!("no 30-bit hash collision in 2^24 texts");
+}
+
+/// Codex r1 next step: 2 different keys `a` and `b` with one content hash are one equal-hash
+/// run of the step 10 pass and of uncheckedResultKeys (steps 19-24); the bits test keeps them
+/// apart. A non-extensible target with `a` (non-configurable) and `b`: `[b, a]` passes in its
+/// order; `[a, b, a]` throws the duplicate error; `[b]` misses `a` (step 21); `[a]` misses `b`
+/// (step 23); `[b, a, "z"]` has an extra key (step 24). With and without GC stress.
+#[test]
+fn own_keys_keeps_apart_different_keys_with_one_hash() {
+    let (ta, tb) = same_hash_texts();
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let (a, b) = (atom(rt, &ta), atom(rt, &tb));
+            assert_ne!(a, b);
+            assert_eq!(crate::string::hash(a), crate::string::hash(b));
+            let target = cx.new_object();
+            let x = PropertyDescriptor::data(Local::int32(1), true, true, false);
+            cx.define_property_or_throw(target, ta.as_str(), x).unwrap();
+            cx.set(target, tb.as_str(), Local::int32(2), true).unwrap();
+            assert!(cx.prevent_extensions(target).unwrap());
+            let missing = "TypeError: 'ownKeys' on proxy: trap result did not include '";
+            let extra = "TypeError: 'ownKeys' on proxy: trap returned extra keys but proxy \
+                         target is non-extensible";
+            for (names, want) in [
+                (vec![tb.as_str(), ta.as_str()], None),
+                (
+                    vec![ta.as_str(), tb.as_str(), ta.as_str()],
+                    Some(DUPLICATE.to_owned()),
+                ),
+                (vec![tb.as_str()], Some(format!("{missing}{ta}'"))),
+                (vec![ta.as_str()], Some(format!("{missing}{tb}'"))),
+                (vec![tb.as_str(), ta.as_str(), "z"], Some(extra.to_owned())),
+            ] {
+                let list = cx.new_array();
+                for (n, name) in names.iter().enumerate() {
+                    // A new string, not the atom: the check interns it.
+                    let s = cx.new_string(name).unwrap();
+                    cx.set(list, n.to_string().as_str(), s, true).unwrap();
+                }
+                let h = handler_of(cx, rt, &["ownKeys"], list_trap);
+                cx.set(h, "list", list, true).unwrap();
+                let p = cx.proxy_create(target, h).unwrap();
+                match want {
+                    None => {
+                        let keys = cx.own_property_keys(p).unwrap();
+                        assert_eq!(key_texts(cx, keys.into()), [tb.clone(), ta.clone()]);
+                    }
+                    Some(want) => {
+                        assert!(cx.own_property_keys(p).is_err());
+                        assert_eq!(take_error(cx, rt), want);
+                    }
+                }
+            }
+        });
+    }
+}

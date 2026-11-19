@@ -1148,20 +1148,63 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
         }
     }
 
+    /// Sorts `v` in place (a heapsort) and polls for interrupts once per sift (`poll`), so the
+    /// work between 2 polls is O(log n); a std sort has no poll. `Err` on termination. A poll
+    /// allocates nothing, so this is not a GC point.
+    fn sort_polled(cx: &mut Cx, v: &mut [(u32, u32)]) -> Res<()> {
+        fn sift_down(v: &mut [(u32, u32)], mut root: usize, end: usize) {
+            loop {
+                let mut child = 2 * root + 1;
+                if child >= end {
+                    return;
+                }
+                if child + 1 < end && v[child] < v[child + 1] {
+                    child += 1;
+                }
+                if v[root] >= v[child] {
+                    return;
+                }
+                v.swap(root, child);
+                root = child;
+            }
+        }
+        let n = v.len();
+        for root in (0..n / 2).rev() {
+            poll(cx)?;
+            sift_down(v, root, n);
+        }
+        for end in (1..n).rev() {
+            poll(cx)?;
+            v.swap(0, end);
+            sift_down(v, 0, end);
+        }
+        Ok(())
+    }
+
     // 10. If trapResult contains any duplicate entries, throw a TypeError exception.
     //     The keys are interned strings and symbols, so equal keys have equal bits. Sort the
     //     (content hash, index) pairs (`string::hash`, `symbol::hash`; no address goes into
     //     an order, H12-Q2). Equal keys have equal hashes, so they are in one equal-hash run.
-    //     Inside a run, compare the keys by bits as an equality test only. Not a GC point
+    //     Inside a run, compare the keys by bits as an equality test only. Every step of
+    //     this pass polls for interrupts (`poll`: no allocation), so it is not a GC point
     //     from the end of the loop to the check.
-    let mut by_hash: Vec<(u32, u32)> = (0..len).map(|i| (key_hash(key_at(keys, i)), i)).collect();
-    by_hash.sort_unstable();
-    let duplicate = by_hash.chunk_by(|a, b| a.0 == b.0).any(|run| {
-        run.iter().enumerate().any(|(n, &(_, i))| {
+    let mut by_hash: Vec<(u32, u32)> = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        poll(cx)?;
+        by_hash.push((key_hash(key_at(keys, i)), i));
+    }
+    sort_polled(cx, &mut by_hash)?;
+    let mut duplicate = false;
+    'scan: for run in by_hash.chunk_by(|a, b| a.0 == b.0) {
+        for (n, &(_, i)) in run.iter().enumerate() {
+            poll(cx)?;
             let k = key_at(keys, i);
-            run[n + 1..].iter().any(|&(_, j)| key_at(keys, j) == k)
-        })
-    });
+            if run[n + 1..].iter().any(|&(_, j)| key_at(keys, j) == k) {
+                duplicate = true;
+                break 'scan;
+            }
+        }
+    }
     if duplicate {
         return Err(invariant(
             cx,
@@ -1208,6 +1251,7 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     let mut unchecked = seen;
     let target_key = |j: u32| object::array_get(target_keys, j).unwrap_or(UNDEFINED);
     for &j in &nonconfigurable {
+        poll(cx)?;
         let k = target_key(j);
         if !unchecked.remove(&k) {
             return Err(invariant(
@@ -1226,6 +1270,7 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     }
     // 23. Every configurable key must be in the trap result too.
     for &j in &configurable {
+        poll(cx)?;
         let k = target_key(j);
         if !unchecked.remove(&k) {
             return Err(invariant(
