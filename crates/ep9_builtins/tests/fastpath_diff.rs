@@ -285,6 +285,19 @@ const INVENTORY: &[FastPath] = &[
                CPU on the flat payload (SSE2 or AVX2 on x86-64, NEON on aarch64; SWAR \
                elsewhere) into a one-byte text; off: the per-unit reference loop",
     },
+    // ---- M10-P2 STAR-LA2 (M9-P0 STAR-FUSE), a guard form ----
+    FastPath {
+        id: "star-fuse",
+        site: "crates/ep9_vm/src/interp/tails.rs star_next, star_done (from the success exits \
+               of the producer bodies in interp/ops.rs: the GetNamedProperty IC hit, the four \
+               context-slot loads, LdaCurrentContext, LdaConstant, LdaZero, LdaSmi, LdaNull, \
+               LdaFalse)",
+        off: Off::Guard,
+        what: "the Star lookahead: a producer that is followed by a one-byte-scale Star stores \
+               the accumulator to the Star register and dispatches past the Star; the spec form \
+               writes each value as `T ? value : 0` (T is true), so a Jump comes between the \
+               producer and the Star, and the Star runs in its own handler",
+    },
 ];
 
 /// Prints `typeof this`, the count and the joined arguments (the forwarded callee).
@@ -1892,6 +1905,164 @@ const CASES: &[Case] = &[
               out.push(t.length, t.slice(0, 40), t.slice(-40));\n\
               print(out.join('|'));",
         spec: None,
+    },
+    // ---- star-fuse (M10-P2 STAR-LA2; M9-P0 STAR-FUSE) ----
+    // Each spec form writes the value of each fused Star as `T ? value : 0` (T is true): the
+    // producer is followed by a Jump, so it does not fuse, and the Star after the join runs in
+    // its own handler. The breakpoint off-switch (a break byte at the Star pc of a debug copy)
+    // has no JS form in v0 (`debugger` is a no-op, ops.rs); the ep9_vm test
+    // `tests::star_fuse::a_breakpoint_at_the_star_pc_turns_the_lookahead_off` checks it.
+    Case {
+        path: "star-fuse",
+        // The constant loads (2.5, 0, -3, null, false) are the 5 producers of M10-P2.
+        name: "every producer kind, each followed by a Star",
+        src: "var T = true;\n\
+              function mk() { var c1 = 11; const c2 = 's'; return function (o) {\n\
+              var a = o.x; var b = c1; var c = c2; var d = 2.5; var e = 0; var f = -3; var g = null; var h = false;\n\
+              var k = function () { var z = 1; var w = function () { return z; }; var p = c1; var q = c2; return p + q + w(); };\n\
+              return [a, b, c, d, e, f, g, h, k()].join(); }; }\n\
+              var fn = mk(), r = [];\n\
+              for (var i = 0; i < 20; i++) r.push(fn({ x: i }));\n\
+              print(r.join('|'));",
+        spec: Some(
+            "var T = true;\n\
+             function mk() { var c1 = 11; const c2 = 's'; return function (o) {\n\
+             var a = T ? o.x : 0; var b = T ? c1 : 0; var c = T ? c2 : 0; var d = T ? 2.5 : 0; var e = T ? 0 : 1; var f = T ? -3 : 0; var g = T ? null : 0; var h = T ? false : 0;\n\
+             var k = function () { var z = 1; var w = function () { return z; }; var p = T ? c1 : 0; var q = T ? c2 : 0; return p + q + w(); };\n\
+             return [a, b, c, d, e, f, g, h, k()].join(); }; }\n\
+             var fn = mk(), r = [];\n\
+             for (var i = 0; i < 20; i++) r.push(fn({ x: i }));\n\
+             print(r.join('|'));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        // The throw's stack has no columns: the spec form gives `o.x` an expression position of
+        // its own (the conditional arm), the fast form has the statement position there.
+        name: "a throw in the producer (the Star register keeps its value) and the positions of a throw and of an Error after a fused Star",
+        src: "var T = true;\n\
+              function f(o) { var t = 1;\n\
+                try { t =     o.x; } catch (e) { print(t, e.name, e.message, e.stack.replace(/:\\d+\\)/g, ')')); }\n\
+                var u =     o === undefined ? 0 : o.x; debugger;\n\
+                var e2 = new Error('p'); return t + ' ' + u + ' ' + e2.stack; }\n\
+              for (var i = 0; i < 10; i++) print(f({ x: i }));\n\
+              print(f(undefined));\n\
+              try { f(null); } catch (e) { print('no'); }",
+        spec: Some(
+            "var T = true;\n\
+             function f(o) { var t = 1;\n\
+               try { t = T ? o.x : 0; } catch (e) { print(t, e.name, e.message, e.stack.replace(/:\\d+\\)/g, ')')); }\n\
+               var u = T ? o === undefined ? 0 : o.x : 0; debugger;\n\
+               var e2 = new Error('p'); return t + ' ' + u + ' ' + e2.stack; }\n\
+             for (var i = 0; i < 10; i++) print(f({ x: i }));\n\
+             print(f(undefined));\n\
+             try { f(null); } catch (e) { print('no'); }",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "a GC in the producer: a getter that allocates",
+        src: "var T = true;\n\
+              var o = { get x() { var a = []; for (var i = 0; i < 50; i++) a.push({ i: i }); return a.length; } };\n\
+              function f(o) { var s = 0; for (var k = 0; k < 20; k++) { var t = o.x; s += t; } return s; }\n\
+              print(f(o), f({ x: 3 }), f(o));",
+        spec: Some(
+            "var T = true;\n\
+             var o = { get x() { var a = []; for (var i = 0; i < 50; i++) a.push({ i: i }); return a.length; } };\n\
+             function f(o) { var s = 0; for (var k = 0; k < 20; k++) { var t = T ? o.x : 0; s += t; } return s; }\n\
+             print(f(o), f({ x: 3 }), f(o));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "a Star whose register is the producer's input (a parameter and a local)",
+        src: "var T = true;\n\
+              function f(o, c) { o = o.x; c = c.y; var p = { x: c }; p = p.x; return o + c + p; }\n\
+              var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i }, { y: 2 * i }));\n\
+              print(r.join());",
+        spec: Some(
+            "var T = true;\n\
+             function f(o, c) { o = T ? o.x : 0; c = T ? c.y : 0; var p = { x: c }; p = T ? p.x : 0; return o + c + p; }\n\
+             var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i }, { y: 2 * i }));\n\
+             print(r.join());",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "a Star that is a jump target (a jump reaches it from one arm; the other arm falls through)",
+        src: "var T = true;\n\
+              function f(o, i) { var t = (i & 1) ? o.x : o.y; var u = i > 9 ? 0 : -1; var v = i > 4 ? null : false; var w = i > 7 ? 'a' : 2.5; return [t + u, v, w].join(); }\n\
+              var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i, y: -i }, i));\n\
+              print(r.join());",
+        spec: Some(
+            "var T = true;\n\
+             function f(o, i) { var t = (i & 1) ? (T ? o.x : 0) : (T ? o.y : 0); var u = i > 9 ? (T ? 0 : 1) : (T ? -1 : 0); var v = i > 4 ? (T ? null : 0) : (T ? false : 0); var w = i > 7 ? (T ? 'a' : 0) : (T ? 2.5 : 0); return [t + u, v, w].join(); }\n\
+             var r = []; for (var i = 0; i < 20; i++) r.push(f({ x: i, y: -i }, i));\n\
+             print(r.join());",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "LdaConstant: heap strings, doubles and a large double, then allocations (a GC after the fused Star)",
+        src: "var T = true;\n\
+              function f(n) { var r = []; for (var i = 0; i < n; i++) { var s = 'k'; var d = 2.5; var big = 1e300; var o = { s: s + i, d: d * i, b: big > 1e299 }; r.push(o.s, o.d, o.b, [s, d].join(':')); } return r.join(); }\n\
+              print(f(30)); print(f(30));",
+        spec: Some(
+            "var T = true;\n\
+             function f(n) { var r = []; for (var i = 0; i < n; i++) { var s = T ? 'k' : 0; var d = T ? 2.5 : 0; var big = T ? 1e300 : 0; var o = { s: s + i, d: d * i, b: big > 1e299 }; r.push(o.s, o.d, o.b, [s, d].join(':')); } return r.join(); }\n\
+             print(f(30)); print(f(30));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "LdaZero: zero locals in a loop",
+        src: "var T = true;\n\
+              function f(n) { var s = 0; for (var i = 0; i < n; i++) { var z = 0; var c = 0; c += i; s += z + c; } return s + ',' + (1 / s > 0); }\n\
+              print(f(0), f(1), f(40));",
+        spec: Some(
+            "var T = true;\n\
+             function f(n) { var s = T ? 0 : 1; for (var i = 0; i < n; i++) { var z = T ? 0 : 1; var c = T ? 0 : 1; c += i; s += z + c; } return s + ',' + (1 / s > 0); }\n\
+             print(f(0), f(1), f(40));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        // 300 and 100000 are Wide and ExtraWide LdaSmi: the prefixed form does not fuse.
+        name: "LdaSmi: one-byte, negative, Wide and ExtraWide immediates",
+        src: "var T = true;\n\
+              function f(n) { var r = []; for (var i = 0; i < n; i++) { var a = 7; var b = -3; var c = 300; var d = 100000; r.push(a * i + b, c - d); } return r.join(); }\n\
+              print(f(20));",
+        spec: Some(
+            "var T = true;\n\
+             function f(n) { var r = []; for (var i = 0; i < n; i++) { var a = T ? 7 : 0; var b = T ? -3 : 0; var c = T ? 300 : 0; var d = T ? 100000 : 0; r.push(a * i + b, c - d); } return r.join(); }\n\
+             print(f(20));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "LdaNull: null locals, compares and a property read on null (a throw after the fused Star)",
+        src: "var T = true;\n\
+              function f(i) { var n = null; var m = null; var r = (n === null) + ',' + (m == undefined) + ',' + typeof n; if (i > 8) { try { r += m.x; } catch (e) { r += e.name; } } return r; }\n\
+              var r = []; for (var i = 0; i < 12; i++) r.push(f(i));\n\
+              print(r.join('|'));",
+        spec: Some(
+            "var T = true;\n\
+             function f(i) { var n = T ? null : 0; var m = T ? null : 0; var r = (n === null) + ',' + (m == undefined) + ',' + typeof n; if (i > 8) { try { r += m.x; } catch (e) { r += e.name; } } return r; }\n\
+             var r = []; for (var i = 0; i < 12; i++) r.push(f(i));\n\
+             print(r.join('|'));",
+        ),
+    },
+    Case {
+        path: "star-fuse",
+        name: "LdaFalse: false locals and flags in a loop",
+        src: "var T = true;\n\
+              function f(n) { var r = []; for (var i = 0; i < n; i++) { var b = false; var c = false; if (i & 1) c = true; r.push(b || c ? 1 : 2, !b, b === false); } return r.join(); }\n\
+              print(f(15));",
+        spec: Some(
+            "var T = true;\n\
+             function f(n) { var r = []; for (var i = 0; i < n; i++) { var b = T ? false : 0; var c = T ? false : 0; if (i & 1) c = true; r.push(b || c ? 1 : 2, !b, b === false); } return r.join(); }\n\
+             print(f(15));",
+        ),
     },
 ];
 
