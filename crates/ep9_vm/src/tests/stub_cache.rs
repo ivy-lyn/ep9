@@ -1131,3 +1131,62 @@ fn slot_widened_at<const PAD: u32, const PREFIX: u8>(c: crate::IsolateConfig) {
     assert_eq!(fast_tries(), tries);
     t.release_all(kept);
 }
+
+// ---- no probe for a ShapeId 0 receiver (M10 LEVER-12 Codex nm-r2 F1) --------------------------
+
+/// The stub cache probes (`stub_cache::PROBES`) and fast-probe runs ([`fast_tries`]) of one
+/// load `f0(v)` of `t`: `Ok` with the value, or `Err` if it threw.
+fn probes_and_tries(t: &mut T, v: u64) -> (u32, u32, Result<u64, ()>) {
+    let (p, f) = (stub_cache::PROBES.with(|c| c.get()), fast_tries());
+    let r = t.call(0, v, UNDEFINED).map_err(|_| ());
+    (
+        stub_cache::PROBES.with(|c| c.get()) - p,
+        fast_tries() - f,
+        r,
+    )
+}
+
+/// Codex nm-r2 F1: a string, a symbol and a BigInt (ShapeId 0, H16 K11) at a warmed
+/// megamorphic one-byte GetNamedProperty site make no stub cache probe at all: the fast body
+/// tests the ShapeId before its probe (`ic::load_or_mega`), and the runtime call tests
+/// `is_object` before its own (`ic::mega_load`). No entry has ShapeId 0, so a probe could not
+/// hit. An object at the same site still probes (the control). GC does not probe, so the
+/// counts hold under GC stress too.
+#[test]
+fn a_string_symbol_or_bigint_at_a_megamorphic_site_never_probes() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Get("x")]);
+        let op = object_prototype(t.rt());
+        let objs = megamorphic(&mut t, op, "x");
+        let kept = t.keep_all(&objs);
+        // Warm: an entry for a new shape, then a hit in the fast body (one probe, one try).
+        let o = object_with(t.rt(), op, &[("new", int(0)), ("x", int(8))]);
+        let kept_o = t.keep(o);
+        assert_eq!(t.ok(0, o, UNDEFINED), int(8));
+        let (n, f, r) = probes_and_tries(&mut t, o);
+        assert_eq!(r, Ok(int(8)));
+        assert!(n == 1 || (stress && n == 2), "{n} probes");
+        assert_eq!(f, 1);
+        for _ in 0..2 {
+            let s = string::new_string(t.rt(), "abc");
+            assert_eq!(
+                probes_and_tries(&mut t, s),
+                (0, 0, Ok(UNDEFINED)),
+                "a string"
+            );
+            let sym = symbol::new_symbol(t.rt(), UNDEFINED);
+            assert_eq!(
+                probes_and_tries(&mut t, sym),
+                (0, 0, Ok(UNDEFINED)),
+                "a symbol"
+            );
+            // The generic load throws in v0 (no BigInt.prototype).
+            let b = crate::bigint::alloc_literal(t.rt(), false, &[5]);
+            assert_eq!(probes_and_tries(&mut t, b), (0, 0, Err(())), "a BigInt");
+        }
+        assert_eq!(t.state(0), State::Megamorphic);
+        t.release(kept_o);
+        t.release_all(kept);
+    });
+}

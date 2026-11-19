@@ -2490,9 +2490,9 @@ const _: () = {
 ///   path, which probes as before, and the prefixed fast bodies do not change.
 /// - A stub cache hit runs the same handler code as a monomorphic hit ([`load_hit`]: on
 ///   x86-64 [`load_with_x86`], with no jump table).
-/// - No `is_object` test (the cold body has one): a string, a symbol and a BigInt have
-///   ShapeId 0 (H16 K11) and no entry has ShapeId 0 (`stub_cache.rs`), so they miss, as the
-///   monomorphic compare takes the same fact.
+/// - A ShapeId 0 test in the MEGA arm, in place of `is_object`: a string, a symbol and a
+///   BigInt have ShapeId 0 (H16 K11) and no entry has one, so they skip the probe, as in
+///   [`mega_load`] (no hash or table read for a sure miss; M10 LEVER-12 Codex nm-r2 F1).
 /// - Counts (`ic-stats`): a stub cache hit here is a load hit (`ic_count!(hit)` in the op)
 ///   and a stub cache hit (`stub_stats!(Load, true)`). Tests: `FAST_PROBE_HITS` counts it,
 ///   and `HANDLER_PROBE_HITS` counts it with the hits of the cold body.
@@ -2529,7 +2529,7 @@ pub(crate) fn load_or_mega(
         return None;
     } else if is_cell_bits(value) {
         poly_case(value, id)?
-    } else if value == MEGA && next == pc.wrapping_add(GET_NAMED_LEN) {
+    } else if value == MEGA && next == pc.wrapping_add(GET_NAMED_LEN) && id != 0 {
         // SAFETY: a one-byte-scale GetNamedProperty of verified code (the opcode, then the
         // object, name and slot operands, one byte each) in the live frame `fp`.
         let h = unsafe { mega_fast(cx, fp, pc, id) }?;
