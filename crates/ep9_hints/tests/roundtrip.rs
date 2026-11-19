@@ -143,8 +143,18 @@ fn record_layout_and_null_values() {
     assert_eq!(r, expected);
 }
 
+/// The bytes of a hex string (the golden files below); 0 dependencies.
+fn hex_decode(hex: &str) -> Vec<u8> {
+    hex.as_bytes()
+        .chunks(2)
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+        .collect()
+}
+
 #[test]
 fn golden_bytes_of_a_tiny_file() {
+    // Every field of every part has a value that differs from its neighbours, so a swap of two
+    // offsets, a width change or a null-value change in the reader or the writer fails here.
     let mut h = Hints::default();
     h.header.fact_schema_version = 2;
     h.header.ts_flags = TsFlags::from_bits(5).unwrap();
@@ -154,12 +164,44 @@ fn golden_bytes_of_a_tiny_file() {
         text_hash: [0x11; 32],
         has_type_errors: false,
         first_record: 0,
-        record_count: 1,
+        record_count: 2,
+    });
+    h.classes.push(ep9_hints::ClassEntry {
+        decl: DeclRef { file: 0, offset: 3 },
+        slot_count: 2,
+        first_field: 0,
+        field_count: 1,
+    });
+    h.classes.push(ep9_hints::ClassEntry {
+        decl: DeclRef {
+            file: 0,
+            offset: 0x40,
+        },
+        slot_count: 3,
+        first_field: 1,
+        field_count: 0,
+    });
+    h.fields.push(DeclRef {
+        file: 0,
+        offset: 0x21,
     });
     let mut r = record(1, 2, NodeKind::ThisExpression);
     r.repr = Repr::Object;
     r.non_null = true;
     r.confidence = 9;
+    h.records.push(r);
+    let mut r = record(5, 9, NodeKind::StaticMemberExpression);
+    r.repr = Repr::Array;
+    r.element = Repr::Number;
+    r.dts_lib = true;
+    r.enum_const = Some(-2);
+    r.confidence = 200;
+    r.class = Some(1);
+    r.slot = Some(2);
+    r.call_target = Some(DeclRef {
+        file: 0,
+        offset: 0x0105,
+    });
     h.records.push(r);
     let hex: String = write(&h)
         .unwrap()
@@ -168,42 +210,77 @@ fn golden_bytes_of_a_tiny_file() {
         .collect();
     let golden = concat!(
         // header
-        "894550394854",
-        "0d0a",
-        "01000000",
-        "02000000",
-        "05000000",
-        "745eb10a650b65ea689155e36ba848f9bfba790d",
-        "01000000",
-        "00000000",
-        "00000000",
-        "01000000",
-        "04000000",
-        "00000000",
-        // file entry
-        "00000000",
-        "04000000",
-        "00000000",
-        "01000000",
-        "1111111111111111111111111111111111111111111111111111111111111111",
-        "00000000",
-        // record
-        "01000000",
-        "02000000",
-        "1100",
-        "08",
-        "00",
-        "01",
-        "09",
-        "ffff",
-        "ffffffff",
-        "ffffffff",
-        "00000000",
-        "00000000",
+        "894550394854",                             // magic "\x89EP9HT"
+        "0d0a",                                     // magic "\r\n"
+        "01000000",                                 // schema version 1
+        "02000000",                                 // fact-schema version 2
+        "05000000",                                 // TS flags 0b101
+        "745eb10a650b65ea689155e36ba848f9bfba790d", // tsrs commit
+        "01000000",                                 // file count 1
+        "02000000",                                 // class count 2
+        "01000000",                                 // field count 1
+        "02000000",                                 // record count 2
+        "04000000",                                 // string bytes 4
+        "00000000",                                 // reserved
+        // file entry 0
+        "00000000", // path offset 0
+        "04000000", // path length 4
+        "00000000", // first record 0
+        "02000000", // record count 2
+        "1111111111111111111111111111111111111111111111111111111111111111", // text hash
+        "00",       // has_type_errors 0
+        "000000",   // reserved
+        // class entry 0
+        "00000000", // decl file 0
+        "03000000", // decl offset 3
+        "02000000", // slot count 2
+        "00000000", // first field 0
+        "01000000", // field count 1
+        // class entry 1
+        "00000000", // decl file 0
+        "40000000", // decl offset 0x40
+        "03000000", // slot count 3
+        "01000000", // first field 1
+        "00000000", // field count 0
+        // field entry 0
+        "00000000", // decl file 0
+        "21000000", // decl offset 0x21
+        // record 0: every id null
+        "01000000", // start 1
+        "02000000", // end 2
+        "1100",     // kind 17 ThisExpression
+        "08",       // repr 8 Object
+        "00",       // element 0 None
+        "01",       // flags: bit 0 non-null
+        "09",       // confidence 9
+        "ffff",     // slot null
+        "ffffffff", // class null
+        "ffffffff", // call-target file null
+        "00000000", // call-target offset 0
+        "00000000", // enum const 0 (flag bit 2 clear)
+        // record 1: every field set
+        "05000000", // start 5
+        "09000000", // end 9
+        "0300",     // kind 3 StaticMemberExpression
+        "09",       // repr 9 Array
+        "01",       // element 1 Number
+        "06",       // flags: bit 1 dts/lib, bit 2 enum const
+        "c8",       // confidence 200
+        "0200",     // slot 2
+        "01000000", // class 1
+        "00000000", // call-target file 0
+        "05010000", // call-target offset 0x0105
+        "feffffff", // enum const -2
         // strings
-        "6d2e7473",
+        "6d2e7473", // "m.ts"
     );
     assert_eq!(hex, golden);
+    // The reader decodes the golden bytes apart from the writer.
+    let e = Expect {
+        fact_schema_version: 2,
+        ts_flags: TsFlags::from_bits(5).unwrap(),
+    };
+    assert_eq!(read(&hex_decode(golden), &e).unwrap(), h);
 }
 
 #[test]
