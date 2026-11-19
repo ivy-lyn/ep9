@@ -237,7 +237,7 @@ TS types are never PROVEN in full-ECMAScript mode. They enter only as HINTED fac
 
 ```
 JIT:  FeedbackVector --(snapshot on main thread)--> FactSnapshot{RUNTIME} --+ merge (H30) --+
-      container facts section (only if K-A4H keeps it)   ---> HINTED -------+               |
+      container facts section (only if K-A4H keeps it)   ---> HINTED -------+               | [2026-11-19, M10-P0 MODES-TEXT-M10 (Codex r1 F1): K-A4H gates only the HINTED use of the section; its PROFILED snapshots and tier hints stay for the hybrid re-tier (doc 13 :442, :446)]
 AOT:  .ep9prof (training run) ---> PROFILED -+                                              |
       .ep9h (ep9-typecheck) -----> HINTED ---+--> ep9_aot merge --> FactSnapshot -----------+--> graph builder
       module graph ---------------> PROVEN --+                                                (bytecode + FactSnapshot)
