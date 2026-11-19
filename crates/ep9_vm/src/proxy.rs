@@ -1122,10 +1122,7 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
     let mut nonconfigurable: Vec<u32> = Vec::new();
     for j in 0..n {
         poll(cx)?;
-        let k = intern_key(
-            cx.rt(),
-            object::array_get(target_keys, j).unwrap_or(UNDEFINED),
-        );
+        let k = intern_key(cx.rt(), key_list_get(target_keys, j));
         object::array_set(cx.rt(), target_keys, j, k);
         // GC point: `target_keys` holds `k`.
         match target_desc(cx, t.target, k)? {
@@ -1138,7 +1135,7 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
         return Ok(keys);
     }
     // 19-21. Every non-configurable key must be in the trap result (removed as it is found).
-    let target_key = |j: u32| object::array_get(target_keys, j).unwrap_or(UNDEFINED);
+    let target_key = |j: u32| key_list_get(target_keys, j);
     for &j in &nonconfigurable {
         poll(cx)?;
         let k = target_key(j);
@@ -1189,6 +1186,20 @@ pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
 /// Element `i` of the dense key array `keys` that `own_property_keys` made. Not a GC point.
 fn key_at(keys: u64, i: u32) -> u64 {
     object::array_get(keys, i).expect("a key at each index below len")
+}
+
+/// Element `j` of the key list `list` (`property::try_own_property_keys` made it): from the
+/// dense store, else from the DICTIONARY store. A list of more than `arr::MAX_LENGTH` keys is
+/// DICTIONARY (a store at or past the limit moves the whole array, `object::array_set`), and
+/// the dense-only `object::array_get` gives `None` at each of its indices. Every index below
+/// the list length holds a key. Not a GC point.
+pub(crate) fn key_list_get(list: u64, j: u32) -> u64 {
+    object::array_get(list, j)
+        .or_else(|| {
+            let d = crate::elements::dict_of(list)?;
+            crate::elements::dict_get(d, j).map(|(k, _)| k)
+        })
+        .expect("a key at each index below the list length")
 }
 
 /// The content hash of the interned key `k` (`symbol::hash` or `string::hash`), never an
