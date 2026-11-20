@@ -2427,10 +2427,14 @@ fn a_fast_frame_that_ends_at_the_stack_end_puts_the_round_up_in_the_guard_slot()
     }
 }
 
-/// `function name(a, b)` with exactly `regs` registers: returns -1 if every register reads
-/// undefined at entry, else the index of the first one that does not.
+/// `function name(a, b) { "use strict"; .. }` with exactly `regs` registers: returns -1 if
+/// every register reads undefined at entry, else the index of the first one that does not.
+/// Strict, so a primitive receiver (`emit_shape` gives "R") does not send the call cold
+/// (`call::try_bind_this`): every call form reaches the fast frame write.
 fn undefined_reader(name: &str, regs: u32) -> FunctionCode {
-    let mut b = ep9_bytecode::FunctionBuilder::new(meta(name, 2, 0, 0, 0));
+    let mut m = meta(name, 2, 0, 0, 0);
+    m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
+    let mut b = ep9_bytecode::FunctionBuilder::new(m);
     let r: Vec<Register> = (0..regs).map(|_| b.new_register()).collect();
     assert_eq!(b.register_count(), regs);
     let bad: Vec<ep9_bytecode::Label> = r.iter().map(|_| b.new_label()).collect();
@@ -2495,32 +2499,94 @@ fn call_dirty(s: &mut Asm) {
     s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
 }
 
+/// `peek(k)`: the slot `k` above the top of the caller frame (the base of the frame that the
+/// caller pushed last): 1 if it holds undefined, 0 if it holds 42 (from `dirty`), else -1. It
+/// reads the slot first, before any other step of the host call.
+fn peek<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    use crate::frame::{UNDEFINED, int32_bits, native_ptr, slot};
+    use crate::runtime::frame_top;
+    let stack = cx.inner().rt().stack();
+    assert!(
+        stack.scratch_top().is_null(),
+        "no scratch top at the host entry"
+    );
+    let k = args.get(0).as_int32().expect("peek(k): an int32 k") as usize;
+    // SAFETY: the host frame is live; its caller slot was written at its push.
+    let caller = unsafe { native_ptr::<u64>(*stack.fp().offset(slot::CALLER_FP)) };
+    let at = frame_top(caller).wrapping_add(k);
+    assert!(
+        at.addr() < stack.end().addr(),
+        "slot {k} lies inside the stack"
+    );
+    // SAFETY: `at` lies in the stack, below `end()` (checked above).
+    let bits = unsafe { *at };
+    Ok(Local::int32(if bits == UNDEFINED {
+        1
+    } else if bits == int32_bits(42) {
+        0
+    } else {
+        -1
+    }))
+}
+
 /// LEVER-13 (Codex focus 1): every register of a new frame reads undefined, for 0, 1, 7, 8, 9
 /// and 17 registers, in each of the 9 call forms (0 to 3 arguments, 2 parameters: missing and
 /// extra arguments), each time after `dirty` left 42 in the slots of the new frame; under
-/// every dispatch expansion, with and without GC stress (`run_all`).
+/// every dispatch expansion, with and without GC stress. After each call, `peek` reads the
+/// slot at the top of the callee frame: undefined (1) shows that the call wrote the frame by
+/// `fill_registers` with the round-up (`VmStack::GUARD` 1, an odd count), 42 (0) that it did
+/// not write there. Each reader is called 8 times first, so the threshold-8 cold call
+/// (`count_call`) is used up before the shapes.
 #[test]
 fn every_register_of_a_new_frame_reads_undefined_after_a_dirty_frame() {
+    const SHAPES: [Shape; 9] = [
+        Shape::CallProperty0,
+        Shape::CallProperty1,
+        Shape::CallProperty2,
+        Shape::CallProperty,
+        Shape::CallAnyReceiver,
+        Shape::CallUndefinedReceiver0,
+        Shape::CallUndefinedReceiver1,
+        Shape::CallUndefinedReceiver2,
+        Shape::CallUndefinedReceiver,
+    ];
+    fn argc(shape: Shape) -> u32 {
+        match shape {
+            Shape::CallProperty0 | Shape::CallUndefinedReceiver0 => 0,
+            Shape::CallProperty1 | Shape::CallUndefinedReceiver1 => 1,
+            Shape::CallProperty2 | Shape::CallUndefinedReceiver2 => 2,
+            _ => 3,
+        }
+    }
     fn make() -> VerifiedUnit {
         let mut s = Asm::script(0);
         let l = s.b.new_register_list(4);
+        let (p, save) = (s.b.new_register(), s.b.new_register());
         define_readers(&mut s);
+        s.lda_global("peek");
+        s.b.star(p);
         for regs in READER_REGS {
-            for shape in [
-                Shape::CallProperty0,
-                Shape::CallProperty1,
-                Shape::CallProperty2,
-                Shape::CallProperty,
-                Shape::CallAnyReceiver,
-                Shape::CallUndefinedReceiver0,
-                Shape::CallUndefinedReceiver1,
-                Shape::CallUndefinedReceiver2,
-                Shape::CallUndefinedReceiver,
-            ] {
-                // Twice: the first call of a site may take the cold path.
+            for _ in 0..8 {
+                s.lda_global(reader_name(regs));
+                s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+            }
+            for shape in SHAPES {
+                // The slot at the callee frame top, from the base of the callee frame. It
+                // lies in the 24 slots that `dirty` wrote, above the frame of `peek`.
+                let k = argc(shape).max(2) + 1 + crate::frame::HEADER as u32 + regs;
                 for _ in 0..2 {
                     call_dirty(&mut s);
                     emit_shape(&mut s, shape, reader_name(regs), l);
+                    s.b.star(save);
+                    s.b.lda_smi(k as i32).star(s.a.get(0));
+                    s.b.call_undefined_receiver1(p, s.a.get(0), s.call);
+                    s.print_acc();
+                    s.b.ldar(save);
                     s.print_acc();
                 }
             }
@@ -2530,9 +2596,36 @@ fn every_register_of_a_new_frame_reads_undefined_after_a_dirty_frame() {
         fns.extend(reader_fns());
         unit("", fns)
     }
-    let r = run_all(make);
-    ok(&r);
-    assert_eq!(r.output, vec!["-1"; READER_REGS.len() * 9 * 2]);
+    let want: Vec<&str> = READER_REGS
+        .iter()
+        .flat_map(|&regs| {
+            let top = if std::hint::black_box(crate::frame::VmStack::GUARD) == 1 && regs % 2 == 1 {
+                "1"
+            } else {
+                "0"
+            };
+            std::iter::repeat_n([top, "-1"], SHAPES.len() * 2).flatten()
+        })
+        .collect();
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let (r, output) = super::on_big_stack(move || {
+                let mut iso = isolate(super::config(d, stress));
+                iso.register_host_function("peek", 1, peek);
+                take_output();
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "fill.js").map(|v| cx.display(v))
+                });
+                let output = take_output();
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+                (r.map_err(|e| e.message), output)
+            });
+            assert_eq!(r.as_deref(), Ok("undefined"), "{label}");
+            assert_eq!(output, want, "{label}");
+        }
+    }
 }
 
 /// LEVER-13 (Codex focus 2): a throw out of fast-called frames with odd register counts, and
