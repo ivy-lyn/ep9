@@ -541,9 +541,9 @@ fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Op
 
 /// The hit path of a named store: `o.key = v` (0x24, `CHECK_EPOCH`: an add case checks its
 /// validity cell) or CreateDataProperty (0x25) from slot `slot` of the vector of `fi`. False
-/// on a miss (also a megamorphic entry: its miss path probes the stub cache, [`mega_store`]);
-/// nothing is stored then. `name` (the site's name constant) feeds only the debug cross-check
-/// ([`cross_check`]).
+/// on a miss (also a megamorphic entry, with no probe here: a one-byte op probes the stub cache
+/// in [`store_or_mega`], a prefixed one in its cold body); nothing is stored then. `name` (the
+/// site's name constant) feeds only the debug cross-check ([`cross_check`]).
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn store<const CHECK_EPOCH: bool>(

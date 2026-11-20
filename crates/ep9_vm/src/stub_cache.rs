@@ -5,8 +5,8 @@
 //! ```text
 //!  megamorphic site (slot = hole, int32 MEGA)     Runtime::stub_cache (8192 entries, Rust memory)
 //!   ic::load / ic::store: a miss, then a probe in   index = hash(op, ShapeId, name)
-//!   the 0x21 fast body or 0x21/0x24/0x25 cold body  entry: key = op << 32 | ShapeId
-//!     ic::mega_fast, handler_mega_load / _store ─probe─>   name (an atom's bits)
+//!   the 0x21/0x24/0x25 fast body or cold body       entry: key = op << 32 | ShapeId
+//!     ic::mega_(store_)fast, handler_mega_* ─probe─>         name (an atom's bits)
 //!       None -> the runtime call below                     handler (a smi handler or an
 //!   miss path: slow::get_named / get_super / set_named     IC_HANDLER cell of ic.rs)
 //!     ic::mega_load / ic::mega_store ──probe──>
@@ -26,7 +26,7 @@
 //!   (`ic::load_or_mega`), so a mono hit still loads neither value; Wide and ExtraWide probe
 //!   in the cold body. A hit skips the runtime call (`slow::get_named`), which probes again
 //!   only after a miss. On TS 29.09 M of 29.16 M megamorphic loads hit (M7-P1, mac a64).
-//!   M8-P0 TS-STORE: 0x24 and 0x25 probe in their cold bodies (`ic::handler_mega_store`).
+//!   M8-P0 TS-STORE and M10-P2: 0x24 and 0x25 the same (`store_or_mega`, `handler_mega_store`).
 //! - Handlers are the IC handlers of `ic.rs`, so a hit runs the same handler code as a
 //!   monomorphic or polymorphic case: smi field handlers and `ARRAY_LENGTH` (loads and stores),
 //!   `PROTO_LOAD` and `MISSING` (loads, through their validity cell), `ADD` (stores; a 0x24
@@ -152,9 +152,9 @@ fn index(op: Op, id: u32, name: u64) -> usize {
 
 /// The handler of the entry for (`op`, ShapeId `id`, `name`), or `None`. Called from the miss
 /// paths `ic::mega_load`, `ic::handler_mega_load` (the 0x21 cold body), `ic::handler_mega_store`
-/// (the 0x24 and 0x25 cold bodies, M8-P0 TS-STORE) and `ic::mega_store`; the 0x21 fast body
-/// probes through [`probe_at`] (M10 LEVER-12). Never allocates, never calls. A ShapeId of 0
-/// (a string, a symbol or a BigInt) never matches.
+/// (the 0x24 and 0x25 cold bodies, M8-P0 TS-STORE) and `ic::mega_store`; the one-byte 0x21,
+/// 0x24 and 0x25 fast bodies probe through [`probe_at`] (M10 LEVER-12, M10-P2). Never
+/// allocates, never calls. A ShapeId of 0 (a string, a symbol or a BigInt) never matches.
 #[inline(always)]
 pub(crate) fn probe(rt: &Runtime, op: Op, id: u32, name: u64) -> Option<u64> {
     #[cfg(test)]
@@ -183,12 +183,12 @@ pub(crate) fn index_of(op: Op, id: u32, name: u64) -> usize {
     index(op, id, name)
 }
 
-/// [`probe`] in two steps, for the 0x21 fast body (`ic::mega_fast`, M10 LEVER-12 NAMED-MISS):
-/// the handler of entry `i` = [`index_of`] (`op`, `id`, `name`) if it is the entry for them.
-/// The fast body reads the runtime pointer after the index, so on x86-64 the pointer is not
-/// live during the hash, and here the entry address is one register (an empty `asm!` block),
-/// so the table base and the index are not live beside the key compare (one more live value
-/// there is an entry save on every run of the handler).
+/// [`probe`] in two steps, for the 0x21 fast body (`ic::mega_fast`, M10 LEVER-12 NAMED-MISS)
+/// and the 0x24, 0x25 ones (`ic::mega_store_fast`, M10-P2): the handler of entry `i` =
+/// [`index_of`] (`op`, `id`, `name`) if it is the entry for them. The fast body reads the
+/// runtime pointer after the index, so on x86-64 the pointer is not live during the hash, and
+/// here the entry address is one register (an empty `asm!` block), so the table base and the
+/// index are not live beside the key compare (one more live value is an entry save).
 #[inline(always)]
 pub(crate) fn probe_at(rt: &Runtime, i: usize, op: Op, id: u32, name: u64) -> Option<u64> {
     #[cfg(test)]
