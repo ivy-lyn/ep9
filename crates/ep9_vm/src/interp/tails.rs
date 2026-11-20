@@ -96,13 +96,14 @@ use ep9_bytecode::Opcode;
 /// an exception, a cold exit or a record exit runs no lookahead, so the Star runs in its own
 /// handler there, as before.
 ///
-/// The producers (M10-P2 STAR-LA2: the 6 of M9-P0 and 5 more; DL M6-ORCH-776 "11 producers"):
-/// the `GetNamedProperty` IC hit, the four context-slot loads (`ops::ctx_load`),
-/// `LdaCurrentContext`, `LdaConstant`, `LdaZero`, `LdaSmi`, `LdaNull` and `LdaFalse`.
+/// The producers (M10-P3 STAR-LA2, the pick of DL M6-ORCH-1205: 9 of the 11 of M10-P2): the
+/// four context-slot loads (`ops::ctx_load`), `LdaCurrentContext`, `LdaConstant`, `LdaZero`,
+/// `LdaNull` and `LdaFalse`. `LdaSmi` and the `GetNamedProperty` IC hit are not producers:
+/// each alone added more than 1.0% Ir on a BENCH row (the pick table).
 ///
 /// - **Same result.** The Star handler does the same: the same operand decode
 ///   (`kind::RegOut`), the same store, the next instruction 2 bytes after the Star. A Star
-///   whose register is the producer's input (`GetNamedProperty r1; Star r1`) stores after the
+///   whose register is the producer's input (`LdaContextSlot r1; Star r1`) stores after the
 ///   producer read it, as the two handlers do. A Star that is also a jump target runs in the
 ///   Star handler when a jump reaches it; only the fall-through from the producer fuses.
 /// - **The debugger off-switch.** The test reads the opcode byte at `st.next`, not a table of
@@ -113,8 +114,8 @@ use ep9_bytecode::Opcode;
 /// - **No GC point.** It allocates nothing and calls nothing; the stored value is the
 ///   accumulator, which the producer already holds.
 /// - A `Wide` or `ExtraWide` Star (a prefix byte at `st.next`) does not fuse. A prefixed
-///   producer (`Wide GetNamedProperty`, aarch64 `ops::prefixed_fast`) runs the lookahead too:
-///   its `st.next` is the end of the prefixed instruction.
+///   producer runs the lookahead too (the same fast body): its `st.next` is the end of the
+///   prefixed instruction.
 ///
 /// The pc forms ([`lookahead_pc`]). aarch64: `st.next` goes through an empty `asm!` block
 /// before the test, so LLVM keeps it in `x1` (M9-P0: else 1 or 2 more instructions on each
@@ -124,13 +125,11 @@ use ep9_bytecode::Opcode;
 /// jump (the V8 duplicated dispatch site). The form of each producer (asm read, M10-P2; the
 /// const argument at its exit in `interp/ops.rs`):
 ///
-/// - `ONE_PC`: the `GetNamedProperty` IC hit and the four context-slot loads. Their success
-///   exit is a join of several paths (the IC hit paths; the context walk). x86-64: one
-///   dispatch jump. The plain form also gave one jump, and more instructions on each path
-///   (`GetNamedProperty` +2; the context-slot loads +1 not fused, +2 fused). The 4 dispatch
-///   jumps of the `GetNamedProperty` hit paths become 1 (x86-64 and aarch64).
-/// - Plain: `LdaCurrentContext`, `LdaConstant`, `LdaZero`, `LdaSmi`, `LdaNull` and `LdaFalse`
-///   (one path to the exit). x86-64: 2 dispatch jumps, one for the fused path and one for the
+/// - `ONE_PC`: the four context-slot loads. Their success exit is a join of several paths
+///   (the context walk). x86-64: one dispatch jump. The plain form also gave one jump, and
+///   more instructions on each path (+1 not fused, +2 fused).
+/// - Plain: `LdaCurrentContext`, `LdaConstant`, `LdaZero`, `LdaNull` and `LdaFalse` (one path
+///   to the exit). x86-64: 2 dispatch jumps, one for the fused path and one for the
 ///   other path. The not-fused path is the same as with `ONE_PC`, the fused path 1
 ///   instruction shorter.
 /// - aarch64 (`ONE_PC` changes nothing there): LLVM gives each producer one dispatch jump;
