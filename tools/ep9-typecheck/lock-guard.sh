@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The ep9-typecheck lock guard (H26:42; docs/plan/08-repo.md section 7): dep-guards check 27,
-# and the sp-tsrs-win job of ci.yml after its tsrs sync.
+# The ep9-typecheck lock guard (H26:42; docs/plan/08-repo.md section 7): dep-guards check 27
+# (the required dependency guards job), and the sp-tsrs-win job of ci.yml after its tsrs sync.
 # usage: bash tools/ep9-typecheck/lock-guard.sh [<tsrs Cargo.lock> <ep9-typecheck Cargo.lock>]
 #        (default: third_party/tsrs/Cargo.lock and tools/ep9-typecheck/Cargo.lock of this repo)
 #
@@ -12,8 +12,9 @@
 #     each exactly once.
 # Anything else FAILs and names the package: an extra one, or a tsrs package with another
 # version, source or checksum. A line that is not in the form that cargo writes FAILs too.
-# Either lock absent: PASS with a note (the root PR jobs do not sync tsrs). Exit 1 on FAIL, 2 on
-# bad arguments.
+# Either lock absent: FAIL in CI (CI=true; the dep-guards job makes both locks first, with no
+# build, so the guard compares on every PR); a PASS with a note only outside CI. Exit 1 on FAIL,
+# 2 on bad arguments.
 set -euo pipefail
 export LC_ALL=C
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,7 +29,10 @@ bad() { echo "FAIL: (27) $*"; fail=1; }
 missing=""
 [ -f "$tl" ] || missing="$tl"
 [ -f "$el" ] || missing="${missing:+$missing and }$el"
-if [ -n "$missing" ]; then
+if [ -n "$missing" ] && [ "${CI:-}" = true ]; then
+  bad "the ep9-typecheck lock guard cannot run in CI: $missing absent (dep-guards.sh check 27 and scripts/sync-tsrs.sh make both)"
+  exit 1
+elif [ -n "$missing" ]; then
   echo "PASS: (27) the ep9-typecheck lock guard did not run: $missing absent (scripts/sync-tsrs.sh makes both)"
   exit 0
 fi
