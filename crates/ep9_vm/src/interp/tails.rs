@@ -144,6 +144,16 @@ use ep9_bytecode::Opcode;
 /// body runs `GetNamedProperty`) 12,064 -> 12,400 bytes, and `tests::profile` (2 `Wide` a turn)
 /// reached the debug stack floor at turn 10,469 of 10,600. Release builds inline them (the
 /// same code as the inline form).
+///
+/// The debug native-stack check (M10-P3 STAR-LA2, Codex sl2-r1 F1): a debug threaded handler
+/// runs `dsl::debug_native_stack_check` before it decodes or writes anything (the floor is
+/// `DEBUG_SLACK` below `native_limit`). A fused Star writes its register in the producer, so
+/// it would skip the check of the Star handler. So in debug builds the lookahead fuses only
+/// while the native stack is above `native_limit` ([`star_room`]). Below it (the last
+/// `DEBUG_SLACK` before the floor) the Star runs in its own handler, and that handler checks
+/// the floor before its write, as without the lookahead. Above `native_limit` the check of
+/// the Star handler would pass: its frame is a few hundred bytes below the frame that tests
+/// here, far less than `DEBUG_SLACK`.
 #[inline(always)]
 fn star_lookahead<const ONE_PC: bool>(st: &mut St<'_>) {
     #[cfg(test)]
@@ -153,7 +163,7 @@ fn star_lookahead<const ONE_PC: bool>(st: &mut St<'_>) {
     st.next = lookahead_pc::<ONE_PC>(st.next);
     // SAFETY: `st.next` is the start of the next instruction of verified code (`St` contract):
     // its opcode byte is readable.
-    if unsafe { *st.next } == Opcode::Star as u8 {
+    if unsafe { *st.next } == Opcode::Star as u8 && star_room(st.cx) {
         // SAFETY: verified code: a one-byte-scale `Star` is followed by its `RegOut` operand,
         // a register of the live frame `fp`, and the instruction after it (a verified function
         // never runs off its end).
@@ -167,6 +177,23 @@ fn star_lookahead<const ONE_PC: bool>(st: &mut St<'_>) {
     }
     if ONE_PC {
         st.next = dsl::dispatch_pc(st.next);
+    }
+}
+
+/// True if the lookahead may fuse the Star here ([`star_lookahead`], sl2-r1 F1). Debug builds:
+/// the native stack is above `native_limit` (`Runtime::native_stack_ok`), so the debug
+/// native-stack check of the Star handler would pass. Release builds have no such check:
+/// always true (no code).
+#[inline(always)]
+fn star_room(cx: &crate::interp::Cx) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        cx.rt().native_stack_ok()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = cx;
+        true
     }
 }
 
