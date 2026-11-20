@@ -34,9 +34,11 @@ pub struct Checked {
     pub ts_flags: TsFlags,
     /// Error lines for the log: `TS<code> <path>: <message>`; `(program)` when no file is named.
     pub errors: Vec<String>,
-    /// The absolute paths of the files that the check read: the config file, each config that it
-    /// extends (all steps of an `extends` chain) and each source file of the table. `--out` must
-    /// not name one of them.
+    /// The absolute paths of the known files that the check read: the config file, each config
+    /// that it extends (all steps of an `extends` chain) and each source file of the table.
+    /// `--out` must not name one of them. The list is not complete (a config named by
+    /// `references`, a `package.json` of module resolution are not in it): `main.rs` also
+    /// refuses an `--out` file that exists and does not start with the `.ep9h` magic.
     pub inputs: Vec<String>,
 }
 

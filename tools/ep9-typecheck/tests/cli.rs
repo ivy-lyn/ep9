@@ -253,14 +253,19 @@ fn out_never_replaces_an_input() {
         v
     };
     let src_names = names(&p.join("src"));
-    let refused = |cwd: &Path, project: &str, out: &str| {
+    let refused_with = |cwd: &Path, project: &str, out: &str, message: &str| {
         let o = run(cwd, &[project, "--out", out]);
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.status.code(), Some(1), "--out {out}: {err}");
-        assert!(
-            err.contains("is an input of the project"),
-            "--out {out}: {err}"
-        );
+        assert!(err.contains(message), "--out {out}: {err}");
+    };
+    // A known input (Checked.inputs).
+    let refused = |cwd: &Path, project: &str, out: &str| {
+        refused_with(cwd, project, out, "is an input of the project");
+    };
+    // Any other file that exists and is not a .ep9h file.
+    let not_ep9h = |cwd: &Path, project: &str, out: &str| {
+        refused_with(cwd, project, out, "exists and is not a .ep9h file");
     };
     let pp = p.to_str().unwrap();
     // A source file, the config, a source file by another path form, a relative path.
@@ -328,12 +333,82 @@ fn out_never_replaces_an_input() {
             ("src/ok.ts", false)
         ]
     );
-    // An output that is not an input is replaced, and no temporary file is left.
+    // Files that the check reads but that are not in Checked.inputs: a config named by
+    // "references" and a config that it extends; a package.json that module resolution reads.
+    let refs = dir.join("refs");
+    copy_dir(&fixture(), &refs);
+    let with_refs = String::from_utf8(config_bytes.clone()).unwrap().replace(
+        "\"include\": [\"src\"]",
+        "\"include\": [\"src\"],\n  \"references\": [{ \"path\": \"./ref\" }]",
+    );
+    assert!(with_refs.contains("references"));
+    std::fs::write(refs.join("tsconfig.json"), with_refs).unwrap();
+    std::fs::create_dir_all(refs.join("ref")).unwrap();
+    let ref_config =
+        br#"{"extends":"./base.json","compilerOptions":{"composite":true},"files":[]}"#;
+    std::fs::write(refs.join("ref/tsconfig.json"), ref_config).unwrap();
+    std::fs::write(refs.join("ref/base.json"), b"{}").unwrap();
+    let rp = refs.to_str().unwrap();
+    not_ep9h(&dir, rp, refs.join("ref/tsconfig.json").to_str().unwrap());
+    not_ep9h(&dir, rp, refs.join("ref/base.json").to_str().unwrap());
+    not_ep9h(&refs, "tsconfig.json", "ref/tsconfig.json");
+    assert_eq!(
+        std::fs::read(refs.join("ref/tsconfig.json")).unwrap(),
+        ref_config
+    );
+    assert_eq!(std::fs::read(refs.join("ref/base.json")).unwrap(), b"{}");
+    let pkg = dir.join("pkg");
+    copy_dir(&fixture(), &pkg);
+    std::fs::write(
+        pkg.join("src/usepkg.ts"),
+        "import { v } from \"pkg\";\nexport const w: number = v;\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(pkg.join("node_modules/pkg/lib")).unwrap();
+    let pkg_json = br#"{"name":"pkg","version":"1.0.0","types":"lib/main.d.ts"}"#;
+    let pkg_json_path = pkg.join("node_modules/pkg/package.json");
+    std::fs::write(&pkg_json_path, pkg_json).unwrap();
+    std::fs::write(
+        pkg.join("node_modules/pkg/lib/main.d.ts"),
+        "export declare const v: number;\n",
+    )
+    .unwrap();
+    not_ep9h(&dir, pkg.to_str().unwrap(), pkg_json_path.to_str().unwrap());
+    not_ep9h(&pkg, "tsconfig.json", "node_modules/pkg/package.json");
+    assert_eq!(std::fs::read(&pkg_json_path).unwrap(), pkg_json);
+    // The import resolves only through that package.json ("types" names lib/main.d.ts):
+    // usepkg.ts has no type error.
+    let h = hints(&check(&dir, &pkg, &dir.join("pkg.ep9h")));
+    assert_eq!(
+        table(&h),
+        [
+            ("node_modules/pkg/lib/main.d.ts", false),
+            ("src/bad.ts", true),
+            ("src/bom.ts", false),
+            ("src/ok.ts", false),
+            ("src/usepkg.ts", false),
+        ]
+    );
+    // An existing file that is no input and not a .ep9h file.
+    let notes = dir.join("notes.txt");
+    std::fs::write(&notes, b"old").unwrap();
+    not_ep9h(&dir, pp, notes.to_str().unwrap());
+    assert_eq!(std::fs::read(&notes).unwrap(), b"old");
+    // An output of an earlier run is replaced (new bytes), and no temporary file is left.
     let out = dir.join("out.ep9h");
-    std::fs::write(&out, b"old").unwrap();
+    let earlier = check(&dir, &fixture(), &out);
+    #[cfg(unix)]
+    {
+        // A link to a .ep9h file is not a regular file.
+        let link = dir.join("link.ep9h");
+        std::os::unix::fs::symlink(&out, &link).unwrap();
+        not_ep9h(&dir, pp, link.to_str().unwrap());
+        assert_eq!(std::fs::read(&out).unwrap(), earlier);
+        std::fs::remove_file(&link).unwrap();
+    }
     let before = names(&dir);
     let bytes = check(&dir, &p, &out);
-    assert_ne!(bytes, b"old");
-    hints(&bytes);
+    assert_ne!(bytes, earlier);
+    assert_eq!(table(&hints(&bytes)).len(), 4);
     assert_eq!(names(&dir), before);
 }

@@ -6,9 +6,16 @@
 //! ```
 //!
 //! Exit status: 0 done (a file with type errors is data, not a failure); 1 tsrs made no program,
-//! a file could not be read, written or verified, or `--out` names an input of the project (the
-//! config, a config that it extends, or a source file; the file does not change); 2 bad
-//! arguments.
+//! a file could not be read, written or verified, or `--out` is refused (the file does not
+//! change); 2 bad arguments.
+//!
+//! `--out` is refused when it names a known input of the project (the config, a config that it
+//! extends, or a source file), and also when it names any other file that exists and is not a
+//! regular file that starts with the `.ep9h` magic (`ep9_hints::MAGIC`): a link, a directory, or
+//! a file that the check can read but that is not in the inputs list (a config named by
+//! `references` and the configs that it extends, a `package.json` that module resolution reads).
+//! No input of the checker starts with that magic, so only an output of an earlier run is
+//! replaced. A `--out` file that does not exist is written.
 //!
 //! The output goes to a temporary file next to `--out` first, then a rename replaces `--out`,
 //! so a failed write never leaves a part of a file.
@@ -83,14 +90,35 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Writes `bytes` to `out`: refused when `out` is one of `inputs`; else a temporary file in the
-/// same directory, then a rename over `out` (it replaces the file on Windows too).
+/// The first bytes of the file at `path` are the `.ep9h` magic.
+fn starts_with_magic(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && head == ep9_hints::MAGIC
+}
+
+/// Writes `bytes` to `out`: refused when `out` is one of `inputs`, or when `out` exists and is
+/// not a regular file (not a link) that starts with the `.ep9h` magic; else a temporary file in
+/// the same directory, then a rename over `out` (it replaces the file on Windows too).
 fn write_out(out: &str, bytes: &[u8], inputs: &[String]) -> Result<(), String> {
     let path = Path::new(out);
     if inputs.iter().any(|i| same_file(path, Path::new(i))) {
         return Err(format!(
             "--out {out} is an input of the project; it is not written"
         ));
+    }
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot read {out}: {e}; it is not written")),
+        Ok(m) if m.file_type().is_file() && starts_with_magic(path) => {}
+        Ok(_) => {
+            return Err(format!(
+                "--out {out} exists and is not a .ep9h file; it is not written"
+            ));
+        }
     }
     let tmp = format!("{out}.tmp{}", std::process::id());
     if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
