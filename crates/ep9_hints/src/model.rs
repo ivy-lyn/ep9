@@ -117,8 +117,8 @@ pub struct Record {
     /// The class id, an index of [`Hints::classes`]. On a member-access kind (3
     /// StaticMemberExpression, 4 ComputedMemberExpression, 5 PrivateFieldExpression) it is the
     /// receiver's class, which owns `slot` (05-aot.md:149 "class receiver -> shape + slot
-    /// candidate"). On any other kind it is the class of the node's value
-    /// ([`Repr::ClassInstance`]).
+    /// candidate"). On any other kind it is the class of the node's value, and `repr` must be
+    /// [`Repr::ClassInstance`] (else the reader gives [`DropReason::BadRecord`]).
     pub class: Option<u32>,
     /// The slot of the member in the receiver class: below its slot count. Needs `class` and
     /// a member-access kind (3-5).

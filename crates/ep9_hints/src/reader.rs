@@ -404,6 +404,11 @@ fn read_record(e: &[u8], file_count: usize, classes: &[ClassEntry]) -> Result<Re
             | NodeKind::ComputedMemberExpression
             | NodeKind::PrivateFieldExpression
     );
+    // A1H-R4 option A: on a kind that is not a member access the class id is the class of the
+    // value, so it needs repr ClassInstance. A member kind keeps any repr (the receiver class).
+    if !member && class.is_some() && repr != Repr::ClassInstance {
+        return Err(bad);
+    }
     let slot = match u16_at(e, o::REC_SLOT) {
         NULL_U16 => None,
         s => match class_entry {

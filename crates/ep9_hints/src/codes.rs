@@ -137,9 +137,9 @@ code_list! {
         Array = 9,
         /// A function.
         Function = 10,
-        /// An instance of a class. On a kind that is not a member access, the record's class
-        /// id names the class. On a member-access kind, the class id is the receiver's class,
-        /// so this record does not give the class of the value.
+        /// An instance of a class. On a kind that is not a member access, only this repr can
+        /// have a class id, and the id names the class (else `BadRecord`). On a member-access
+        /// kind, the class id is the receiver's class with any repr, not the value's class.
         ClassInstance = 11,
     }
 }

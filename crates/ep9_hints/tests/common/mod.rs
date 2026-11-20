@@ -68,7 +68,7 @@ pub fn sample() -> Hints {
     r3.repr = Repr::Number;
     let mut r4 = record(4, 9, NodeKind::ParenthesizedExpression);
     r4.class = Some(0);
-    r4.repr = Repr::Function;
+    r4.repr = Repr::ClassInstance;
     r4.enum_const = Some(0);
     Hints {
         header: Header {

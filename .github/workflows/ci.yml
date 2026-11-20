@@ -1097,7 +1097,8 @@ jobs:
           if-no-files-found: error
 
   # SP-tsrs-win (docs/plan/08-repo.md section 5 item 7; 09-milestones section 4): the result is
-  # recorded in the job summary and an artifact. It never blocks (continue-on-error).
+  # recorded in the job summary and an artifact. It never blocks (continue-on-error). From A1h
+  # (H37 item 7) it also builds tools/ep9-typecheck, runs its lock guard and a fixture smoke.
   sp-tsrs-win:
     name: SP-tsrs-win (recorded, not blocking)
     needs: scope
@@ -1118,11 +1119,22 @@ jobs:
           sync_dep tsrs https://github.com/oxc-project/tsrs.git
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: third_party/tsrs -> target
-      - name: Build tsrs_cli
+          workspaces: |
+            third_party/tsrs -> target
+            tools/ep9-typecheck -> target
+      - name: Build tsrs_cli and ep9-typecheck
         run: bash scripts/sync-tsrs.sh 2>&1 | tee sp-tsrs-win.log
       - name: Smoke tests
         run: bash .github/scripts/tsrs-smoke.sh third_party/tsrs/target/release/tsrs.exe 2>&1 | tee -a sp-tsrs-win.log
+      # H26:42: the lock that sync-tsrs.sh made is the tsrs lock plus only the 2 ep9 packages.
+      - name: ep9-typecheck lock guard
+        run: bash tools/ep9-typecheck/lock-guard.sh 2>&1 | tee -a sp-tsrs-win.log
+      # The fixture project gives a .ep9h file, and --verify reads it back with ep9_hints.
+      - name: ep9-typecheck smoke
+        run: |
+          tc=tools/ep9-typecheck/target/release/ep9-typecheck.exe
+          "$tc" tools/ep9-typecheck/tests/fixture --out fixture.ep9h 2>&1 | tee -a sp-tsrs-win.log
+          "$tc" --verify fixture.ep9h 2>&1 | tee -a sp-tsrs-win.log
       - name: Record the result
         if: ${{ always() }}
         run: |

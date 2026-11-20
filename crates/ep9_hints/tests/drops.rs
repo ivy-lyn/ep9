@@ -473,3 +473,50 @@ fn random_input_never_panics() {
         }
     }
 }
+
+#[test]
+fn a1h_r4_value_class_with_another_repr_is_a_bad_record() {
+    use ep9_hints::{NodeKind, Repr};
+    // A1H-R4 option A (DL M10-P1-CLOSE-5, call 3): on a kind that is not a member access, the
+    // class id is the class of the value, so the repr must be ClassInstance. Record 0 of the
+    // sample is a BindingIdentifier, ClassInstance, class 1; record 1 is a StaticMemberExpression.
+    let number = Repr::Number.code();
+    let ident = NodeKind::IdentifierReference.code();
+    // Number + class on IdentifierReference: a bad record.
+    assert_eq!(
+        patched(|b| {
+            put_u16(b, rec(0, o::REC_KIND), ident);
+            b[rec(0, o::REC_REPR)] = number;
+        }),
+        DropReason::BadRecord
+    );
+    // Each repr other than ClassInstance, with the class, on the BindingIdentifier.
+    for &repr in Repr::ALL {
+        let mut b = sample_bytes();
+        b[rec(0, o::REC_REPR)] = repr.code();
+        if repr == Repr::ClassInstance {
+            assert!(read(&b, &expect()).is_ok());
+        } else {
+            assert_eq!(drop_of(&b), DropReason::BadRecord, "{}", repr.name());
+        }
+    }
+    // ClassInstance + class on IdentifierReference reads.
+    let mut b = sample_bytes();
+    put_u16(&mut b, rec(0, o::REC_KIND), ident);
+    let h = read(&b, &expect()).unwrap();
+    assert_eq!(h.records[0].kind, NodeKind::IdentifierReference);
+    assert_eq!(
+        (h.records[0].repr, h.records[0].class),
+        (Repr::ClassInstance, Some(1))
+    );
+    // Number + receiver class on StaticMemberExpression reads: the class is the receiver's.
+    let mut b = sample_bytes();
+    put_u32(&mut b, rec(1, o::REC_CLASS), 1);
+    b[rec(1, o::REC_REPR)] = number;
+    let h = read(&b, &expect()).unwrap();
+    assert_eq!(h.records[1].kind, NodeKind::StaticMemberExpression);
+    assert_eq!(
+        (h.records[1].repr, h.records[1].class),
+        (Repr::Number, Some(1))
+    );
+}

@@ -1,0 +1,41 @@
+# ep9-typecheck (H37 A1h items 1 and 7; docs/plan/05-aot.md section 6): the offline TS type
+# oracle. It checks a tsconfig project with tsrs and writes a `.ep9h` hint file through
+# ep9_hints. It is never linked into the engine (N8, H26).
+#
+# Its own workspace (the empty [workspace] below): the root Cargo.toml lists
+# "tools/ep9-typecheck" in `exclude`, and no root crate depends on tsrs (H26:40). The tsrs crates
+# come by path from third_party/tsrs (scripts/sync-tsrs.sh syncs the pin). sync-tsrs.sh step 2
+# builds it with the tsrs toolchain (third_party/tsrs/rust-toolchain.toml) and makes its
+# Cargo.lock (git-ignored): a copy of the tsrs lock, then `cargo update --workspace`. So the lock
+# is the tsrs lock plus only ep9-typecheck and ep9_hints (H26:42), and every dependency here must
+# be a package of the tsrs lock (sha2 is: its tasks use it). dep-guards check 27 checks the lock.
+[package]
+name = "ep9-typecheck"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ep9_hints = { path = "../../crates/ep9_hints" }
+sha2 = "0.11"
+tsrs_ast = { path = "../../third_party/tsrs/crates/tsrs_ast" }
+tsrs_compiler = { path = "../../third_party/tsrs/crates/tsrs_compiler" }
+tsrs_core = { path = "../../third_party/tsrs/crates/tsrs_core" }
+tsrs_diagnostics = { path = "../../third_party/tsrs/crates/tsrs_diagnostics" }
+tsrs_tsoptions = { path = "../../third_party/tsrs/crates/tsrs_tsoptions" }
+tsrs_vfs = { path = "../../third_party/tsrs/crates/tsrs_vfs" }
+
+# A short build for a build tool (the R13 prototype form): no LTO, 16 codegen units.
+[profile.release]
+lto = "off"
+codegen-units = 16
+panic = "unwind"
+debug = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace]
