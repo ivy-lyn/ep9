@@ -1,6 +1,6 @@
 # module-tla: module
 # | import { a } from './a.js'; export let x = await a; for await (const y of [x]) x = y; export function f() { return x; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=module strict=true ts=none source_len=119 source=embedded hints=none
 source_hash=9df2701e5b6ad31ca62926432abe447764b25a40e261229a8a61fa9d36eaa478
 strings (8):
@@ -29,8 +29,8 @@ module records: has-tla=true
 function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=16 range=0..119
   code (354 bytes):
       0    LdaUndefined                                 ; 05
-      1    Mov <this>, r1                               ; 0d ff 01
-      4    Star <this>                                  ; 0c ff
+      1    Mov <this>, r1                               ; 0d f7 01
+      4    Star <this>                                  ; 0c f7
       6    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+3, +16, +43, +122, +229, +289] ; 99 01 00
       9 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
      13    StaModuleVariable [2], [0]                   ; 20 02 00

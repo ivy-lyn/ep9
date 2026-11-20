@@ -1,6 +1,6 @@
 # class-derived: script (sloppy)
 # | class A {} class B extends A { constructor() { super(1); this.y = 2; } m() { return super.m(); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=98 source=embedded hints=none
 source_hash=c82ef9bc21c0ee21163db1d1242befe91e8af9c25805fa8a39eb47a1fc31af01
 strings (4):
@@ -120,13 +120,13 @@ function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[str
      31 E 57 (1:58)
 function f3 method name="m" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=71..96
   code (23 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
+      0 S> Ldar <this>                                  ; 0b f7
       2    LdaCurrentFunction                           ; 0e
       3    Star r4                                      ; 0c 04
       5 E> CallRuntime GetHomeObject, r4                ; 68 0e 00 04 01
-     10 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str2 "m" ; 22 ff 00 00
+     10 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str2 "m" ; 22 f7 00 00
      14    Star r0                                      ; 0c 00
-     16 E> CallProperty0 r0, <this>, s1                 ; 60 00 ff 01
+     16 E> CallProperty0 r0, <this>, s1                 ; 60 00 f7 01
      20    Return                                       ; 92
      21    LdaUndefined                                 ; 05
      22    Return                                       ; 92

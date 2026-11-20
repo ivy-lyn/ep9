@@ -1,6 +1,6 @@
 # async-gen-for-await: script (strict)
 # | async function f(xs) { for await (const x of xs) { if (x) break; } } async function* g(xs) { for await (var x of xs) yield x; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=127 source=embedded hints=none
 source_hash=05843be5a93960687a91e80e40d6c5ab955935741273c2017714afd5fa225b12
 strings (6):
@@ -54,15 +54,15 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,sim
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+65, +173, +233] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime AsyncFunctionEnter, r2-r3        ; 68 20 00 02 02
      17    Star r1                                      ; 0c 01
      19    LdaCurrentContext                            ; 15
      20    Star r2                                      ; 0c 02
-     22 S> Ldar a0                                      ; 0b fe
+     22 S> Ldar a0                                      ; 0b f6
      24    LdaTheHole                                   ; 07
      25    Star r8                                      ; 0c 08
-     27    Mov a0, r7                                   ; 0d fe 07
+     27    Mov a0, r7                                   ; 0d f6 07
      30 E> CallRuntime CreateAsyncFromSyncIterator, r7-r8 ; 68 29 00 07 02
      35    Star r3                                      ; 0c 03
      37 E> GetNamedProperty r3, k1, s0  ; k1 = String str2 "next" ; 21 03 01 00
@@ -226,17 +226,17 @@ function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +74, +139, +173, +206, +289, +349] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime AsyncGeneratorEnter, r2-r3       ; 68 24 00 02 02
      17    Star r1                                      ; 0c 01
      19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
      24    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
      28    LdaCurrentContext                            ; 15
      29    Star r2                                      ; 0c 02
-     31 S> Ldar a0                                      ; 0b fe
+     31 S> Ldar a0                                      ; 0b f6
      33    LdaTheHole                                   ; 07
      34    Star r8                                      ; 0c 08
-     36    Mov a0, r7                                   ; 0d fe 07
+     36    Mov a0, r7                                   ; 0d f6 07
      39 E> CallRuntime CreateAsyncFromSyncIterator, r7-r8 ; 68 29 00 07 02
      44    Star r3                                      ; 0c 03
      46 E> GetNamedProperty r3, k1, s0  ; k1 = String str2 "next" ; 21 03 01 00

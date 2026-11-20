@@ -1,6 +1,6 @@
 # op-null-compare: script (sloppy)
 # | function f(a) { return [a === null, a !== null, a == null]; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=61 source=embedded hints=none
 source_hash=3c68d8f9709d2efe3300f137dc195fa2a13f09f3de5f6684cbebe4cd5bbda7ee
 strings (1):
@@ -34,19 +34,19 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       4    Star r0                                      ; 0c 00
       6    LdaZero                                      ; 03
       7    Star r1                                      ; 0c 01
-      9    Ldar a0                                      ; 0b fe
+      9    Ldar a0                                      ; 0b f6
      11    TestNull                                     ; 55
      12 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      16    LdaSmi [1]                                   ; 04 01
      18    Star r1                                      ; 0c 01
-     20    Ldar a0                                      ; 0b fe
+     20    Ldar a0                                      ; 0b f6
      22    TestNull                                     ; 55
      23    LogicalNot                                   ; 47
      24 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      28    LdaSmi [2]                                   ; 04 02
      30    Star r1                                      ; 0c 01
      32    LdaNull                                      ; 06
-     33 E> TestEqual a0, s2                             ; 4b fe 02
+     33 E> TestEqual a0, s2                             ; 4b f6 02
      36 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      40    Ldar r0                                      ; 0b 00
      42    Return                                       ; 92

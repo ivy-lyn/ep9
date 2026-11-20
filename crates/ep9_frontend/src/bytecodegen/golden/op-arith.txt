@@ -1,6 +1,6 @@
 # op-arith: script (sloppy)
 # | function f(a, b) { return [a + b, a - 1, a * b, a / 2, a % b, a ** 2, a | b, a & 1, a ^ b, a << 2, a >> b, a >>> 1]; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=118 source=embedded hints=none
 source_hash=ed6ba1d007deaaa5a46cacb2dc94d3aa5959b44fe51e3f5f8293b1565ca01359
 strings (1):
@@ -34,62 +34,62 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       4    Star r0                                      ; 0c 00
       6    LdaZero                                      ; 03
       7    Star r1                                      ; 0c 01
-      9    Ldar a1                                      ; 0b fd
-     11 E> Add a0, s2                                   ; 2a fe 02
+      9    Ldar a1                                      ; 0b f5
+     11 E> Add a0, s2                                   ; 2a f6 02
      14 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      18    LdaSmi [1]                                   ; 04 01
      20    Star r1                                      ; 0c 01
-     22    Ldar a0                                      ; 0b fe
+     22    Ldar a0                                      ; 0b f6
      24 E> SubSmi [1], s3                               ; 37 01 03
      27 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      31    LdaSmi [2]                                   ; 04 02
      33    Star r1                                      ; 0c 01
-     35    Ldar a1                                      ; 0b fd
-     37 E> Mul a0, s4                                   ; 2c fe 04
+     35    Ldar a1                                      ; 0b f5
+     37 E> Mul a0, s4                                   ; 2c f6 04
      40 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      44    LdaSmi [3]                                   ; 04 03
      46    Star r1                                      ; 0c 01
-     48    Ldar a0                                      ; 0b fe
+     48    Ldar a0                                      ; 0b f6
      50 E> DivSmi [2], s5                               ; 39 02 05
      53 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      57    LdaSmi [4]                                   ; 04 04
      59    Star r1                                      ; 0c 01
-     61    Ldar a1                                      ; 0b fd
-     63 E> Mod a0, s6                                   ; 2e fe 06
+     61    Ldar a1                                      ; 0b f5
+     63 E> Mod a0, s6                                   ; 2e f6 06
      66 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      70    LdaSmi [5]                                   ; 04 05
      72    Star r1                                      ; 0c 01
-     74    Ldar a0                                      ; 0b fe
+     74    Ldar a0                                      ; 0b f6
      76 E> ExpSmi [2], s7                               ; 3b 02 07
      79 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      83    LdaSmi [6]                                   ; 04 06
      85    Star r1                                      ; 0c 01
-     87    Ldar a1                                      ; 0b fd
-     89 E> BitwiseOr a0, s8                             ; 30 fe 08
+     87    Ldar a1                                      ; 0b f5
+     89 E> BitwiseOr a0, s8                             ; 30 f6 08
      92 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      96    LdaSmi [7]                                   ; 04 07
      98    Star r1                                      ; 0c 01
-    100    Ldar a0                                      ; 0b fe
+    100    Ldar a0                                      ; 0b f6
     102 E> BitwiseAndSmi [1], s9                        ; 3e 01 09
     105 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     109    LdaSmi [8]                                   ; 04 08
     111    Star r1                                      ; 0c 01
-    113    Ldar a1                                      ; 0b fd
-    115 E> BitwiseXor a0, s10                           ; 31 fe 0a
+    113    Ldar a1                                      ; 0b f5
+    115 E> BitwiseXor a0, s10                           ; 31 f6 0a
     118 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     122    LdaSmi [9]                                   ; 04 09
     124    Star r1                                      ; 0c 01
-    126    Ldar a0                                      ; 0b fe
+    126    Ldar a0                                      ; 0b f6
     128 E> ShiftLeftSmi [2], s11                        ; 3f 02 0b
     131 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     135    LdaSmi [10]                                  ; 04 0a
     137    Star r1                                      ; 0c 01
-    139    Ldar a1                                      ; 0b fd
-    141 E> ShiftRight a0, s12                           ; 34 fe 0c
+    139    Ldar a1                                      ; 0b f5
+    141 E> ShiftRight a0, s12                           ; 34 f6 0c
     144 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     148    LdaSmi [11]                                  ; 04 0b
     150    Star r1                                      ; 0c 01
-    152    Ldar a0                                      ; 0b fe
+    152    Ldar a0                                      ; 0b f6
     154 E> ShiftRightLogicalSmi [1], s13                ; 41 01 0d
     157 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     161    Ldar r0                                      ; 0b 00

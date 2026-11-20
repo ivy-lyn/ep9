@@ -1,6 +1,6 @@
 # op-logical: script (sloppy)
 # | function f(a, b, c) { return [a && b, a || b, a ?? b, a && b || c, a ? b : c]; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=80 source=embedded hints=none
 source_hash=3f539119e4e249de1dc1dfbc99fdb67090a2b9db06b80dc1f484bd6936dee9fa
 strings (1):
@@ -34,38 +34,38 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       4    Star r0                                      ; 0c 00
       6    LdaZero                                      ; 03
       7    Star r1                                      ; 0c 01
-      9    Ldar a0                                      ; 0b fe
+      9    Ldar a0                                      ; 0b f6
      11    JumpIfToBooleanFalse @15                     ; 82 04
-     13    Ldar a1                                      ; 0b fd
+     13    Ldar a1                                      ; 0b f5
      15 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      19    LdaSmi [1]                                   ; 04 01
      21    Star r1                                      ; 0c 01
-     23    Ldar a0                                      ; 0b fe
+     23    Ldar a0                                      ; 0b f6
      25    JumpIfToBooleanTrue @29                      ; 81 04
-     27    Ldar a1                                      ; 0b fd
+     27    Ldar a1                                      ; 0b f5
      29 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      33    LdaSmi [2]                                   ; 04 02
      35    Star r1                                      ; 0c 01
-     37    Ldar a0                                      ; 0b fe
+     37    Ldar a0                                      ; 0b f6
      39    JumpIfUndefinedOrNull @43                    ; 87 04
      41    Jump @45                                     ; 7e 04
-     43    Ldar a1                                      ; 0b fd
+     43    Ldar a1                                      ; 0b f5
      45 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      49    LdaSmi [3]                                   ; 04 03
      51    Star r1                                      ; 0c 01
-     53    Ldar a0                                      ; 0b fe
+     53    Ldar a0                                      ; 0b f6
      55    JumpIfToBooleanFalse @59                     ; 82 04
-     57    Ldar a1                                      ; 0b fd
+     57    Ldar a1                                      ; 0b f5
      59    JumpIfToBooleanTrue @63                      ; 81 04
-     61    Ldar a2                                      ; 0b fc
+     61    Ldar a2                                      ; 0b f4
      63 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      67    LdaSmi [4]                                   ; 04 04
      69    Star r1                                      ; 0c 01
-     71    Ldar a0                                      ; 0b fe
+     71    Ldar a0                                      ; 0b f6
      73    JumpIfToBooleanFalse @79                     ; 82 06
-     75    Ldar a1                                      ; 0b fd
+     75    Ldar a1                                      ; 0b f5
      77    Jump @81                                     ; 7e 04
-     79    Ldar a2                                      ; 0b fc
+     79    Ldar a2                                      ; 0b f4
      81 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      85    Ldar r0                                      ; 0b 00
      87    Return                                       ; 92

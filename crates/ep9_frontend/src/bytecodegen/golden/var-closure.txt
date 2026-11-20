@@ -1,6 +1,6 @@
 # var-closure: script (sloppy)
 # | function f(a) { var b = 1; let c = 2; return function g() { return a + b + c; }; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=82 source=embedded hints=none
 source_hash=63e47c26f800a6eec755d37db5dbd490381c9e52e0993c0f1dba7cf7238fff28
 strings (5):
@@ -38,7 +38,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
   code (27 bytes):
       0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope1 ; 75 00 03
       3    PushContext r0                               ; 13 00
-      5    Ldar a0                                      ; 0b fe
+      5    Ldar a0                                      ; 0b f6
       7    StaCurrentContextSlot [0]                    ; 1b 00
       9    LdaTheHole                                   ; 07
      10    StaCurrentContextSlot [2]                    ; 1b 02

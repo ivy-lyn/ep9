@@ -1,6 +1,6 @@
 # module-captured: module
 # | let x = 1; export const y = () => x; x = 2;
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=module strict=true ts=none source_len=43 source=embedded hints=none
 source_hash=fc39fcac21a243e4385fbbc9de2108bf09d0d1301ff619f1eedf92062baa9e4b
 strings (2):
@@ -19,8 +19,8 @@ module records: has-tla=false
 function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=3 range=0..43
   code (44 bytes):
       0    LdaUndefined                                 ; 05
-      1    Mov <this>, r0                               ; 0d ff 00
-      4    Star <this>                                  ; 0c ff
+      1    Mov <this>, r0                               ; 0d f7 00
+      4    Star <this>                                  ; 0c f7
       6    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+3, +17] ; 99 00 00
       9 E> CreateFunctionContext k1, [1]  ; k1 = Scope scope0 ; 75 01 01
      12    PushContext r1                               ; 13 01

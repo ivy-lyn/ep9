@@ -1,6 +1,6 @@
 # class-field-static-block: script (sloppy)
 # | class A { static x = 1; static { var y = this.x; function f() { return y; } let z = f; } static w = A; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
 source_hash=438aba743cf045708f58e867a969153dc647eda62fe446d0e9a10e9429b4db96
 strings (5):
@@ -70,20 +70,20 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
 function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=4 range=8..104
   code (40 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
-      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str2 "x" ; 25 ff 00 00
+      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str2 "x" ; 25 f7 00 00
       6 S> CreateBlockContext k1  ; k1 = Scope scope4   ; 76 01
       8    PushContext r2                               ; 13 02
      10 E> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
      14    Star r0                                      ; 0c 00
-     16 S> Ldar <this>                                  ; 0b ff
-     18 E> GetNamedProperty <this>, k0, s2  ; k0 = String str2 "x" ; 21 ff 00 02
+     16 S> Ldar <this>                                  ; 0b f7
+     18 E> GetNamedProperty <this>, k0, s2  ; k0 = String str2 "x" ; 21 f7 00 02
      22    StaCurrentContextSlot [0]                    ; 1b 00
      24 S> Ldar r0                                      ; 0b 00
      26    Star r1                                      ; 0c 01
      28    PopContext r2                                ; 14 02
      30 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
      32 E> ThrowReferenceErrorIfHole k3  ; k3 = String str0 "A" ; 94 03
-     34 E> DefineNamedOwnProperty <this>, k4, s3  ; k4 = String str3 "w" ; 25 ff 04 03
+     34 E> DefineNamedOwnProperty <this>, k4, s3  ; k4 = String str3 "w" ; 25 f7 04 03
      38    LdaUndefined                                 ; 05
      39    Return                                       ; 92
   constants (5):

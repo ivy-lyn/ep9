@@ -1,6 +1,6 @@
 # iter-for-of-return: script (sloppy)
 # | function f(a) { for (var x of a) return x; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=44 source=embedded hints=none
 source_hash=6619225b317bc0e811e3300a749179feb8fc5b9ed01693cd040a9889b260671b
 strings (5):
@@ -35,13 +35,13 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=12 range=0..44
   code (151 bytes):
-      0 S> Ldar a0                                      ; 0b fe
-      2 E> GetIterator a0, s0, s1                       ; 8f fe 00 01
+      0 S> Ldar a0                                      ; 0b f6
+      2 E> GetIterator a0, s0, s1                       ; 8f f6 00 01
       6    Star r1                                      ; 0c 01
       8 E> GetNamedProperty r1, k0, s2  ; k0 = String str1 "next" ; 21 01 00 02
      12    Star r2                                      ; 0c 02
      14    LdaCurrentContext                            ; 15
-     15    Mov a0, r5                                   ; 0d fe 05
+     15    Mov a0, r5                                   ; 0d f6 05
      18    Star r7                                      ; 0c 07
      20    LdaTrue                                      ; 08
      21    Star r3                                      ; 0c 03

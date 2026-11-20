@@ -1,6 +1,6 @@
 # async-try-finally: script (strict)
 # | async function f(p) { try { return await p; } catch (e) { await e; } finally { await 0; } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=91 source=embedded hints=none
 source_hash=6609a1e08aab97a764394afab4c624bfb6e127c9ff5e3eafa3da7ee91c1b3aac
 strings (1):
@@ -39,7 +39,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,sim
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+43, +97, +147] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime AsyncFunctionEnter, r2-r3        ; 68 20 00 02 02
      17    Star r1                                      ; 0c 01
      19    LdaCurrentContext                            ; 15
@@ -48,9 +48,9 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,sim
      23    Star r5                                      ; 0c 05
      25    LdaCurrentContext                            ; 15
      26    Star r6                                      ; 0c 06
-     28 S> Ldar a0                                      ; 0b fe
+     28 S> Ldar a0                                      ; 0b f6
      30    Mov r1, r7                                   ; 0d 01 07
-     33    Mov a0, r8                                   ; 0d fe 08
+     33    Mov a0, r8                                   ; 0d f6 08
      36 E> CallRuntime AsyncFunctionAwait, r7-r8        ; 68 21 00 07 02
      41 E> SuspendGenerator r1, r0-r6, [0]              ; 9a 01 00 07 00
      46    ResumeGenerator r1, r0-r6                    ; 9b 01 00 07

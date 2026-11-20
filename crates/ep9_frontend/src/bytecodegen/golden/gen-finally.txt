@@ -1,6 +1,6 @@
 # gen-finally: script (sloppy)
 # | function* g(f) { try { yield 1; } catch (e) { yield e; } finally { f(); } return 2; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=85 source=embedded hints=none
 source_hash=ab9e41402490ae5107e05f5aa0b7abb20c50084fcd0420c3e08d5e7fa462591d
 strings (1):
@@ -39,7 +39,7 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +64, +120] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime CreateGeneratorObject, r2-r3     ; 68 13 00 02 02
      17    Star r1                                      ; 0c 01
      19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
@@ -104,8 +104,8 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
     162    LdaTheHole                                   ; 07
     163    SetPendingMessage                            ; 93
     164    Star r5                                      ; 0c 05
-    166 S> Ldar a0                                      ; 0b fe
-    168 E> CallUndefinedReceiver0 a0, s0                ; 64 fe 00
+    166 S> Ldar a0                                      ; 0b f6
+    168 E> CallUndefinedReceiver0 a0, s0                ; 64 f6 00
     171    Ldar r5                                      ; 0b 05
     173    SetPendingMessage                            ; 93
     174    Ldar r2                                      ; 0b 02

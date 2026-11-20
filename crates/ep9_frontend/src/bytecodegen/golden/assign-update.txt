@@ -1,6 +1,6 @@
 # assign-update: script (sloppy)
 # | var g; function f(o, k, a) { a++; ++a; var x = a--; g++; o.x++; --o[k]; return x; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=83 source=embedded hints=none
 source_hash=48db74e9cd586cc393736890614ba58698d01899b4f0d65dda67609864126201
 strings (3):
@@ -33,30 +33,30 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      20 S 4 (1:5)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=3 range=7..83
   code (63 bytes):
-      0 S> Ldar a2                                      ; 0b fc
+      0 S> Ldar a2                                      ; 0b f4
       2 E> Inc s0                                       ; 42 00
-      4    Star a2                                      ; 0c fc
-      6 S> Ldar a2                                      ; 0b fc
+      4    Star a2                                      ; 0c f4
+      6 S> Ldar a2                                      ; 0b f4
       8 E> Inc s1                                       ; 42 01
-     10    Star a2                                      ; 0c fc
-     12 S> Ldar a2                                      ; 0b fc
+     10    Star a2                                      ; 0c f4
+     12 S> Ldar a2                                      ; 0b f4
      14 E> ToNumeric s2                                 ; 5a 02
      16    Star r1                                      ; 0c 01
      18 E> Dec s2                                       ; 43 02
-     20    Star a2                                      ; 0c fc
+     20    Star a2                                      ; 0c f4
      22    Mov r1, r0                                   ; 0d 01 00
      25 S> LdaGlobal k0, s3  ; k0 = String str0 "g"     ; 10 00 03
      28 E> Inc s4                                       ; 42 04
      30 E> StaGlobal k0, s5  ; k0 = String str0 "g"     ; 12 00 05
-     33 S> Ldar a0                                      ; 0b fe
-     35 E> GetNamedProperty a0, k1, s6  ; k1 = String str2 "x" ; 21 fe 01 06
+     33 S> Ldar a0                                      ; 0b f6
+     35 E> GetNamedProperty a0, k1, s6  ; k1 = String str2 "x" ; 21 f6 01 06
      39 E> Inc s7                                       ; 42 07
-     41 E> SetNamedProperty a0, k1, s8  ; k1 = String str2 "x" ; 24 fe 01 08
-     45 S> Ldar a0                                      ; 0b fe
-     47    Ldar a1                                      ; 0b fd
-     49 E> GetKeyedProperty a0, s9                      ; 23 fe 09
+     41 E> SetNamedProperty a0, k1, s8  ; k1 = String str2 "x" ; 24 f6 01 08
+     45 S> Ldar a0                                      ; 0b f6
+     47    Ldar a1                                      ; 0b f5
+     49 E> GetKeyedProperty a0, s9                      ; 23 f6 09
      52 E> Dec s10                                      ; 43 0a
-     54 E> SetKeyedProperty a0, a1, s11                 ; 26 fe fd 0b
+     54 E> SetKeyedProperty a0, a1, s11                 ; 26 f6 f5 0b
      58 S> Ldar r0                                      ; 0b 00
      60    Return                                       ; 92
      61    LdaUndefined                                 ; 05

@@ -1,6 +1,6 @@
 # assign-logical: script (sloppy)
 # | function f(o, a) { a ||= 1; a &&= 2; a ??= 3; o.x ??= 4; o[a] ||= 5; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=70 source=embedded hints=none
 source_hash=1b3300592ba2ac10e3aef0c3189bbd748da03c43d87383a9c1dd64ec0de29ff3
 strings (2):
@@ -31,31 +31,31 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=2 range=0..70
   code (68 bytes):
-      0 S> Ldar a1                                      ; 0b fd
+      0 S> Ldar a1                                      ; 0b f5
       2    JumpIfToBooleanTrue @8                       ; 81 06
       4    LdaSmi [1]                                   ; 04 01
-      6    Star a1                                      ; 0c fd
-      8 S> Ldar a1                                      ; 0b fd
+      6    Star a1                                      ; 0c f5
+      8 S> Ldar a1                                      ; 0b f5
      10    JumpIfToBooleanFalse @16                     ; 82 06
      12    LdaSmi [2]                                   ; 04 02
-     14    Star a1                                      ; 0c fd
-     16 S> Ldar a1                                      ; 0b fd
+     14    Star a1                                      ; 0c f5
+     16 S> Ldar a1                                      ; 0b f5
      18    JumpIfUndefinedOrNull @22                    ; 87 04
      20    Jump @26                                     ; 7e 06
      22    LdaSmi [3]                                   ; 04 03
-     24    Star a1                                      ; 0c fd
-     26 S> Ldar a0                                      ; 0b fe
-     28 E> GetNamedProperty a0, k0, s0  ; k0 = String str1 "x" ; 21 fe 00 00
-     32    Mov a0, r0                                   ; 0d fe 00
+     24    Star a1                                      ; 0c f5
+     26 S> Ldar a0                                      ; 0b f6
+     28 E> GetNamedProperty a0, k0, s0  ; k0 = String str1 "x" ; 21 f6 00 00
+     32    Mov a0, r0                                   ; 0d f6 00
      35    JumpIfUndefinedOrNull @39                    ; 87 04
      37    Jump @45                                     ; 7e 08
      39    LdaSmi [4]                                   ; 04 04
      41 E> SetNamedProperty r0, k0, s1  ; k0 = String str1 "x" ; 24 00 00 01
-     45 S> Ldar a0                                      ; 0b fe
-     47    Ldar a1                                      ; 0b fd
-     49 E> GetKeyedProperty a0, s2                      ; 23 fe 02
-     52    Mov a0, r0                                   ; 0d fe 00
-     55    Mov a1, r1                                   ; 0d fd 01
+     45 S> Ldar a0                                      ; 0b f6
+     47    Ldar a1                                      ; 0b f5
+     49 E> GetKeyedProperty a0, s2                      ; 23 f6 02
+     52    Mov a0, r0                                   ; 0d f6 00
+     55    Mov a1, r1                                   ; 0d f5 01
      58    JumpIfToBooleanTrue @66                      ; 81 08
      60    LdaSmi [5]                                   ; 04 05
      62 E> SetKeyedProperty r0, r1, s3                  ; 26 00 01 03

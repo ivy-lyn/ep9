@@ -1,6 +1,6 @@
 # ctl-do-while: script (sloppy)
 # | function f(a) { do { a--; } while (a > 0); }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=44 source=embedded hints=none
 source_hash=73dcaefe7caafb3718d54d152238dc2af4e30805290ea811f00520a6e124353d
 strings (1):
@@ -31,11 +31,11 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=0 range=0..44
   code (18 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2 E> Dec s0                                       ; 43 00
-      4    Star a0                                      ; 0c fe
+      4    Star a0                                      ; 0c f6
       6    LdaZero                                      ; 03
-      7 E> TestGreaterThan a0, s1                       ; 4e fe 01
+      7 E> TestGreaterThan a0, s1                       ; 4e f6 01
      10    JumpIfFalse @16                              ; 80 06
      12    JumpLoop @0, [0], s2                         ; 7d 0c 00 02
      16    LdaUndefined                                 ; 05

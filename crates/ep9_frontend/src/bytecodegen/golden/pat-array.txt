@@ -1,6 +1,6 @@
 # pat-array: script (sloppy)
 # | function f(a) { let [x, , y = 2, ...z] = a; const [] = a; return [x, y, z]; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=033f2872bb9c530973be10e4eda84365acd625543f0073ee86232f9d3a092139
 strings (5):
@@ -34,16 +34,16 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=15 range=0..77
   code (433 bytes):
-      0 S> Ldar a0                                      ; 0b fe
-      2 E> GetIterator a0, s0, s1                       ; 8f fe 00 01
+      0 S> Ldar a0                                      ; 0b f6
+      2 E> GetIterator a0, s0, s1                       ; 8f f6 00 01
       6    Star r4                                      ; 0c 04
       8 E> GetNamedProperty r4, k0, s2  ; k0 = String str1 "next" ; 21 04 00 02
      12    Star r5                                      ; 0c 05
      14    LdaCurrentContext                            ; 15
      15    Star r10                                     ; 0c 0a
      17    LdaFalse                                     ; 09
-     18    Mov a0, r3                                   ; 0d fe 03
-     21    Mov a0, r8                                   ; 0d fe 08
+     18    Mov a0, r3                                   ; 0d f6 03
+     21    Mov a0, r8                                   ; 0d f6 08
      24    Star r6                                      ; 0c 06
      26    JumpIfTrue @61                               ; 7f 23
      28    LdaTrue                                      ; 08
@@ -161,8 +161,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
     288    Jump @293                                    ; 7e 05
     290    Ldar r9                                      ; 0b 09
     292 E> ReThrow                                      ; 91
-    293 S> Ldar a0                                      ; 0b fe
-    295 E> GetIterator a0, s21, s22                     ; 8f fe 15 16
+    293 S> Ldar a0                                      ; 0b f6
+    295 E> GetIterator a0, s21, s22                     ; 8f f6 15 16
     299    Star r4                                      ; 0c 04
     301 E> GetNamedProperty r4, k0, s23  ; k0 = String str1 "next" ; 21 04 00 17
     305    Star r5                                      ; 0c 05
@@ -171,7 +171,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
     310    LdaFalse                                     ; 09
     311    Star r6                                      ; 0c 06
     313    LdaSmi [-1]                                  ; 04 ff
-    315    Mov a0, r3                                   ; 0d fe 03
+    315    Mov a0, r3                                   ; 0d f6 03
     318    Star r8                                      ; 0c 08
     320    Jump @327                                    ; 7e 07
     322    Star r9                                      ; 0c 09

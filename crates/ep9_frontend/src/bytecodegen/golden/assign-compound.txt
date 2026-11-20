@@ -1,6 +1,6 @@
 # assign-compound: script (sloppy)
 # | var g; function f(o, k, a) { a += 1; a -= o; g *= 2; o.x |= 1; o[k] **= a; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
 source_hash=d8358d16159771328cf475774e0f0ad84e5bdf5eabdc3426066953bc841fc349
 strings (3):
@@ -33,27 +33,27 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      20 S 4 (1:5)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=3 range=7..76
   code (58 bytes):
-      0 S> Ldar a2                                      ; 0b fc
+      0 S> Ldar a2                                      ; 0b f4
       2 E> AddSmi [1], s0                               ; 36 01 00
-      5    Star a2                                      ; 0c fc
-      7 S> Ldar a2                                      ; 0b fc
-      9    Ldar a0                                      ; 0b fe
-     11 E> Sub a2, s1                                   ; 2b fc 01
-     14    Star a2                                      ; 0c fc
+      5    Star a2                                      ; 0c f4
+      7 S> Ldar a2                                      ; 0b f4
+      9    Ldar a0                                      ; 0b f6
+     11 E> Sub a2, s1                                   ; 2b f4 01
+     14    Star a2                                      ; 0c f4
      16 S> LdaGlobal k0, s2  ; k0 = String str0 "g"     ; 10 00 02
      19 E> MulSmi [2], s3                               ; 38 02 03
      22 E> StaGlobal k0, s4  ; k0 = String str0 "g"     ; 12 00 04
-     25 S> Ldar a0                                      ; 0b fe
-     27 E> GetNamedProperty a0, k1, s5  ; k1 = String str2 "x" ; 21 fe 01 05
+     25 S> Ldar a0                                      ; 0b f6
+     27 E> GetNamedProperty a0, k1, s5  ; k1 = String str2 "x" ; 21 f6 01 05
      31 E> BitwiseOrSmi [1], s6                         ; 3c 01 06
-     34 E> SetNamedProperty a0, k1, s7  ; k1 = String str2 "x" ; 24 fe 01 07
-     38 S> Ldar a0                                      ; 0b fe
-     40    Ldar a1                                      ; 0b fd
-     42 E> GetKeyedProperty a0, s8                      ; 23 fe 08
+     34 E> SetNamedProperty a0, k1, s7  ; k1 = String str2 "x" ; 24 f6 01 07
+     38 S> Ldar a0                                      ; 0b f6
+     40    Ldar a1                                      ; 0b f5
+     42 E> GetKeyedProperty a0, s8                      ; 23 f6 08
      45    Star r2                                      ; 0c 02
-     47    Ldar a2                                      ; 0b fc
+     47    Ldar a2                                      ; 0b f4
      49 E> Exp r2, s9                                   ; 2f 02 09
-     52 E> SetKeyedProperty a0, a1, s10                 ; 26 fe fd 0a
+     52 E> SetKeyedProperty a0, a1, s10                 ; 26 f6 f5 0a
      56    LdaUndefined                                 ; 05
      57    Return                                       ; 92
   constants (2):

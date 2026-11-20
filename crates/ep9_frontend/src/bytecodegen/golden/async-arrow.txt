@@ -1,6 +1,6 @@
 # async-arrow: script (strict)
 # | var f = async (a, b = 2) => a + await b; var g = async () => { await 0; };
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=74 source=embedded hints=none
 source_hash=2dc88fc49faa032342a7c1a7e84d95ae1575dac653d83c4df341b969461eb330
 strings (2):
@@ -44,19 +44,19 @@ function f1 arrow name="f" parent=f0 outer_scope=scope0 flags=[strict,async] par
       3    SwitchOnGeneratorState r2, k0  ; k0 = JumpTable [+63] ; 99 02 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r3                                      ; 0c 03
-      9    Mov <this>, r4                               ; 0d ff 04
+      9    Mov <this>, r4                               ; 0d f7 04
      12 E> CallRuntime AsyncFunctionEnter, r3-r4        ; 68 20 00 03 02
      17    Star r2                                      ; 0c 02
      19    LdaCurrentContext                            ; 15
      20    Star r3                                      ; 0c 03
-     22    Ldar a0                                      ; 0b fe
+     22    Ldar a0                                      ; 0b f6
      24    Star r0                                      ; 0c 00
-     26    Ldar a1                                      ; 0b fd
+     26    Ldar a1                                      ; 0b f5
      28    JumpIfNotUndefined @36                       ; 86 08
      30    LdaSmi [2]                                   ; 04 02
      32    Star r4                                      ; 0c 04
      34    Jump @40                                     ; 7e 06
-     36    Ldar a1                                      ; 0b fd
+     36    Ldar a1                                      ; 0b f5
      38    Star r4                                      ; 0c 04
      40    Mov r4, r1                                   ; 0d 04 01
      43 S> Ldar r0                                      ; 0b 00
@@ -108,7 +108,7 @@ function f2 arrow name="g" parent=f0 outer_scope=scope0 flags=[strict,async,simp
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+35] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
      17    Star r0                                      ; 0c 00
      19    LdaCurrentContext                            ; 15

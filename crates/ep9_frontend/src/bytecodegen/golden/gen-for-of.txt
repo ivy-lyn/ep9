@@ -1,6 +1,6 @@
 # gen-for-of: script (sloppy)
 # | function* g(xs) { for (const x of xs) { yield () => x; } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=58 source=embedded hints=none
 source_hash=e1640d2f85a5ddf6b55c02472223d1cc2bc44608155b9c85125f537d626c00b6
 strings (6):
@@ -43,7 +43,7 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21, +131] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime CreateGeneratorObject, r1-r2     ; 68 13 00 01 02
      17    Star r0                                      ; 0c 00
      19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
@@ -59,14 +59,14 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
      46    PushContext r5                               ; 13 05
      48    LdaTheHole                                   ; 07
      49    StaCurrentContextSlot [0]                    ; 1b 00
-     51    Ldar a0                                      ; 0b fe
+     51    Ldar a0                                      ; 0b f6
      53    PopContext r5                                ; 14 05
-     55 E> GetIterator a0, s0, s1                       ; 8f fe 00 01
+     55 E> GetIterator a0, s0, s1                       ; 8f f6 00 01
      59    Star r1                                      ; 0c 01
      61 E> GetNamedProperty r1, k3, s2  ; k3 = String str2 "next" ; 21 01 03 02
      65    Star r2                                      ; 0c 02
      67    LdaCurrentContext                            ; 15
-     68    Mov a0, r6                                   ; 0d fe 06
+     68    Mov a0, r6                                   ; 0d f6 06
      71    Star r8                                      ; 0c 08
      73    LdaTrue                                      ; 08
      74    Star r3                                      ; 0c 03

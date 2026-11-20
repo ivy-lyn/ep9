@@ -1,6 +1,6 @@
 # class-private-assign: script (sloppy)
 # | class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=149 source=embedded hints=none
 source_hash=3e352a399cf544ffc7680007655e7f3c1954b723db6c73f682d8f4d5470a57b5
 strings (16):
@@ -110,7 +110,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
-      3    Mov <this>, r1                               ; 0d ff 01
+      3    Mov <this>, r1                               ; 0d f7 01
       6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
      11    LdaUndefined                                 ; 05
      12    Return                                       ; 92
@@ -125,7 +125,7 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       0 S> LdaCurrentContextSlot [3]                    ; 18 03
       2    Star r0                                      ; 0c 00
       4    LdaUndefined                                 ; 05
-      5 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 ff 00 02 00
+      5 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 f7 00 02 00
      10    LdaUndefined                                 ; 05
      11    Return                                       ; 92
   constants (0):
@@ -172,17 +172,17 @@ function f6 getter name="get #g" parent=f0 outer_scope=scope1 flags=[strict,simp
   positions (0):
 function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=2 length=2 regs=13 range=66..147
   code (332 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2    LdaCurrentContextSlot [3]                    ; 18 03
       4    Star r1                                      ; 0c 01
       6    LdaCurrentContextSlot [1]                    ; 18 01
       8    LdaCurrentContextSlot [4]                    ; 18 04
      10    Star r3                                      ; 0c 03
-     12    Ldar a1                                      ; 0b fd
+     12    Ldar a1                                      ; 0b f5
      14    Ldar r1                                      ; 0b 01
-     16 E> GetKeyedProperty a0, s0                      ; 23 fe 00
-     19 E> CallProperty1 r3, a0, a1, s1                 ; 61 03 fe fd 01
-     24 S> Ldar a0                                      ; 0b fe
+     16 E> GetKeyedProperty a0, s0                      ; 23 f6 00
+     19 E> CallProperty1 r3, a0, a1, s1                 ; 61 03 f6 f5 01
+     24 S> Ldar a0                                      ; 0b f6
      26    LdaCurrentContextSlot [3]                    ; 18 03
      28    Star r1                                      ; 0c 01
      30    LdaCurrentContextSlot [1]                    ; 18 01
@@ -190,14 +190,14 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
      34    LdaCurrentContextSlot [4]                    ; 18 04
      36    Star r3                                      ; 0c 03
      38    Ldar r1                                      ; 0b 01
-     40 E> GetKeyedProperty a0, s2                      ; 23 fe 02
-     43 E> CallProperty0 r2, a0, s3                     ; 60 02 fe 03
+     40 E> GetKeyedProperty a0, s2                      ; 23 f6 02
+     43 E> CallProperty0 r2, a0, s3                     ; 60 02 f6 03
      47 E> AddSmi [1], s4                               ; 36 01 04
      50    Star r4                                      ; 0c 04
      52    Ldar r1                                      ; 0b 01
-     54 E> GetKeyedProperty a0, s5                      ; 23 fe 05
-     57 E> CallProperty1 r3, a0, r4, s6                 ; 61 03 fe 04 06
-     62 S> Ldar a0                                      ; 0b fe
+     54 E> GetKeyedProperty a0, s5                      ; 23 f6 05
+     57 E> CallProperty1 r3, a0, r4, s6                 ; 61 03 f6 04 06
+     62 S> Ldar a0                                      ; 0b f6
      64    LdaCurrentContextSlot [3]                    ; 18 03
      66    Star r1                                      ; 0c 01
      68    LdaCurrentContextSlot [1]                    ; 18 01
@@ -205,18 +205,18 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
      72    LdaCurrentContextSlot [4]                    ; 18 04
      74    Star r3                                      ; 0c 03
      76    Ldar r1                                      ; 0b 01
-     78 E> GetKeyedProperty a0, s7                      ; 23 fe 07
-     81 E> CallProperty0 r2, a0, s8                     ; 60 02 fe 08
+     78 E> GetKeyedProperty a0, s7                      ; 23 f6 07
+     81 E> CallProperty0 r2, a0, s8                     ; 60 02 f6 08
      85 E> Inc s9                                       ; 42 09
      87    Star r4                                      ; 0c 04
      89    Ldar r1                                      ; 0b 01
-     91 E> GetKeyedProperty a0, s10                     ; 23 fe 0a
-     94 E> CallProperty1 r3, a0, r4, s11                ; 61 03 fe 04 0b
+     91 E> GetKeyedProperty a0, s10                     ; 23 f6 0a
+     94 E> CallProperty1 r3, a0, r4, s11                ; 61 03 f6 04 0b
      99 S> CreateArrayLiteral k0, s12, #0x01  ; k0 = ArrayBoilerplate [_] ; 6d 00 0c 01
     103    Star r0                                      ; 0c 00
     105    LdaZero                                      ; 03
     106    Star r1                                      ; 0c 01
-    108    Ldar a1                                      ; 0b fd
+    108    Ldar a1                                      ; 0b f5
     110 E> StaInArrayLiteral r0, r1, s13                ; 28 00 01 0d
     114 E> GetIterator r0, s14, s15                     ; 8f 00 0e 0f
     118    Star r1                                      ; 0c 01
@@ -226,7 +226,7 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
     127    Star r7                                      ; 0c 07
     129    LdaFalse                                     ; 09
     130    Star r3                                      ; 0c 03
-    132    Ldar a0                                      ; 0b fe
+    132    Ldar a0                                      ; 0b f6
     134    LdaCurrentContextSlot [3]                    ; 18 03
     136    Star r9                                      ; 0c 09
     138    LdaCurrentContextSlot [1]                    ; 18 01
@@ -234,7 +234,7 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
     142    LdaCurrentContextSlot [4]                    ; 18 04
     144    Star r11                                     ; 0c 0b
     146    Mov r0, r5                                   ; 0d 00 05
-    149    Mov a0, r8                                   ; 0d fe 08
+    149    Mov a0, r8                                   ; 0d f6 08
     152    Ldar r3                                      ; 0b 03
     154    JumpIfTrue @189                              ; 7f 23
     156    LdaTrue                                      ; 08
@@ -291,27 +291,27 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
     274    Jump @279                                    ; 7e 05
     276    Ldar r6                                      ; 0b 06
     278 E> ReThrow                                      ; 91
-    279 S> Ldar a0                                      ; 0b fe
+    279 S> Ldar a0                                      ; 0b f6
     281    LdaCurrentContextSlot [3]                    ; 18 03
     283    Star r1                                      ; 0c 01
     285    LdaCurrentContextSlot [0]                    ; 18 00
-    287    Ldar a1                                      ; 0b fd
+    287    Ldar a1                                      ; 0b f5
     289    Ldar r1                                      ; 0b 01
-    291 E> GetKeyedProperty a0, s24                     ; 23 fe 18
+    291 E> GetKeyedProperty a0, s24                     ; 23 f6 18
     294    LdaConstant k6  ; k6 = String str15 "Private method '#m' is not writable" ; 0a 06
     296    Star r4                                      ; 0c 04
     298 E> CallRuntime ThrowTypeError, r4               ; 68 2d 00 04 01
-    303 S> Ldar a0                                      ; 0b fe
+    303 S> Ldar a0                                      ; 0b f6
     305    LdaCurrentContextSlot [3]                    ; 18 03
     307    Star r1                                      ; 0c 01
     309    LdaCurrentContextSlot [2]                    ; 18 02
     311    LdaCurrentContextSlot [5]                    ; 18 05
     313    Star r3                                      ; 0c 03
-    315    Ldar a1                                      ; 0b fd
+    315    Ldar a1                                      ; 0b f5
     317    Ldar r1                                      ; 0b 01
-    319 E> GetKeyedProperty a0, s25                     ; 23 fe 19
-    322 E> CallProperty1 r3, a0, a1, s26                ; 61 03 fe fd 1a
-    327    Ldar a1                                      ; 0b fd
+    319 E> GetKeyedProperty a0, s25                     ; 23 f6 19
+    322 E> CallProperty1 r3, a0, a1, s26                ; 61 03 f6 f5 1a
+    327    Ldar a1                                      ; 0b f5
     329    Return                                       ; 92
     330    LdaUndefined                                 ; 05
     331    Return                                       ; 92

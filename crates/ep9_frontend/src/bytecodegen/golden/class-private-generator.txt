@@ -1,6 +1,6 @@
 # class-private-generator: script (sloppy)
 # | class A { *#g() { yield 1; } static *#h() {} t() { return this.#g(); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=72 source=embedded hints=none
 source_hash=73f1b60645ca07e18d9f5fdd154400a778d4e6771cf26fccfc6c7bec8126e78c
 strings (6):
@@ -99,7 +99,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
-      3    Mov <this>, r1                               ; 0d ff 01
+      3    Mov <this>, r1                               ; 0d f7 01
       6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
      11    LdaUndefined                                 ; 05
      12    Return                                       ; 92
@@ -114,7 +114,7 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       0 S> LdaCurrentContextSlot [2]                    ; 18 02
       2    Star r0                                      ; 0c 00
       4    LdaUndefined                                 ; 05
-      5 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 ff 00 02 00
+      5 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 f7 00 02 00
      10    LdaUndefined                                 ; 05
      11    Return                                       ; 92
   constants (0):
@@ -131,7 +131,7 @@ function f3 method name="#g" parent=f0 outer_scope=scope1 flags=[strict,generato
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21, +58] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime CreateGeneratorObject, r1-r2     ; 68 13 00 01 02
      17    Star r0                                      ; 0c 00
      19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
@@ -182,7 +182,7 @@ function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generato
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime CreateGeneratorObject, r1-r2     ; 68 13 00 01 02
      17    Star r0                                      ; 0c 00
      19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
@@ -208,12 +208,12 @@ function f4 method name="#h" parent=f0 outer_scope=scope1 flags=[strict,generato
      40 E 39 (1:40)
 function f5 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=45..70
   code (18 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
+      0 S> Ldar <this>                                  ; 0b f7
       2    LdaCurrentContextSlot [2]                    ; 18 02
-      4 E> GetKeyedProperty <this>, s0                  ; 23 ff 00
+      4 E> GetKeyedProperty <this>, s0                  ; 23 f7 00
       7    LdaCurrentContextSlot [0]                    ; 18 00
       9    Star r0                                      ; 0c 00
-     11 E> CallProperty0 r0, <this>, s1                 ; 60 00 ff 01
+     11 E> CallProperty0 r0, <this>, s1                 ; 60 00 f7 01
      15    Return                                       ; 92
      16    LdaUndefined                                 ; 05
      17    Return                                       ; 92

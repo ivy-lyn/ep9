@@ -1,6 +1,6 @@
 # async-method: script (strict)
 # | var o = { async m() { return await this.x; } }; class C { static async #s() { await 1; } async m(x) { return super.m(await x); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=130 source=embedded hints=none
 source_hash=ea4ad306d23722de252f9f4b1c453d0d2a312edbd0cdf13cdced2adb681ba91d
 strings (6):
@@ -100,12 +100,12 @@ function f1 method name="m" parent=f0 outer_scope=scope0 flags=[strict,async,sim
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+40] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
      17    Star r0                                      ; 0c 00
      19    LdaCurrentContext                            ; 15
      20    Star r1                                      ; 0c 01
-     22 S> Ldar <this>                                  ; 0b ff
+     22 S> Ldar <this>                                  ; 0b f7
      24 E> GetNamedProperty r2, k1, s0  ; k1 = String str5 "x" ; 21 02 01 00
      28    Star r3                                      ; 0c 03
      30    Mov r0, r2                                   ; 0d 00 02
@@ -168,7 +168,7 @@ function f3 method name="#s" parent=f0 outer_scope=scope2 flags=[strict,async,si
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+36] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
      17    Star r0                                      ; 0c 00
      19    LdaCurrentContext                            ; 15
@@ -217,22 +217,22 @@ function f4 method name="m" parent=f0 outer_scope=scope2 flags=[strict,async,sim
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+56] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
      17    Star r0                                      ; 0c 00
      19    LdaCurrentContext                            ; 15
      20    Star r1                                      ; 0c 01
-     22 S> Ldar <this>                                  ; 0b ff
+     22 S> Ldar <this>                                  ; 0b f7
      24    LdaCurrentFunction                           ; 0e
      25    Star r7                                      ; 0c 07
      27 E> CallRuntime GetHomeObject, r7                ; 68 0e 00 07 01
-     32 E> GetNamedPropertyFromSuper <this>, k1, s0  ; k1 = String str4 "m" ; 22 ff 01 00
+     32 E> GetNamedPropertyFromSuper <this>, k1, s0  ; k1 = String str4 "m" ; 22 f7 01 00
      36    Star r2                                      ; 0c 02
-     38    Ldar a0                                      ; 0b fe
+     38    Ldar a0                                      ; 0b f6
      40    Mov r0, r5                                   ; 0d 00 05
-     43    Mov a0, r6                                   ; 0d fe 06
+     43    Mov a0, r6                                   ; 0d f6 06
      46 E> CallRuntime AsyncFunctionAwait, r5-r6        ; 68 21 00 05 02
-     51    Mov <this>, r3                               ; 0d ff 03
+     51    Mov <this>, r3                               ; 0d f7 03
      54 E> SuspendGenerator r0, r0-r4, [0]              ; 9a 00 00 05 00
      59    ResumeGenerator r0, r0-r4                    ; 9b 00 00 05
      63    Star r5                                      ; 0c 05

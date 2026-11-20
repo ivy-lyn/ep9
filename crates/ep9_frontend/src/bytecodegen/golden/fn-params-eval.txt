@@ -1,6 +1,6 @@
 # fn-params-eval: script (sloppy)
 # | function f(a = 1, b = eval('var a = 2')) { return a; } function g({ a }) { eval('var a'); }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=91 source=embedded hints=none
 source_hash=b94a273dfc08f3668d55f8d94e28b8674d915d4674f51d8136fa51641ff286dc
 strings (11):
@@ -54,7 +54,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
   code (106 bytes):
       0 E> CreateFunctionContext k0, [6]  ; k0 = Scope scope1 ; 75 00 06
       3    PushContext r0                               ; 13 00
-      5    Ldar <this>                                  ; 0b ff
+      5    Ldar <this>                                  ; 0b f7
       7    StaCurrentContextSlot [3]                    ; 1b 03
       9    LdaNewTarget                                 ; 0f
      10    StaCurrentContextSlot [4]                    ; 1b 04
@@ -64,16 +64,16 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
      16    StaCurrentContextSlot [1]                    ; 1b 01
      18    LdaTheHole                                   ; 07
      19    StaCurrentContextSlot [2]                    ; 1b 02
-     21    Ldar a0                                      ; 0b fe
+     21    Ldar a0                                      ; 0b f6
      23    JumpIfNotUndefined @31                       ; 86 08
      25    LdaSmi [1]                                   ; 04 01
      27    Star r1                                      ; 0c 01
      29    Jump @35                                     ; 7e 06
-     31    Ldar a0                                      ; 0b fe
+     31    Ldar a0                                      ; 0b f6
      33    Star r1                                      ; 0c 01
      35    Ldar r1                                      ; 0b 01
      37    StaCurrentContextSlot [1]                    ; 1b 01
-     39    Ldar a1                                      ; 0b fd
+     39    Ldar a1                                      ; 0b f5
      41    JumpIfNotUndefined @93                       ; 86 34
      43    LdaConstant k1  ; k1 = String str8 "eval"    ; 0a 01
      45    Star r5                                      ; 0c 05
@@ -95,7 +95,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
      84 E> CallProperty1 r2, r3, r4, s0                 ; 61 02 03 04 00
      89    Star r1                                      ; 0c 01
      91    Jump @97                                     ; 7e 06
-     93    Ldar a1                                      ; 0b fd
+     93    Ldar a1                                      ; 0b f5
      95    Star r1                                      ; 0c 01
      97    Ldar r1                                      ; 0b 01
      99    StaCurrentContextSlot [2]                    ; 1b 02
@@ -121,7 +121,7 @@ function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[] params=1 lengt
   code (76 bytes):
       0 E> CreateFunctionContext k0, [5]  ; k0 = Scope scope3 ; 75 00 05
       3    PushContext r0                               ; 13 00
-      5    Ldar <this>                                  ; 0b ff
+      5    Ldar <this>                                  ; 0b f7
       7    StaCurrentContextSlot [2]                    ; 1b 02
       9    LdaNewTarget                                 ; 0f
      10    StaCurrentContextSlot [3]                    ; 1b 03
@@ -129,9 +129,9 @@ function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[] params=1 lengt
      13    StaCurrentContextSlot [4]                    ; 1b 04
      15    LdaTheHole                                   ; 07
      16    StaCurrentContextSlot [1]                    ; 1b 01
-     18    Ldar a0                                      ; 0b fe
+     18    Ldar a0                                      ; 0b f6
      20 E> ToObject r1                                  ; 5b 01
-     22 E> GetNamedProperty a0, k1, s0  ; k1 = String str3 "a" ; 21 fe 01 00
+     22 E> GetNamedProperty a0, k1, s0  ; k1 = String str3 "a" ; 21 f6 01 00
      26    StaCurrentContextSlot [1]                    ; 1b 01
      28 S> LdaConstant k2  ; k2 = String str8 "eval"    ; 0a 02
      30    Star r4                                      ; 0c 04

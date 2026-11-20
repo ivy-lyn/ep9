@@ -1,6 +1,6 @@
 # ctl-finally-context: script (sloppy)
 # | function f(g) { try { let x = 1; g(() => x); return x; } finally { g(); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=75 source=embedded hints=none
 source_hash=2c945a5d630f5775fa66eb4618b2a2cd8c6ca622f52f3cc878050b4b5dda2394
 strings (2):
@@ -42,10 +42,10 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       8    StaCurrentContextSlot [0]                    ; 1b 00
      10 S> LdaSmi [1]                                   ; 04 01
      12    StaCurrentContextSlot [0]                    ; 1b 00
-     14 S> Ldar a0                                      ; 0b fe
+     14 S> Ldar a0                                      ; 0b f6
      16 E> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
      20    Star r5                                      ; 0c 05
-     22 E> CallUndefinedReceiver1 a0, r5, s1            ; 65 fe 05 01
+     22 E> CallUndefinedReceiver1 a0, r5, s1            ; 65 f6 05 01
      26 S> LdaCurrentContextSlot [0]                    ; 18 00
      28    PopContext r3                                ; 14 03
      30    Star r1                                      ; 0c 01
@@ -62,8 +62,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      51    LdaTheHole                                   ; 07
      52    SetPendingMessage                            ; 93
      53    Star r4                                      ; 0c 04
-     55 S> Ldar a0                                      ; 0b fe
-     57 E> CallUndefinedReceiver0 a0, s2                ; 64 fe 02
+     55 S> Ldar a0                                      ; 0b f6
+     57 E> CallUndefinedReceiver0 a0, s2                ; 64 f6 02
      60    Ldar r4                                      ; 0b 04
      62    SetPendingMessage                            ; 93
      63    Ldar r0                                      ; 0b 00

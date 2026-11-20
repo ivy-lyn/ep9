@@ -1,6 +1,6 @@
 # gen-yield-star: script (strict)
 # | function* g(it) { var r = yield* it; return r; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=48 source=embedded hints=none
 source_hash=af0c4f19849c2e2ac23817ab14b2bd57a0ac1973f100d9239f0858409888a6fc
 strings (6):
@@ -40,7 +40,7 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +154] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime CreateGeneratorObject, r2-r3     ; 68 13 00 02 02
      17    Star r1                                      ; 0c 01
      19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
@@ -52,8 +52,8 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
      40 E> Throw                                        ; 90
      41    Ldar r2                                      ; 0b 02
      43    Return                                       ; 92
-     44 S> Ldar a0                                      ; 0b fe
-     46 E> GetIterator a0, s0, s1                       ; 8f fe 00 01
+     44 S> Ldar a0                                      ; 0b f6
+     46 E> GetIterator a0, s0, s1                       ; 8f f6 00 01
      50    Star r4                                      ; 0c 04
      52 E> GetNamedProperty r4, k2, s2  ; k2 = String str1 "next" ; 21 04 02 02
      56    Star r6                                      ; 0c 06

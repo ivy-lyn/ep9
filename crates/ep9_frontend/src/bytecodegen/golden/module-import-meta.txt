@@ -1,6 +1,6 @@
 # module-import-meta: module
 # | export const m = import.meta; function f() { return () => import.meta.url; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=module strict=true ts=none source_len=76 source=embedded hints=none
 source_hash=23cb8c612de8e6ad597365c7c4b5a8ab1ae5774f41defd391c761c4272eb5601
 strings (3):
@@ -21,8 +21,8 @@ module records: has-tla=false
 function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=3 range=0..76
   code (35 bytes):
       0    LdaUndefined                                 ; 05
-      1    Mov <this>, r1                               ; 0d ff 01
-      4    Star <this>                                  ; 0c ff
+      1    Mov <this>, r1                               ; 0d f7 01
+      4    Star <this>                                  ; 0c f7
       6    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+3, +15] ; 99 01 00
       9 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
      13    Star r0                                      ; 0c 00

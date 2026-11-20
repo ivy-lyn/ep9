@@ -1,6 +1,6 @@
 # fn-mapped-arguments: script (sloppy)
 # | function f(a, b, a) { arguments; return () => b; } function g(x, y) { 'use strict'; arguments; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=96 source=embedded hints=none
 source_hash=bc208eb0bde7bd52820fb8cf61b7dcb3797f711001850bdfc415f662096845f8
 strings (4):
@@ -47,9 +47,9 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
   code (25 bytes):
       0 E> CreateFunctionContext k0, [2]  ; k0 = Scope scope1 ; 75 00 02
       3    PushContext r1                               ; 13 01
-      5    Ldar a1                                      ; 0b fd
+      5    Ldar a1                                      ; 0b f5
       7    StaCurrentContextSlot [1]                    ; 1b 01
-      9    Ldar a2                                      ; 0b fc
+      9    Ldar a2                                      ; 0b f4
      11    StaCurrentContextSlot [0]                    ; 1b 00
      13 E> CreateMappedArguments                        ; 7a
      14    Star r0                                      ; 0c 00

@@ -1,6 +1,6 @@
 # op-eval-order: script (sloppy)
 # | function f(a) { return a + (a = 1); }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=37 source=embedded hints=none
 source_hash=db76d5a7e12b2d7edf90f9012477f0ddd419c0f2c1c4faf6037f53d6a8767db5
 strings (1):
@@ -30,10 +30,10 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=1 range=0..37
   code (15 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2    LdaSmi [1]                                   ; 04 01
-      4    Mov a0, r0                                   ; 0d fe 00
-      7    Star a0                                      ; 0c fe
+      4    Mov a0, r0                                   ; 0d f6 00
+      7    Star a0                                      ; 0c f6
       9 E> Add r0, s0                                   ; 2a 00 00
      12    Return                                       ; 92
      13    LdaUndefined                                 ; 05

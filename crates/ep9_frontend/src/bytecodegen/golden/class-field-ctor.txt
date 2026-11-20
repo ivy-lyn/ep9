@@ -1,6 +1,6 @@
 # class-field-ctor: script (sloppy)
 # | class A { x = 1; constructor(a = this.x) { this.a = a; } } class B { y = () => this; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=86 source=embedded hints=none
 source_hash=e6622fb1b63d3e4d35b291ead17d262ca036bdacd6395865b19cb9faf0ad5d99
 strings (6):
@@ -83,7 +83,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
 function f1 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..58
   code (8 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
-      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str3 "x" ; 25 ff 00 00
+      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str3 "x" ; 25 f7 00 00
       6    LdaUndefined                                 ; 05
       7    Return                                       ; 92
   constants (1):
@@ -98,19 +98,19 @@ function f2 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   code (40 bytes):
       0    LdaCurrentFunction                           ; 0e
       1    Star r1                                      ; 0c 01
-      3    Mov <this>, r2                               ; 0d ff 02
+      3    Mov <this>, r2                               ; 0d f7 02
       6 E> CallRuntime RunClassFieldsInitializer, r1-r2 ; 68 19 00 01 02
-     11    Ldar a0                                      ; 0b fe
+     11    Ldar a0                                      ; 0b f6
      13    JumpIfNotUndefined @23                       ; 86 0a
-     15 E> GetNamedProperty <this>, k0, s0  ; k0 = String str3 "x" ; 21 ff 00 00
+     15 E> GetNamedProperty <this>, k0, s0  ; k0 = String str3 "x" ; 21 f7 00 00
      19    Star r1                                      ; 0c 01
      21    Jump @27                                     ; 7e 06
-     23    Ldar a0                                      ; 0b fe
+     23    Ldar a0                                      ; 0b f6
      25    Star r1                                      ; 0c 01
      27    Mov r1, r0                                   ; 0d 01 00
-     30 S> Ldar <this>                                  ; 0b ff
+     30 S> Ldar <this>                                  ; 0b f7
      32    Ldar r0                                      ; 0b 00
-     34 E> SetNamedProperty <this>, k1, s1  ; k1 = String str4 "a" ; 24 ff 01 01
+     34 E> SetNamedProperty <this>, k1, s1  ; k1 = String str4 "a" ; 24 f7 01 01
      38    LdaUndefined                                 ; 05
      39    Return                                       ; 92
   constants (2):
@@ -129,7 +129,7 @@ function f3 class-constructor name="B" parent=f0 outer_scope=scope5 flags=[stric
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
-      3    Mov <this>, r1                               ; 0d ff 01
+      3    Mov <this>, r1                               ; 0d f7 01
       6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
      11    LdaUndefined                                 ; 05
      12    Return                                       ; 92
@@ -143,10 +143,10 @@ function f4 class-fields-initializer name=- parent=f0 outer_scope=scope5 flags=[
   code (19 bytes):
       0 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope7 ; 75 00 01
       3    PushContext r0                               ; 13 00
-      5 S> Ldar <this>                                  ; 0b ff
+      5 S> Ldar <this>                                  ; 0b f7
       7    StaCurrentContextSlot [0]                    ; 1b 00
       9 S> CreateClosure k1, s0, #0x00  ; k1 = Function f5 ; 74 01 00 00
-     13 E> DefineNamedOwnProperty <this>, k2, s1  ; k2 = String str5 "y" ; 25 ff 02 01
+     13 E> DefineNamedOwnProperty <this>, k2, s1  ; k2 = String str5 "y" ; 25 f7 02 01
      17    LdaUndefined                                 ; 05
      18    Return                                       ; 92
   constants (3):

@@ -1,6 +1,6 @@
 # async-gen-return: script (strict)
 # | async function* g(p) { try { yield 1; return p; } finally { return; } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=71 source=embedded hints=none
 source_hash=0055477a4307cda417d44ad4abd8e5c08030755e51248af3b9e7715b7b8bcbdf
 strings (1):
@@ -37,7 +37,7 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21, +48, +82, +115, +159] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime AsyncGeneratorEnter, r1-r2       ; 68 24 00 01 02
      17    Star r0                                      ; 0c 00
      19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
@@ -82,9 +82,9 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
     137    Mov r6, r3                                   ; 0d 06 03
     140    Star r2                                      ; 0c 02
     142    Jump @199                                    ; 7e 39
-    144 S> Ldar a0                                      ; 0b fe
+    144 S> Ldar a0                                      ; 0b f6
     146    Mov r0, r5                                   ; 0d 00 05
-    149    Mov a0, r6                                   ; 0d fe 06
+    149    Mov a0, r6                                   ; 0d f6 06
     152 E> CallRuntime AsyncGeneratorAwait, r5-r6       ; 68 25 00 05 02
     157 E> SuspendGenerator r0, r0-r4, [4]              ; 9a 00 00 05 04
     162    ResumeGenerator r0, r0-r4                    ; 9b 00 00 05

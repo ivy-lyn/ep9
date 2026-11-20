@@ -1,6 +1,6 @@
 # iter-for-of-break: script (sloppy)
 # | function f(a) { for (let x of a) { if (x) break; (() => x)(); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
 source_hash=9ed0c777fc92b0ff84f5c7fb7fe99910462cb9b0988bfc1724d71438dd4bc49e
 strings (6):
@@ -42,14 +42,14 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       2    PushContext r4                               ; 13 04
       4    LdaTheHole                                   ; 07
       5    StaCurrentContextSlot [0]                    ; 1b 00
-      7    Ldar a0                                      ; 0b fe
+      7    Ldar a0                                      ; 0b f6
       9    PopContext r4                                ; 14 04
-     11 E> GetIterator a0, s0, s1                       ; 8f fe 00 01
+     11 E> GetIterator a0, s0, s1                       ; 8f f6 00 01
      15    Star r0                                      ; 0c 00
      17 E> GetNamedProperty r0, k1, s2  ; k1 = String str2 "next" ; 21 00 01 02
      21    Star r1                                      ; 0c 01
      23    LdaCurrentContext                            ; 15
-     24    Mov a0, r5                                   ; 0d fe 05
+     24    Mov a0, r5                                   ; 0d f6 05
      27    Star r7                                      ; 0c 07
      29    LdaTrue                                      ; 08
      30    Star r2                                      ; 0c 02

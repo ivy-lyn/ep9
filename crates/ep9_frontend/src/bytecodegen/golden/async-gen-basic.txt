@@ -1,6 +1,6 @@
 # async-gen-basic: script (strict)
 # | async function* g(a) { var b = yield a; await b; return b; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=60 source=embedded hints=none
 source_hash=7033fe18b879f68a8c7d77ad8589e25de0d900330b8062d6ebd70d7e638e42cb
 strings (1):
@@ -35,16 +35,16 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +46, +80, +113, +167, +202] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime AsyncGeneratorEnter, r2-r3       ; 68 24 00 02 02
      17    Star r1                                      ; 0c 01
      19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
      24    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
      28    LdaCurrentContext                            ; 15
      29    Star r2                                      ; 0c 02
-     31 S> Ldar a0                                      ; 0b fe
+     31 S> Ldar a0                                      ; 0b f6
      33    Mov r1, r3                                   ; 0d 01 03
-     36    Mov a0, r4                                   ; 0d fe 04
+     36    Mov a0, r4                                   ; 0d f6 04
      39 E> CallRuntime AsyncGeneratorAwait, r3-r4       ; 68 25 00 03 02
      44 E> SuspendGenerator r1, r0-r2, [1]              ; 9a 01 00 03 01
      49    ResumeGenerator r1, r0-r2                    ; 9b 01 00 03

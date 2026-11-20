@@ -1,6 +1,6 @@
 # class-field-computed: script (sloppy)
 # | var k; class A { [k] = 1; static [k + 1] = function() {}; [k]() {} [k + 2]; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=83fd11c1a0fd56d4a0ba9e02b0a2ca29bc6a142dcd9debc7804e7c97979c9c9c
 strings (5):
@@ -105,7 +105,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
-      3    Mov <this>, r1                               ; 0d ff 01
+      3    Mov <this>, r1                               ; 0d f7 01
       6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
      11    LdaUndefined                                 ; 05
      12    Return                                       ; 92
@@ -120,11 +120,11 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       0 S> LdaCurrentContextSlot [0]                    ; 18 00
       2    Star r0                                      ; 0c 00
       4    LdaSmi [1]                                   ; 04 01
-      6 E> DefineKeyedOwnProperty <this>, r0, #0x00, s0 ; 27 ff 00 00 00
+      6 E> DefineKeyedOwnProperty <this>, r0, #0x00, s0 ; 27 f7 00 00 00
      11 S> LdaCurrentContextSlot [2]                    ; 18 02
      13    Star r0                                      ; 0c 00
      15    LdaUndefined                                 ; 05
-     16 E> DefineKeyedOwnProperty <this>, r0, #0x00, s1 ; 27 ff 00 00 01
+     16 E> DefineKeyedOwnProperty <this>, r0, #0x00, s1 ; 27 f7 00 00 01
      21    LdaUndefined                                 ; 05
      22    Return                                       ; 92
   constants (0):
@@ -142,7 +142,7 @@ function f3 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       0 S> LdaCurrentContextSlot [1]                    ; 18 01
       2    Star r0                                      ; 0c 00
       4 E> CreateClosure k0, s0, #0x00  ; k0 = Function f4 ; 74 00 00 00
-      8 E> DefineKeyedOwnProperty <this>, r0, #0x01, s1 ; 27 ff 00 01 01
+      8 E> DefineKeyedOwnProperty <this>, r0, #0x01, s1 ; 27 f7 00 01 01
      13    LdaUndefined                                 ; 05
      14    Return                                       ; 92
   constants (1):

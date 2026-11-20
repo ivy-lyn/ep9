@@ -1,4 +1,4 @@
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=263 source=embedded hints=none
 source_hash=21a43476ebc895ebbc9df7c099be81616f24fb1ed926e239fc902fa17794be5f
 strings (11):
@@ -118,8 +118,8 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     132 S 249 (5:80)
 function f1 normal name="add" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=0 range=15..51
   code (6 bytes):
-      0 S> Ldar a1                                      ; 0b fd
-      2 E> Add a0, s0                                   ; 2a fe 00
+      0 S> Ldar a1                                      ; 0b f5
+      2 E> Add a0, s0                                   ; 2a f6 00
       5    Return                                       ; 92
   constants (0):
   feedback (1):

@@ -1,6 +1,6 @@
 # gen-labeled-nested-loop: script (sloppy)
 # | function* g(n) { outer: for (let i = 0; i < n; i++) { let f = () => i; while (true) { if (yield f) continue outer; break outer; } } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=133 source=embedded hints=none
 source_hash=ecd57290d54f88bcdc57ed37e90f968f7429bbcc12241d9917350f08ccc614b0
 strings (3):
@@ -41,7 +41,7 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +101] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime CreateGeneratorObject, r2-r3     ; 68 13 00 02 02
      17    Star r1                                      ; 0c 01
      19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
@@ -68,7 +68,7 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
      67    StaCurrentContextSlot [0]                    ; 1b 00
      69    LdaCurrentContextSlot [0]                    ; 18 00
      71    Star r3                                      ; 0c 03
-     73    Ldar a0                                      ; 0b fe
+     73    Ldar a0                                      ; 0b f6
      75 E> TestLessThan r3, s0                          ; 4d 03 00
      78    JumpIfFalse @161                             ; 80 53
      80 S> CreateClosure k3, s1, #0x00  ; k3 = Function f2 ; 74 03 01 00

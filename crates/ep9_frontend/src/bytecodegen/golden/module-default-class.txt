@@ -1,6 +1,6 @@
 # module-default-class: module
 # | export default class { m() {} }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=module strict=true ts=none source_len=31 source=embedded hints=none
 source_hash=f55ef5f37d512892364419359444cd86499f97f58c75f2b544196e5bcd48cd90
 strings (3):
@@ -22,8 +22,8 @@ module records: has-tla=false
 function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=7 range=0..31
   code (57 bytes):
       0    LdaUndefined                                 ; 05
-      1    Mov <this>, r0                               ; 0d ff 00
-      4    Star <this>                                  ; 0c ff
+      1    Mov <this>, r0                               ; 0d f7 00
+      4    Star <this>                                  ; 0c f7
       6    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+3, +9] ; 99 00 00
       9    LdaUndefined                                 ; 05
      10    SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01

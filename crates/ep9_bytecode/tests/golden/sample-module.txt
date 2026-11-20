@@ -1,4 +1,4 @@
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=module strict=true ts=[useDefineForClassFields=false, experimentalDecorators=true, emitDecoratorMetadata=true] source_len=243 source=embedded hints=4 bytes
 source_hash=5936d4dc3f7f5837d5da4b389f074b02d9e5da1e0d85dbf0087e3a479e04f983
 strings (12):
@@ -52,7 +52,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,sim
   code (22 bytes):
       0    CreateFunctionContext k0, [1]  ; k0 = Scope scope1 ; 75 00 01
       3    PushContext r0                               ; 13 00
-      5    Ldar a0                                      ; 0b fe
+      5    Ldar a0                                      ; 0b f6
       7    StaCurrentContextSlot [0]                    ; 1b 00
       9 S> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
      13    Star.Wide r301                               ; 01 0c 2d 01

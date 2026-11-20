@@ -1,6 +1,6 @@
 # var-direct-eval: script (sloppy)
 # | function f(a) { var b; eval('a + b'); return b; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=49 source=embedded hints=none
 source_hash=222d0166cab0d2fecf121065fbd303f90501a85a4cc23b4f45bac85fb64352ab
 strings (9):
@@ -40,9 +40,9 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
   code (70 bytes):
       0 E> CreateFunctionContext k0, [6]  ; k0 = Scope scope1 ; 75 00 06
       3    PushContext r0                               ; 13 00
-      5    Ldar a0                                      ; 0b fe
+      5    Ldar a0                                      ; 0b f6
       7    StaCurrentContextSlot [1]                    ; 1b 01
-      9    Ldar <this>                                  ; 0b ff
+      9    Ldar <this>                                  ; 0b f7
      11    StaCurrentContextSlot [3]                    ; 1b 03
      13    LdaNewTarget                                 ; 0f
      14    StaCurrentContextSlot [4]                    ; 1b 04

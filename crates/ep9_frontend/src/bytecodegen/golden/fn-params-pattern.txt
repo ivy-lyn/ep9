@@ -1,6 +1,6 @@
 # fn-params-pattern: script (sloppy)
 # | function f({a, b: [c] = []}, d) { return a + c + d; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=53 source=embedded hints=none
 source_hash=40d5bb7bb208fe9a20e5e2aa6ec3348c0d3c3f48e816bdf80b7482d096671519
 strings (7):
@@ -37,11 +37,11 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 length=2 regs=15 range=0..53
   code (178 bytes):
-      0    Ldar a0                                      ; 0b fe
+      0    Ldar a0                                      ; 0b f6
       2 E> ToObject r3                                  ; 5b 03
-      4 E> GetNamedProperty a0, k0, s0  ; k0 = String str1 "a" ; 21 fe 00 00
+      4 E> GetNamedProperty a0, k0, s0  ; k0 = String str1 "a" ; 21 f6 00 00
       8    Star r0                                      ; 0c 00
-     10 E> GetNamedProperty a0, k1, s1  ; k1 = String str2 "b" ; 21 fe 01 01
+     10 E> GetNamedProperty a0, k1, s1  ; k1 = String str2 "b" ; 21 f6 01 01
      14    JumpIfNotUndefined @18                       ; 86 04
      16 E> CreateEmptyArrayLiteral s2                   ; 6e 02
      18    Star r3                                      ; 0c 03
@@ -107,7 +107,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
     154    Jump @159                                    ; 7e 05
     156    Ldar r9                                      ; 0b 09
     158 E> ReThrow                                      ; 91
-    159    Ldar a1                                      ; 0b fd
+    159    Ldar a1                                      ; 0b f5
     161    Star r2                                      ; 0c 02
     163 S> Ldar r1                                      ; 0b 01
     165 E> Add r0, s11                                  ; 2a 00 0b

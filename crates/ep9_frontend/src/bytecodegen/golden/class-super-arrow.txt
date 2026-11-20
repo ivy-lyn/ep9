@@ -1,6 +1,6 @@
 # class-super-arrow: script (sloppy)
 # | class A extends Object { constructor() { var f = () => super(); f(); } m() { return () => super.m(); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
 source_hash=575e16ccf8bcab7937cd3707dd99345c3b280114ee43bb422a856f34e63e994b
 strings (8):
@@ -116,7 +116,7 @@ function f3 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
   code (26 bytes):
       0 E> CreateFunctionContext k0, [2]  ; k0 = Scope scope4 ; 75 00 02
       3    PushContext r0                               ; 13 00
-      5    Ldar <this>                                  ; 0b ff
+      5    Ldar <this>                                  ; 0b f7
       7    StaCurrentContextSlot [1]                    ; 1b 01
       9    LdaCurrentFunction                           ; 0e
      10    Star r1                                      ; 0c 01

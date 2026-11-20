@@ -1,6 +1,6 @@
 # class-computed-name: script (sloppy)
 # | var k = Symbol('s'); var o = { [k]: class {}, ['x' + 1]: class { static y = this.name; } };
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=91 source=embedded hints=none
 source_hash=f900ef05372a54d06e42e89ed22641f907baf9192d738ecaa518b2f6a157b4af
 strings (7):
@@ -127,9 +127,9 @@ function f2 class-constructor name=- parent=f0 outer_scope=scope3 flags=[strict,
       0 S 57 (1:58)
 function f3 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=1 range=63..88
   code (12 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
-      2 E> GetNamedProperty <this>, k0, s0  ; k0 = String str5 "name" ; 21 ff 00 00
-      6 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str6 "y" ; 25 ff 01 01
+      0 S> Ldar <this>                                  ; 0b f7
+      2 E> GetNamedProperty <this>, k0, s0  ; k0 = String str5 "name" ; 21 f7 00 00
+      6 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str6 "y" ; 25 f7 01 01
      10    LdaUndefined                                 ; 05
      11    Return                                       ; 92
   constants (2):

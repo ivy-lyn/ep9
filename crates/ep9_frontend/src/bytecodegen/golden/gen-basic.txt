@@ -1,6 +1,6 @@
 # gen-basic: script (sloppy)
 # | function* g(a) { var x = yield a; yield; return x + new.target; } var e = function* () {}; ({ *m() { yield this; } });
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=118 source=embedded hints=none
 source_hash=f7c340cccfd4f0dfd57144544d08d9d3eb0a5549f5d2332a8a8940caa8a6a6fd
 strings (3):
@@ -60,7 +60,7 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +59, +98] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime CreateGeneratorObject, r2-r3     ; 68 13 00 02 02
      17    Star r1                                      ; 0c 01
      19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
@@ -72,10 +72,10 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple
      40 E> Throw                                        ; 90
      41    Ldar r2                                      ; 0b 02
      43    Return                                       ; 92
-     44 S> Ldar a0                                      ; 0b fe
+     44 S> Ldar a0                                      ; 0b f6
      46    LdaFalse                                     ; 09
      47    Star r3                                      ; 0c 03
-     49    Mov a0, r2                                   ; 0d fe 02
+     49    Mov a0, r2                                   ; 0d f6 02
      52 E> CallRuntime CreateIterResultObject, r2-r3    ; 68 03 00 02 02
      57 E> SuspendGenerator r1, r0-r1, [1]              ; 9a 01 00 02 01
      62    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
@@ -139,7 +139,7 @@ function f2 normal name="e" parent=f0 outer_scope=scope0 flags=[generator,simple
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime CreateGeneratorObject, r1-r2     ; 68 13 00 01 02
      17    Star r0                                      ; 0c 00
      19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
@@ -170,7 +170,7 @@ function f3 method name="m" parent=f0 outer_scope=scope0 flags=[generator,simple
       3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21, +59] ; 99 00 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r1                                      ; 0c 01
-      9    Mov <this>, r2                               ; 0d ff 02
+      9    Mov <this>, r2                               ; 0d f7 02
      12 E> CallRuntime CreateGeneratorObject, r1-r2     ; 68 13 00 01 02
      17    Star r0                                      ; 0c 00
      19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
@@ -182,10 +182,10 @@ function f3 method name="m" parent=f0 outer_scope=scope0 flags=[generator,simple
      40 E> Throw                                        ; 90
      41    Ldar r1                                      ; 0b 01
      43    Return                                       ; 92
-     44 S> Ldar <this>                                  ; 0b ff
+     44 S> Ldar <this>                                  ; 0b f7
      46    LdaFalse                                     ; 09
      47    Star r2                                      ; 0c 02
-     49    Mov <this>, r1                               ; 0d ff 01
+     49    Mov <this>, r1                               ; 0d f7 01
      52 E> CallRuntime CreateIterResultObject, r1-r2    ; 68 03 00 01 02
      57 E> SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01
      62    ResumeGenerator r0, r0                       ; 9b 00 00 01

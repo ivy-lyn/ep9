@@ -1,6 +1,6 @@
 # class-base: script (sloppy)
 # | class A { constructor(x) { this.x = x; } m() { return this.x; } static s() { return 1; } get g() { return 1; } set g(v) {} static get sg() {} }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=143 source=embedded hints=none
 source_hash=5ca350cc36f3f841e43b430a1d885ca71a7eb77177eb009bf5fdfda9ca00ef42
 strings (9):
@@ -111,9 +111,9 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     127 E 0 (1:1)
 function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=1 range=0..143
   code (10 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
-      2    Ldar a0                                      ; 0b fe
-      4 E> SetNamedProperty <this>, k0, s0  ; k0 = String str5 "x" ; 24 ff 00 00
+      0 S> Ldar <this>                                  ; 0b f7
+      2    Ldar a0                                      ; 0b f6
+      4 E> SetNamedProperty <this>, k0, s0  ; k0 = String str5 "x" ; 24 f7 00 00
       8    LdaUndefined                                 ; 05
       9    Return                                       ; 92
   constants (1):
@@ -126,8 +126,8 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
       4 E 27 (1:28)
 function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=41..63
   code (9 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
-      2 E> GetNamedProperty <this>, k0, s0  ; k0 = String str5 "x" ; 21 ff 00 00
+      0 S> Ldar <this>                                  ; 0b f7
+      2 E> GetNamedProperty <this>, k0, s0  ; k0 = String str5 "x" ; 21 f7 00 00
       6    Return                                       ; 92
       7    LdaUndefined                                 ; 05
       8    Return                                       ; 92

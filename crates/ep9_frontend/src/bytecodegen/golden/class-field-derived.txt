@@ -1,6 +1,6 @@
 # class-field-derived: script (sloppy)
 # | class A {} class B extends A { x = 1; constructor() { super(); } } class C extends A { y = super.constructor; } class D extends A { z; constructor() { var f = () => super(); f(); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=182 source=embedded hints=none
 source_hash=0622f1c99eb00b08ba5dd41d4164d18474fd1010236ff7777fb22bda9b48b1a2
 strings (12):
@@ -151,7 +151,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
 function f2 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=0 range=29..66
   code (8 bytes):
       0 S> LdaSmi [1]                                   ; 04 01
-      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str7 "x" ; 25 ff 00 00
+      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str7 "x" ; 25 f7 00 00
       6    LdaUndefined                                 ; 05
       7    Return                                       ; 92
   constants (1):
@@ -222,12 +222,12 @@ function f4 derived-constructor name="C" parent=f0 outer_scope=scope6 flags=[str
      22 E 67 (1:68)
 function f5 class-fields-initializer name=- parent=f0 outer_scope=scope6 flags=[strict,simple-params] params=0 length=0 regs=3 range=85..111
   code (20 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
+      0 S> Ldar <this>                                  ; 0b f7
       2    LdaCurrentFunction                           ; 0e
       3    Star r2                                      ; 0c 02
       5 E> CallRuntime GetHomeObject, r2                ; 68 0e 00 02 01
-     10 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str8 "constructor" ; 22 ff 00 00
-     14 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str9 "y" ; 25 ff 01 01
+     10 E> GetNamedPropertyFromSuper <this>, k0, s0  ; k0 = String str8 "constructor" ; 22 f7 00 00
+     14 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str9 "y" ; 25 f7 01 01
      18    LdaUndefined                                 ; 05
      19    Return                                       ; 92
   constants (2):
@@ -245,7 +245,7 @@ function f5 class-fields-initializer name=- parent=f0 outer_scope=scope6 flags=[
 function f6 class-fields-initializer name=- parent=f0 outer_scope=scope9 flags=[strict,simple-params] params=0 length=0 regs=0 range=130..182
   code (7 bytes):
       0 S> LdaUndefined                                 ; 05
-      1 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str10 "z" ; 25 ff 00 00
+      1 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str10 "z" ; 25 f7 00 00
       5    LdaUndefined                                 ; 05
       6    Return                                       ; 92
   constants (1):

@@ -8,7 +8,7 @@
 # | export * as all from './m.js';
 # | export var v = 1, { w } = {};
 # | export default function () {}
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=module strict=true ts=none source_len=323 source=embedded hints=none
 source_hash=edbe957f958dd3fe353a5ac1f67afe51459c2a4ae6609d6ad4adb02eabc9e854
 strings (23):
@@ -65,8 +65,8 @@ module records: has-tla=false
 function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=3 range=0..323
   code (53 bytes):
       0    LdaUndefined                                 ; 05
-      1    Mov <this>, r0                               ; 0d ff 00
-      4    Star <this>                                  ; 0c ff
+      1    Mov <this>, r0                               ; 0d f7 00
+      4    Star <this>                                  ; 0c f7
       6    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+3, +24] ; 99 00 00
       9    LdaUndefined                                 ; 05
      10    StaModuleVariable [1], [0]                   ; 20 01 00

@@ -1,6 +1,6 @@
 # iter-for-in: script (sloppy)
 # | function f(o) { var r = []; for (var k in o) r.push(k); for (let j in o) (() => j)(); for (o.p in o) ; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
 source_hash=57889cda1f591c9d7d9f9edff58137c1bedd08e8d886fea5ed8ddddcfb4f089e
 strings (4):
@@ -39,7 +39,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
   code (161 bytes):
       0 S> CreateEmptyArrayLiteral s0                   ; 6e 00
       2    Star r0                                      ; 0c 00
-      4 S> Ldar a0                                      ; 0b fe
+      4 S> Ldar a0                                      ; 0b f6
       6    JumpIfUndefinedOrNull @54                    ; 87 30
       8 E> ToObject r2                                  ; 5b 02
      10 E> ForInEnumerate r2                            ; 8b 02
@@ -62,7 +62,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      56    PushContext r8                               ; 13 08
      58    LdaTheHole                                   ; 07
      59    StaCurrentContextSlot [0]                    ; 1b 00
-     61    Ldar a0                                      ; 0b fe
+     61    Ldar a0                                      ; 0b f6
      63    PopContext r8                                ; 14 08
      65    JumpIfUndefinedOrNull @118                   ; 87 35
      67 E> ToObject r2                                  ; 5b 02
@@ -86,7 +86,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
     110    PopContext r9                                ; 14 09
     112    ForInStep r6                                 ; 8e 06
     114    JumpLoop @77, [0], s8                        ; 7d 25 00 08
-    118 S> Ldar a0                                      ; 0b fe
+    118 S> Ldar a0                                      ; 0b f6
     120    JumpIfUndefinedOrNull @159                   ; 87 27
     122 E> ToObject r2                                  ; 5b 02
     124 E> ForInEnumerate r2                            ; 8b 02
@@ -97,9 +97,9 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
     136 E> ForInNext r2, r6, r3-r4, s9                  ; 8d 02 06 03 09
     141    JumpIfUndefined @153                         ; 85 0c
     143    Star r7                                      ; 0c 07
-    145    Ldar a0                                      ; 0b fe
+    145    Ldar a0                                      ; 0b f6
     147    Ldar r7                                      ; 0b 07
-    149 E> SetNamedProperty a0, k3, s10  ; k3 = String str3 "p" ; 24 fe 03 0a
+    149 E> SetNamedProperty a0, k3, s10  ; k3 = String str3 "p" ; 24 f6 03 0a
     153    ForInStep r6                                 ; 8e 06
     155    JumpLoop @132, [0], s11                      ; 7d 17 00 0b
     159    LdaUndefined                                 ; 05

@@ -1,6 +1,6 @@
 # ctl-throw: script (sloppy)
 # | function f(e) { throw e; } function g() { throw new Error('x'); }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
 source_hash=c52467f52f8e419c7e993c05e1f5d9562f5a0455a1e497c4cdd352c83a2cc58a
 strings (4):
@@ -44,7 +44,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      30 E 27 (1:28)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=0 range=0..26
   code (5 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2 E> Throw                                        ; 90
       3    LdaUndefined                                 ; 05
       4    Return                                       ; 92

@@ -1,6 +1,6 @@
 # async-gen-yield-star: script (strict)
 # | async function* g(it) { var r = yield* it; return r; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=54 source=embedded hints=none
 source_hash=a1134ac8c97541e2b6644bdae797052c75811b89b0177d8c9ba60537efad2adf
 strings (6):
@@ -40,17 +40,17 @@ function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,generator
       3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +98, +173, +221, +275, +310, +384] ; 99 01 00
       6    LdaCurrentFunction                           ; 0e
       7    Star r2                                      ; 0c 02
-      9    Mov <this>, r3                               ; 0d ff 03
+      9    Mov <this>, r3                               ; 0d f7 03
      12 E> CallRuntime AsyncGeneratorEnter, r2-r3       ; 68 24 00 02 02
      17    Star r1                                      ; 0c 01
      19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
      24    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
      28    LdaCurrentContext                            ; 15
      29    Star r2                                      ; 0c 02
-     31 S> Ldar a0                                      ; 0b fe
+     31 S> Ldar a0                                      ; 0b f6
      33    LdaTheHole                                   ; 07
      34    Star r10                                     ; 0c 0a
-     36    Mov a0, r9                                   ; 0d fe 09
+     36    Mov a0, r9                                   ; 0d f6 09
      39 E> CallRuntime CreateAsyncFromSyncIterator, r9-r10 ; 68 29 00 09 02
      44    Star r5                                      ; 0c 05
      46 E> GetNamedProperty r5, k1, s0  ; k1 = String str1 "next" ; 21 05 01 00

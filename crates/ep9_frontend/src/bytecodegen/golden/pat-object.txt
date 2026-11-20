@@ -1,6 +1,6 @@
 # pat-object: script (sloppy)
 # | function f(o) { var {a, b: c, ['d']: e = 1, ...rest} = o; let {} = o; return [a, c, e, rest]; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=95 source=embedded hints=none
 source_hash=a354a216daf5d1d6bf8ebcc35d1e3242c709856edec9f818b2f6b318047917b7
 strings (4):
@@ -33,28 +33,28 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=10 range=0..95
   code (107 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2 E> ToObject r5                                  ; 5b 05
       4    LdaConstant k0  ; k0 = String str1 "a"       ; 0a 00
       6    Star r6                                      ; 0c 06
-      8 E> GetNamedProperty a0, k0, s0  ; k0 = String str1 "a" ; 21 fe 00 00
+      8 E> GetNamedProperty a0, k0, s0  ; k0 = String str1 "a" ; 21 f6 00 00
      12    Star r0                                      ; 0c 00
      14    LdaConstant k1  ; k1 = String str2 "b"       ; 0a 01
      16    Star r7                                      ; 0c 07
-     18 E> GetNamedProperty a0, k1, s1  ; k1 = String str2 "b" ; 21 fe 01 01
+     18 E> GetNamedProperty a0, k1, s1  ; k1 = String str2 "b" ; 21 f6 01 01
      22    Star r1                                      ; 0c 01
      24    LdaConstant k2  ; k2 = String str3 "d"       ; 0a 02
      26    Star r8                                      ; 0c 08
-     28 E> GetKeyedProperty a0, s2                      ; 23 fe 02
-     31    Mov a0, r4                                   ; 0d fe 04
-     34    Mov a0, r5                                   ; 0d fe 05
+     28 E> GetKeyedProperty a0, s2                      ; 23 f6 02
+     31    Mov a0, r4                                   ; 0d f6 04
+     34    Mov a0, r5                                   ; 0d f6 05
      37    Mov r8, r9                                   ; 0d 08 09
      40    JumpIfNotUndefined @44                       ; 86 04
      42    LdaSmi [1]                                   ; 04 01
      44    Star r2                                      ; 0c 02
      46 E> CallRuntime CopyDataPropertiesExcluding, r5-r8 ; 68 0a 00 05 04
      51    Star r3                                      ; 0c 03
-     53 S> Ldar a0                                      ; 0b fe
+     53 S> Ldar a0                                      ; 0b f6
      55 E> ToObject r5                                  ; 5b 05
      57 S> CreateArrayLiteral k3, s3, #0x01  ; k3 = ArrayBoilerplate [_, _, _, _] ; 6d 03 03 01
      61    Star r4                                      ; 0c 04

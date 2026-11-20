@@ -1,6 +1,6 @@
 # fn-params-split: script (sloppy)
 # | function f(a = () => b, b) { var b; var a; return a; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=54 source=embedded hints=none
 source_hash=23fa606bf05c8753ef279fc8595999e40654947462509dbaeb59b57a71a78b09
 strings (3):
@@ -38,15 +38,15 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 lengt
       3    PushContext r3                               ; 13 03
       5    LdaTheHole                                   ; 07
       6    StaCurrentContextSlot [0]                    ; 1b 00
-      8    Ldar a0                                      ; 0b fe
+      8    Ldar a0                                      ; 0b f6
      10    JumpIfNotUndefined @20                       ; 86 0a
      12 E> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
      16    Star r4                                      ; 0c 04
      18    Jump @24                                     ; 7e 06
-     20    Ldar a0                                      ; 0b fe
+     20    Ldar a0                                      ; 0b f6
      22    Star r4                                      ; 0c 04
      24    Mov r4, r0                                   ; 0d 04 00
-     27    Ldar a1                                      ; 0b fd
+     27    Ldar a1                                      ; 0b f5
      29    StaCurrentContextSlot [0]                    ; 1b 00
      31    LdaCurrentContextSlot [0]                    ; 18 00
      33    Star r1                                      ; 0c 01

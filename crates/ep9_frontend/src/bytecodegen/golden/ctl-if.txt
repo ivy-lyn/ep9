@@ -1,6 +1,6 @@
 # ctl-if: script (sloppy)
 # | function f(a, b) { if (a) return 1; else if (b && a) return 2; else { return 3; } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=83 source=embedded hints=none
 source_hash=fac9d2d695392d7614a865985e415f0a52c13082feaae574475195009daff5d0
 strings (1):
@@ -31,14 +31,14 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=0 range=0..83
   code (27 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2    JumpIfToBooleanFalse @9                      ; 82 07
       4 S> LdaSmi [1]                                   ; 04 01
       6    Return                                       ; 92
       7    Jump @25                                     ; 7e 12
-      9 S> Ldar a1                                      ; 0b fd
+      9 S> Ldar a1                                      ; 0b f5
      11    JumpIfToBooleanFalse @22                     ; 82 0b
-     13    Ldar a0                                      ; 0b fe
+     13    Ldar a0                                      ; 0b f6
      15    JumpIfToBooleanFalse @22                     ; 82 07
      17 S> LdaSmi [2]                                   ; 04 02
      19    Return                                       ; 92

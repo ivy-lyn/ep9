@@ -1,6 +1,6 @@
 # class-private-field: script (sloppy)
 # | class A { #x = 1; static #s; get() { return this.#x; } set(v) { this.#x = v; this.#x += 1; this.#x++; [this.#x] = [v]; } has(o) { return #x in o && #s in A; } opt(o) { return o?.#x; } call() { return this.#x(); } }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=214 source=embedded hints=none
 source_hash=453642638688494c8423382dd32ed87aa2722cca8d5ab5718fc707c36c7b69d5
 strings (12):
@@ -145,7 +145,7 @@ function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[stric
   code (13 bytes):
       0 S> LdaCurrentFunction                           ; 0e
       1    Star r0                                      ; 0c 00
-      3    Mov <this>, r1                               ; 0d ff 01
+      3    Mov <this>, r1                               ; 0d f7 01
       6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
      11    LdaUndefined                                 ; 05
      12    Return                                       ; 92
@@ -160,7 +160,7 @@ function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       0 S> LdaCurrentContextSlot [1]                    ; 18 01
       2    Star r0                                      ; 0c 00
       4    LdaSmi [1]                                   ; 04 01
-      6 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 ff 00 02 00
+      6 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 f7 00 02 00
      11    LdaUndefined                                 ; 05
      12    Return                                       ; 92
   constants (0):
@@ -175,7 +175,7 @@ function f3 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       0 S> LdaCurrentContextSlot [2]                    ; 18 02
       2    Star r0                                      ; 0c 00
       4    LdaUndefined                                 ; 05
-      5 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 ff 00 02 00
+      5 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 f7 00 02 00
      10    LdaUndefined                                 ; 05
      11    Return                                       ; 92
   constants (0):
@@ -187,9 +187,9 @@ function f3 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[
       5 E 25 (1:26)
 function f4 method name="get" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=29..54
   code (10 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
+      0 S> Ldar <this>                                  ; 0b f7
       2    LdaCurrentContextSlot [1]                    ; 18 01
-      4 E> GetKeyedProperty <this>, s0                  ; 23 ff 00
+      4 E> GetKeyedProperty <this>, s0                  ; 23 f7 00
       7    Return                                       ; 92
       8    LdaUndefined                                 ; 05
       9    Return                                       ; 92
@@ -202,28 +202,28 @@ function f4 method name="get" parent=f0 outer_scope=scope1 flags=[strict,simple-
       4 E 49 (1:50)
 function f5 method name="set" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=12 range=55..120
   code (211 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
+      0 S> Ldar <this>                                  ; 0b f7
       2    LdaCurrentContextSlot [1]                    ; 18 01
       4    Star r1                                      ; 0c 01
-      6    Ldar a0                                      ; 0b fe
-      8 E> SetKeyedProperty <this>, r1, s0              ; 26 ff 01 00
-     12 S> Ldar <this>                                  ; 0b ff
+      6    Ldar a0                                      ; 0b f6
+      8 E> SetKeyedProperty <this>, r1, s0              ; 26 f7 01 00
+     12 S> Ldar <this>                                  ; 0b f7
      14    LdaCurrentContextSlot [1]                    ; 18 01
      16    Star r1                                      ; 0c 01
-     18 E> GetKeyedProperty <this>, s1                  ; 23 ff 01
+     18 E> GetKeyedProperty <this>, s1                  ; 23 f7 01
      21 E> AddSmi [1], s2                               ; 36 01 02
-     24 E> SetKeyedProperty <this>, r1, s3              ; 26 ff 01 03
-     28 S> Ldar <this>                                  ; 0b ff
+     24 E> SetKeyedProperty <this>, r1, s3              ; 26 f7 01 03
+     28 S> Ldar <this>                                  ; 0b f7
      30    LdaCurrentContextSlot [1]                    ; 18 01
      32    Star r1                                      ; 0c 01
-     34 E> GetKeyedProperty <this>, s4                  ; 23 ff 04
+     34 E> GetKeyedProperty <this>, s4                  ; 23 f7 04
      37 E> Inc s5                                       ; 42 05
-     39 E> SetKeyedProperty <this>, r1, s6              ; 26 ff 01 06
+     39 E> SetKeyedProperty <this>, r1, s6              ; 26 f7 01 06
      43 S> CreateArrayLiteral k0, s7, #0x01  ; k0 = ArrayBoilerplate [_] ; 6d 00 07 01
      47    Star r0                                      ; 0c 00
      49    LdaZero                                      ; 03
      50    Star r1                                      ; 0c 01
-     52    Ldar a0                                      ; 0b fe
+     52    Ldar a0                                      ; 0b f6
      54 E> StaInArrayLiteral r0, r1, s8                 ; 28 00 01 08
      58 E> GetIterator r0, s9, s10                      ; 8f 00 09 0a
      62    Star r1                                      ; 0c 01
@@ -236,7 +236,7 @@ function f5 method name="set" parent=f0 outer_scope=scope1 flags=[strict,simple-
      76    LdaCurrentContextSlot [1]                    ; 18 01
      78    Star r9                                      ; 0c 09
      80    Mov r0, r5                                   ; 0d 00 05
-     83    Mov <this>, r8                               ; 0d ff 08
+     83    Mov <this>, r8                               ; 0d f7 08
      86    Ldar r3                                      ; 0b 03
      88    JumpIfTrue @123                              ; 7f 23
      90    LdaTrue                                      ; 08
@@ -351,10 +351,10 @@ function f5 method name="set" parent=f0 outer_scope=scope1 flags=[strict,simple-
     208 E 102 (1:103)
 function f6 method name="has" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=2 range=121..158
   code (31 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2    LdaCurrentContextSlot [1]                    ; 18 01
       4    Star r1                                      ; 0c 01
-      6    Ldar a0                                      ; 0b fe
+      6    Ldar a0                                      ; 0b f6
       8 E> TestIn r1, s0                                ; 53 01 00
      11    JumpIfToBooleanFalse @28                     ; 82 11
      13    LdaImmutableCurrentContextSlot [0]           ; 19 00
@@ -380,7 +380,7 @@ function f6 method name="has" parent=f0 outer_scope=scope1 flags=[strict,simple-
      25 E 148 (1:149)
 function f7 method name="opt" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=1 range=159..183
   code (17 bytes):
-      0 S> Ldar a0                                      ; 0b fe
+      0 S> Ldar a0                                      ; 0b f6
       2    JumpIfUndefinedOrNull @13                    ; 87 0b
       4    Star r0                                      ; 0c 00
       6    LdaCurrentContextSlot [1]                    ; 18 01
@@ -399,11 +399,11 @@ function f7 method name="opt" parent=f0 outer_scope=scope1 flags=[strict,simple-
       8 E 178 (1:179)
 function f8 method name="call" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=184..212
   code (16 bytes):
-      0 S> Ldar <this>                                  ; 0b ff
+      0 S> Ldar <this>                                  ; 0b f7
       2    LdaCurrentContextSlot [1]                    ; 18 01
-      4 E> GetKeyedProperty <this>, s0                  ; 23 ff 00
+      4 E> GetKeyedProperty <this>, s0                  ; 23 f7 00
       7    Star r0                                      ; 0c 00
-      9 E> CallProperty0 r0, <this>, s1                 ; 60 00 ff 01
+      9 E> CallProperty0 r0, <this>, s1                 ; 60 00 f7 01
      13    Return                                       ; 92
      14    LdaUndefined                                 ; 05
      15    Return                                       ; 92

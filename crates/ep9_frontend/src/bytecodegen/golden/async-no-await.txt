@@ -1,6 +1,6 @@
 # async-no-await: script (strict)
 # | async function f() { return 1; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=true ts=none source_len=32 source=embedded hints=none
 source_hash=1228b50b2ab8683b1f05aa03b9b2466a2bb98d78f98f9cf73267115d7ffd2dba
 strings (1):
@@ -32,7 +32,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,sim
   code (54 bytes):
       0    LdaCurrentFunction                           ; 0e
       1    Star r1                                      ; 0c 01
-      3    Mov <this>, r2                               ; 0d ff 02
+      3    Mov <this>, r2                               ; 0d f7 02
       6 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
      11    Star r0                                      ; 0c 00
      13    LdaCurrentContext                            ; 15

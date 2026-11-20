@@ -1,6 +1,6 @@
 # op-compare: script (sloppy)
 # | function f(a, b) { return [a == b, a != b, a === b, a !== b, a < b, a <= b, a > b, a >= b, a in b, a instanceof b]; }
-; ep9 bytecode, ABI 6
+; ep9 bytecode, ABI 7
 unit kind=script strict=false ts=none source_len=117 source=embedded hints=none
 source_hash=f77d8865412699f6178232e3589537839a02a2a8ad358d2ea535db2e86b26760
 strings (1):
@@ -34,55 +34,55 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       4    Star r0                                      ; 0c 00
       6    LdaZero                                      ; 03
       7    Star r1                                      ; 0c 01
-      9    Ldar a1                                      ; 0b fd
-     11 E> TestEqual a0, s2                             ; 4b fe 02
+      9    Ldar a1                                      ; 0b f5
+     11 E> TestEqual a0, s2                             ; 4b f6 02
      14 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      18    LdaSmi [1]                                   ; 04 01
      20    Star r1                                      ; 0c 01
-     22    Ldar a1                                      ; 0b fd
-     24 E> TestEqual a0, s3                             ; 4b fe 03
+     22    Ldar a1                                      ; 0b f5
+     24 E> TestEqual a0, s3                             ; 4b f6 03
      27    LogicalNot                                   ; 47
      28 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      32    LdaSmi [2]                                   ; 04 02
      34    Star r1                                      ; 0c 01
-     36    Ldar a1                                      ; 0b fd
-     38 E> TestEqualStrict a0, s4                       ; 4c fe 04
+     36    Ldar a1                                      ; 0b f5
+     38 E> TestEqualStrict a0, s4                       ; 4c f6 04
      41 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      45    LdaSmi [3]                                   ; 04 03
      47    Star r1                                      ; 0c 01
-     49    Ldar a1                                      ; 0b fd
-     51 E> TestEqualStrict a0, s5                       ; 4c fe 05
+     49    Ldar a1                                      ; 0b f5
+     51 E> TestEqualStrict a0, s5                       ; 4c f6 05
      54    LogicalNot                                   ; 47
      55 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      59    LdaSmi [4]                                   ; 04 04
      61    Star r1                                      ; 0c 01
-     63    Ldar a1                                      ; 0b fd
-     65 E> TestLessThan a0, s6                          ; 4d fe 06
+     63    Ldar a1                                      ; 0b f5
+     65 E> TestLessThan a0, s6                          ; 4d f6 06
      68 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      72    LdaSmi [5]                                   ; 04 05
      74    Star r1                                      ; 0c 01
-     76    Ldar a1                                      ; 0b fd
-     78 E> TestLessThanOrEqual a0, s7                   ; 4f fe 07
+     76    Ldar a1                                      ; 0b f5
+     78 E> TestLessThanOrEqual a0, s7                   ; 4f f6 07
      81 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      85    LdaSmi [6]                                   ; 04 06
      87    Star r1                                      ; 0c 01
-     89    Ldar a1                                      ; 0b fd
-     91 E> TestGreaterThan a0, s8                       ; 4e fe 08
+     89    Ldar a1                                      ; 0b f5
+     91 E> TestGreaterThan a0, s8                       ; 4e f6 08
      94 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
      98    LdaSmi [7]                                   ; 04 07
     100    Star r1                                      ; 0c 01
-    102    Ldar a1                                      ; 0b fd
-    104 E> TestGreaterThanOrEqual a0, s9                ; 50 fe 09
+    102    Ldar a1                                      ; 0b f5
+    104 E> TestGreaterThanOrEqual a0, s9                ; 50 f6 09
     107 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     111    LdaSmi [8]                                   ; 04 08
     113    Star r1                                      ; 0c 01
-    115    Ldar a1                                      ; 0b fd
-    117 E> TestIn a0, s10                               ; 53 fe 0a
+    115    Ldar a1                                      ; 0b f5
+    117 E> TestIn a0, s10                               ; 53 f6 0a
     120 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     124    LdaSmi [9]                                   ; 04 09
     126    Star r1                                      ; 0c 01
-    128    Ldar a1                                      ; 0b fd
-    130 E> TestInstanceOf a0, s11                       ; 52 fe 0b
+    128    Ldar a1                                      ; 0b f5
+    130 E> TestInstanceOf a0, s11                       ; 52 f6 0b
     133 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
     137    Ldar r0                                      ; 0b 00
     139    Return                                       ; 92
