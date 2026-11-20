@@ -124,9 +124,9 @@ pub const TRUE: u64 = Value::TRUE.to_bits();
 pub const FALSE: u64 = Value::FALSE.to_bits();
 pub const HOLE: u64 = Value::EMPTY.to_bits();
 
-/// The VM register stack of one isolate. The memory is zeroed on allocation and written before
-/// it is read: the GC scans only `[base, max(top, scratch_top))`, and every slot there is
-/// written at frame push or before the scratch top moves past it.
+/// The VM register stack of one isolate: zeroed on allocation, with `GUARD` slots past `end()`
+/// that no frame owns (call.rs). The GC scans only `[base, max(top, scratch_top))`: every slot
+/// there is written at frame push or before the scratch top moves past it, before it is read.
 pub struct VmStack {
     base: *mut u64,
     slots: usize,
@@ -141,7 +141,7 @@ pub struct VmStack {
 }
 
 impl VmStack {
-    /// Allocates `slots` words of zeroed memory (the OS commits pages on first touch).
+    /// Allocates `slots` + `GUARD` words of zeroed memory (the OS commits pages on first touch).
     pub fn new(slots: usize) -> VmStack {
         assert!(slots >= 64, "VM stack too small");
         let layout = std::alloc::Layout::array::<u64>(slots + Self::GUARD).expect("VM stack size");
@@ -162,7 +162,7 @@ impl VmStack {
         self.base
     }
 
-    /// One past the last slot.
+    /// One past the last slot a frame may use (`new`'s `slots`); the `GUARD` slots lie past it.
     pub fn end(&self) -> *mut u64 {
         self.base.wrapping_add(self.slots - Self::GUARD)
     }

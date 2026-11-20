@@ -121,9 +121,9 @@ pub(crate) unsafe fn push_frame(
 /// a new frame. A plain loop, one store per slot: these ranges are short (most T0 functions
 /// have fewer than 10 registers), and the vector loop that LLVM makes of a plain fill costs
 /// more set-up instructions and registers than the T0 call handlers have free (M3-P2 PERF3:
-/// a64 cachegrind t0-call -1.5% against the vector loop; a loop of 2 stores per pass, or one
-/// counted down, costs more). The volatile store only keeps LLVM from making the vector loop
-/// again; it is a plain store.
+/// a64 cachegrind t0-call -1.5% against the vector loop; on a64 a loop of 2 stores per pass, or
+/// one counted down, costs more; on x86-64 that loop costs less: `fill_registers`, M10-P3).
+/// The volatile store only keeps LLVM from making the vector loop again; it is a plain store.
 ///
 /// # Safety
 /// `[from, to)` is writable stack memory.
