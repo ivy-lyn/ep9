@@ -38,6 +38,33 @@ pub const FACT_SCHEMA_VERSION: u32 = 2;
 /// The tsrs pin that this binary is built from (`third_party/tsrs.commit`).
 const TSRS_COMMIT_TEXT: &str = include_str!("../../../third_party/tsrs.commit");
 
+/// The stamp that `sync_dep` wrote at the last tsrs sync: `<commit> <patch hash>`
+/// (`scripts/sync-lib.sh`). rustc tracks the file, so a sync makes cargo build again.
+const TSRS_STAMP: &str = include_str!("../../../third_party/tsrs/.ep9-stamp");
+
+/// The first 40 bytes (the commit hex) of `a` and `b` are the same.
+const fn same_commit(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() < 40 || b.len() < 40 {
+        return false;
+    }
+    let mut i = 0;
+    while i < 40 {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// The header names the commit of third_party/tsrs.commit, so the build must be of that commit:
+// after a pin change with no sync, the path dependencies would still be the old checkout.
+const _: () = assert!(
+    same_commit(TSRS_STAMP, TSRS_COMMIT_TEXT),
+    "third_party/tsrs is not synced to third_party/tsrs.commit: run bash scripts/sync-tsrs.sh"
+);
+
 /// The tsrs commit of the header, or `None` when `third_party/tsrs.commit` is not 40 hex digits.
 pub fn tsrs_commit() -> Option<TsrsCommit> {
     parse_commit_hex(TSRS_COMMIT_TEXT)
@@ -178,6 +205,19 @@ mod tests {
     fn tsrs_commit_is_the_pin() {
         let c = tsrs_commit().expect("third_party/tsrs.commit parses");
         assert_eq!(ep9_hints::commit_hex(&c), TSRS_COMMIT_TEXT.trim());
+    }
+
+    #[test]
+    fn the_build_is_of_the_pin() {
+        assert!(same_commit(TSRS_STAMP, TSRS_COMMIT_TEXT));
+        let pin = TSRS_COMMIT_TEXT.trim();
+        assert!(same_commit(&format!("{pin} e69de29b"), pin));
+        // Another commit, a short stamp or an empty stamp (a sync that did not end).
+        let mut other = pin.to_owned().into_bytes();
+        other[39] = if other[39] == b'0' { b'1' } else { b'0' };
+        assert!(!same_commit(std::str::from_utf8(&other).unwrap(), pin));
+        assert!(!same_commit(&pin[..39], pin));
+        assert!(!same_commit("", pin));
     }
 
     #[test]
