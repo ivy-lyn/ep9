@@ -1409,3 +1409,525 @@ fn a_second_shape_in_the_same_stub_cache_entry_misses_the_fast_probe() {
         t.release_all(kept_r.into());
     });
 }
+
+// ---- the probe in the SetNamedProperty and DefineNamedOwnProperty fast bodies --------------------
+// (M10-P2 LEVER-12 NAMED-STORE-MEGA)
+
+/// The number of stores that the probe in the fast bodies of `SetNamedProperty` and
+/// `DefineNamedOwnProperty` answered (`ic::store_or_mega`; [`store_hits`] counts them too).
+fn fast_store_hits() -> u32 {
+    ic::FAST_STORE_HITS.with(|c| c.get())
+}
+
+/// The counts ([`store_hits`], [`fast_store_hits`]) now.
+fn store_counts() -> (u32, u32) {
+    (store_hits(), fast_store_hits())
+}
+
+/// Stores `v` into `o.<name>` at site `i` of `t`: a hit in the fast body only if the stub cache
+/// held an entry for it (without GC stress; under GC stress a collection may empty the table
+/// first). A fast hit counts once in each count: the cold body did not run (its hit would move
+/// [`store_hits`] only). True if the fast body stored.
+fn store_counted(t: &mut T, i: usize, op: Op, o: u64, name: &str, v: u64, stress: bool) -> bool {
+    let held = entry(t, op, o, name).is_some();
+    let (h, f) = store_counts();
+    t.ok(i, o, v);
+    let hit = fast_store_hits() == f + 1;
+    assert!(stress || hit || fast_store_hits() == f);
+    assert!(stress || held || !hit, "a fast hit with no entry");
+    if hit {
+        assert_eq!(store_hits(), h + 1, "a fast hit counts once");
+    }
+    hit
+}
+
+/// The stub cache operation of store site `i` in a `T` of [`STORE_SITES`].
+fn store_op_of(i: usize) -> Op {
+    if i == 1 { Op::Define } else { Op::Store }
+}
+
+/// A sloppy 0x24, a 0x25 and a strict 0x24 site, all for `x`.
+const STORE_SITES: [Site; 3] = [
+    Site::Set("x", false),
+    Site::Define("x"),
+    Site::Set("x", true),
+];
+
+/// A one-byte 0x24 or 0x25 at a megamorphic site whose stub cache entry is there stores
+/// through the fast body: `FAST_STORE_HITS` moves by one and `HANDLER_STORE_HITS` by one
+/// only (the cold body did not run). A field store in the object and an add with room in the
+/// object, for each site; then 40 shapes at one site (entries that conflicts replace miss and
+/// are filled again). The values and the shapes are right in every case.
+#[test]
+fn the_store_fast_bodies_answer_megamorphic_stores_from_the_stub_cache() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &STORE_SITES);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in 0..3 {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        for i in 0..3 {
+            // A field store: own `x` in the object. One pad per site, so each site makes its
+            // own entry (sites 0 and 2 share the `Store` entries).
+            let pad = format!("f{i}");
+            let f = |t: &T| object_with(t.rt(), op, &[(pad.as_str(), int(0)), ("x", int(3))]);
+            let (o, o2) = (f(&t), f(&t));
+            let (h, n) = store_counts();
+            t.ok(i, o, int(7));
+            assert_eq!(store_counts(), (h, n), "the first store fills the entry");
+            assert!(stress || entry(&t, store_op_of(i), o, "x").is_some());
+            let (h, n) = store_counts();
+            t.ok(i, o2, int(8));
+            assert_eq!(
+                (own(t.rt(), o, "x"), own(t.rt(), o2, "x")),
+                (Some(int(7)), Some(int(8)))
+            );
+            if !stress {
+                assert_eq!(store_counts(), (h + 1, n + 1), "site {i}: a fast-body hit");
+            }
+            // An add with room in the object: the shape of the case's target.
+            let pad = format!("g{i}");
+            let a = |t: &T| object_with(t.rt(), op, &[(pad.as_str(), int(0))]);
+            let (o, o2) = (a(&t), a(&t));
+            t.ok(i, o, int(5));
+            let (h, n) = store_counts();
+            t.ok(i, o2, int(6));
+            assert_eq!(
+                (own(t.rt(), o, "x"), own(t.rt(), o2, "x")),
+                (Some(int(5)), Some(int(6)))
+            );
+            assert_eq!(id(o), id(o2), "both took the add");
+            if !stress {
+                assert_eq!(store_counts(), (h + 1, n + 1), "site {i}: a fast-body add");
+            }
+        }
+        // 40 shapes at site 0: each first store fills its entry, each second one is a fast
+        // hit; then again in the other order.
+        let (objs, kept_s) = shapes(&t, op, "x", 40);
+        for (j, &o) in objs.iter().enumerate() {
+            t.ok(0, o, int(j as i32));
+            assert!(
+                store_counted(&mut t, 0, Op::Store, o, "x", int(1000 + j as i32), stress) || stress
+            );
+            assert_eq!(own(t.rt(), o, "x"), Some(int(1000 + j as i32)));
+        }
+        for (j, &o) in objs.iter().enumerate().rev() {
+            store_counted(&mut t, 0, Op::Store, o, "x", int(2000 + j as i32), stress);
+            assert_eq!(own(t.rt(), o, "x"), Some(int(2000 + j as i32)));
+        }
+        assert_eq!(t.state(0), State::Megamorphic);
+        t.release_all(kept_s);
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
+
+/// A miss of the fast-body probe: the cold body and the runtime call run as before, and the
+/// runtime call fills the entry, so the next store of the shape is a fast-body hit. A GC
+/// empties the table: a miss again, then a fill. Not an object (a string, a symbol, a
+/// BigInt: ShapeId 0, and an int32): no stub cache probe at all, and the result of the
+/// generic store (a sloppy store to a primitive is ignored; a strict one throws).
+#[test]
+fn a_fast_store_probe_miss_takes_the_runtime_call_which_fills_the_entry() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &STORE_SITES);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in 0..3 {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        for i in 0..3 {
+            let pad = format!("n{i}");
+            let o = object_with(t.rt(), op, &[(pad.as_str(), int(0)), ("x", int(1))]);
+            let ko = t.keep(o);
+            let sop = store_op_of(i);
+            assert!(entry(&t, sop, o, "x").is_none());
+            assert!(!store_counted(&mut t, i, sop, o, "x", int(2), stress));
+            assert!(
+                stress || entry(&t, sop, o, "x").is_some(),
+                "the runtime call filled it"
+            );
+            assert!(store_counted(&mut t, i, sop, o, "x", int(3), stress) || stress);
+            t.collect();
+            assert!(entry(&t, sop, o, "x").is_none());
+            assert!(!store_counted(&mut t, i, sop, o, "x", int(4), stress));
+            assert!(store_counted(&mut t, i, sop, o, "x", int(5), stress) || stress);
+            assert_eq!(own(t.rt(), o, "x"), Some(int(5)));
+            t.release(ko);
+        }
+        let probes = |t: &mut T, i: usize, v: u64| {
+            let p = stub_cache::PROBES.with(|c| c.get());
+            let f = fast_store_hits();
+            let r = t.call(i, v, int(1)).map(|_| ()).map_err(|_| ());
+            assert_eq!(fast_store_hits(), f);
+            (stub_cache::PROBES.with(|c| c.get()) - p, r)
+        };
+        for _ in 0..2 {
+            let s = string::new_string(t.rt(), "abc");
+            assert_eq!(probes(&mut t, 0, s), (0, Ok(())), "a string, sloppy");
+            assert_eq!(probes(&mut t, 2, s).0, 0, "a string, strict");
+            let sym = symbol::new_symbol(t.rt(), UNDEFINED);
+            assert_eq!(probes(&mut t, 0, sym), (0, Ok(())), "a symbol, sloppy");
+            let b = crate::bigint::alloc_literal(t.rt(), false, &[5]);
+            assert_eq!(probes(&mut t, 0, b).0, 0, "a BigInt");
+            assert_eq!(probes(&mut t, 0, int(7)), (0, Ok(())), "an int32, sloppy");
+            assert_eq!(probes(&mut t, 2, int(7)), (0, Err(())), "an int32, strict");
+        }
+        assert_eq!(
+            [t.state(0), t.state(1), t.state(2)],
+            [State::Megamorphic; 3]
+        );
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
+
+/// The validity cell check of the fast-body probe: 0x24 (`store_with::<true>`) checks it for
+/// an add case, 0x25 (`store_with::<false>`) does not, as the cold-body probe
+/// (`ic::handler_mega_store`). A read-only `x` that the prototype gets after the entries were
+/// made: the 0x24 add finds its entry, misses (the epoch), and the generic store adds
+/// nothing; the 0x25 add still hits in the fast body and makes an own `x` (CreateDataProperty
+/// does not read the chain). The slow path gives the same results.
+#[test]
+fn the_fast_store_probe_checks_the_validity_cell_for_set_and_not_for_define() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(
+            c,
+            &[
+                Site::Set("x", false),
+                Site::Define("x"),
+                Site::Set("x", true),
+            ],
+        );
+        let op = object_prototype(t.rt());
+        let p = object_with(t.rt(), op, &[("pp", int(0))]);
+        let kept_p = t.keep(p);
+        let mut kept = Vec::new();
+        for i in 0..3 {
+            let objs = megamorphic_store(&mut t, i, p, "q");
+            kept.push(t.keep_all(&objs));
+        }
+        let a = |t: &T| object_with(t.rt(), p, &[("lone", int(0))]);
+        for i in [0, 1] {
+            let (o, o2) = (a(&t), a(&t));
+            t.ok(i, o, int(1));
+            assert!(store_counted(&mut t, i, store_op_of(i), o2, "x", int(2), stress) || stress);
+            assert_eq!(own(t.rt(), o2, "x"), Some(int(2)));
+        }
+        props::own_define(
+            t.rt(),
+            p,
+            key(t.rt(), "x"),
+            int(5),
+            attr::ENUMERABLE | attr::CONFIGURABLE,
+        );
+        // 0x24, sloppy: the entry is there, but its validity cell is not valid.
+        let o3 = a(&t);
+        let ko3 = t.keep(o3);
+        assert!(stress || entry(&t, Op::Store, o3, "x").is_some());
+        let (h, f) = store_counts();
+        t.ok(0, o3, int(9));
+        assert_eq!(
+            own(t.rt(), o3, "x"),
+            None,
+            "the read-only `x` blocks the add"
+        );
+        assert_eq!(store_counts(), (h, f));
+        // 0x24, strict: a TypeError, and nothing added.
+        t.throws(2, o3, int(9), "TypeError");
+        assert_eq!(own(t.rt(), o3, "x"), None);
+        // 0x25: no validity cell check; an own `x`, as the slow path makes.
+        let o4 = a(&t);
+        assert!(store_counted(&mut t, 1, Op::Define, o4, "x", int(9), stress) || stress);
+        assert_eq!(own(t.rt(), o4, "x"), Some(int(9)));
+        assert_eq!(own(t.rt(), p, "x"), Some(int(5)));
+        t.release(ko3);
+        for k in kept {
+            t.release_all(k);
+        }
+        t.release(kept_p);
+    });
+}
+
+/// An add whose entry has no room in the SLOTS cell misses the fast-body probe (the growth
+/// allocates), and the cold-body probe misses too; the runtime call grows the SLOTS cell
+/// through the entry (`ic::mega_store`, `ic::grow_add`).
+#[test]
+fn a_megamorphic_add_with_no_room_misses_the_fast_store_probe() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &[Site::Set("x", false), Site::Define("x")]);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in [0, 1] {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        for i in [0, 1] {
+            let first = at_capacity(t.rt(), op);
+            t.ok(i, first, int(1));
+            let q = at_capacity(t.rt(), op);
+            assert_eq!(id(q), {
+                let r = at_capacity(t.rt(), op);
+                id(r)
+            });
+            let (counts, grown) = (store_counts(), grow_adds());
+            t.ok(i, q, int(2));
+            assert_eq!(own(t.rt(), q, "x"), Some(int(2)));
+            assert_eq!(id(q), id(first));
+            assert_eq!(store_counts(), counts, "no probe hit can grow");
+            if !stress {
+                assert_eq!(grow_adds(), grown + 1, "the runtime call grew it");
+            }
+        }
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
+
+/// A read-only field, a frozen object, a non-extensible object and a dictionary-mode object
+/// at megamorphic 0x24 (sloppy and strict) and 0x25 sites: no stub cache entry is made for
+/// them, so the fast-body probe never stores; the result is that of the generic store (a
+/// sloppy store that fails is ignored; a strict one and a CreateDataPropertyOrThrow throw a
+/// TypeError).
+#[test]
+fn read_only_frozen_non_extensible_and_dictionary_receivers_take_the_generic_store() {
+    each(|c| {
+        let mut t = T::new(c, &STORE_SITES);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in 0..3 {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        let x = key(t.rt(), "x");
+        let f = fast_store_hits();
+        // A read-only, non-configurable `x` in a fast shape.
+        let ro = object_with(t.rt(), op, &[("ro", int(0))]);
+        props::own_define(t.rt(), ro, x, int(3), attr::ENUMERABLE);
+        assert!(!shape::is_dictionary(shape::shape_of(ro)));
+        // Frozen: every property read-only and non-configurable, then non-extensible.
+        let fz = object_with(t.rt(), op, &[("fz", int(0))]);
+        props::own_define(t.rt(), fz, key(t.rt(), "fz"), int(0), attr::ENUMERABLE);
+        props::own_define(t.rt(), fz, x, int(3), attr::ENUMERABLE);
+        props::prevent_extensions(t.rt(), fz);
+        let kept_r = t.keep_all(&[ro, fz]);
+        for _ in 0..3 {
+            for o in [ro, fz] {
+                t.ok(0, o, int(9));
+                t.throws(2, o, int(9), "TypeError");
+                t.throws(1, o, int(9), "TypeError");
+                assert_eq!(own(t.rt(), o, "x"), Some(int(3)));
+            }
+        }
+        // Non-extensible: a field store writes, an add fails.
+        let ne = object_with(t.rt(), op, &[("ne", int(0)), ("x", int(1))]);
+        props::prevent_extensions(t.rt(), ne);
+        let na = object_with(t.rt(), op, &[("na", int(0))]);
+        props::prevent_extensions(t.rt(), na);
+        let kept_n = t.keep_all(&[ne, na]);
+        for j in 0..3 {
+            for i in 0..3 {
+                t.ok(i, ne, int(10 * j + i as i32));
+                assert_eq!(own(t.rt(), ne, "x"), Some(int(10 * j + i as i32)));
+            }
+            t.ok(0, na, int(9));
+            t.throws(2, na, int(9), "TypeError");
+            t.throws(1, na, int(9), "TypeError");
+            assert_eq!(own(t.rt(), na, "x"), None);
+        }
+        // Dictionary mode (a delete that is not the last, OM-10): a field store and an add.
+        let d = dictionary_with_x(&mut t, op);
+        let da = object_with(t.rt(), op, &[("pad", int(0)), ("y", int(0))]);
+        let pad = key(t.rt(), "pad");
+        assert!(property::delete(&mut t.iso.cx, da, pad, true).unwrap());
+        assert!(shape::is_dictionary(shape::shape_of(da)));
+        let kept_d = t.keep_all(&[d, da]);
+        for i in 0..3 {
+            t.ok(i, d, int(20 + i as i32));
+            assert_eq!(own(t.rt(), d, "x"), Some(int(20 + i as i32)));
+            assert!(entry(&t, store_op_of(i), d, "x").is_none());
+        }
+        t.ok(1, da, int(30));
+        assert_eq!(own(t.rt(), da, "x"), Some(int(30)));
+        assert_eq!(fast_store_hits(), f, "no fast-body store");
+        t.release_all(kept_d);
+        t.release_all(kept_n);
+        t.release_all(kept_r);
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
+
+/// A proxy at megamorphic 0x24 and 0x25 sites: the fast-body probe never stores (no entry is
+/// made for a proxy), and the store goes to the target through the proxy's internal methods.
+#[test]
+fn a_proxy_at_a_megamorphic_store_site_takes_the_generic_store() {
+    each(|c| {
+        let mut t = T::new(c, &STORE_SITES);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in 0..3 {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        let target = object_with(t.rt(), op, &[("t", int(0))]);
+        let handler = object_with(t.rt(), op, &[]);
+        let kept_t = t.keep_all(&[target, handler]);
+        let p = crate::proxy::proxy_create(&mut t.iso.cx, target, handler).unwrap();
+        let kept_p = t.keep(p);
+        let f = fast_store_hits();
+        for j in 0..3 {
+            for i in 0..3 {
+                let v = int(10 * j + i as i32);
+                t.ok(i, p, v);
+                assert_eq!(own(t.rt(), target, "x"), Some(v));
+            }
+        }
+        assert_eq!(fast_store_hits(), f);
+        t.release(kept_p);
+        t.release_all(kept_t);
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
+
+/// The stub cache probes (`stub_cache::PROBES`) of one store `f<i>(o, v)` of `t`.
+fn store_probes(t: &mut T, i: usize, o: u64, v: u64) -> u32 {
+    let p = stub_cache::PROBES.with(|c| c.get());
+    t.ok(i, o, v);
+    stub_cache::PROBES.with(|c| c.get()) - p
+}
+
+/// The probes of one megamorphic store (`ic-stats` counts a hit where it stores and a miss
+/// once, in the runtime call, `ic::mega_store`): a hit in the fast body probes once. A miss of
+/// a one-byte 0x24 or 0x25 probes three times today: in the fast body (`ic::store_or_mega`),
+/// in the cold body (`ic::handler_mega_store`) and in the runtime call. The load form probes
+/// twice (`ic::get_named_cold_at` skips the cold-body probe); the store form needs a
+/// `slow/property.rs` change for that (M10-P2 LEVER-12 probe notes, open item 2). GC does not
+/// probe, so the miss counts hold under GC stress too.
+#[test]
+fn a_megamorphic_store_probes_once_on_a_fast_hit_and_three_times_on_a_miss() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &STORE_SITES);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in 0..3 {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        let d = dictionary_with_x(&mut t, op);
+        let kept_d = t.keep(d);
+        for i in 0..3 {
+            for _ in 0..2 {
+                assert_eq!(store_probes(&mut t, i, d, int(1)), 3, "site {i}, a miss");
+            }
+            let pad = format!("h{i}");
+            let o = object_with(t.rt(), op, &[(pad.as_str(), int(0)), ("x", int(8))]);
+            let ko = t.keep(o);
+            assert_eq!(store_probes(&mut t, i, o, int(2)), 3, "site {i}, the fill");
+            let n = store_probes(&mut t, i, o, int(3));
+            assert!(n == 1 || (stress && n == 3), "site {i}: {n} probes");
+            assert_eq!(own(t.rt(), o, "x"), Some(int(3)));
+            t.release(ko);
+        }
+        t.release(kept_d);
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
+
+/// Function `f0(a, b)`: `a.x = b` as a `Wide` SetNamedProperty: the name constant at index
+/// 300 (`name_wide`), or the slot at index `pad` >= 256 with a pool of one constant (a byte
+/// that a one-byte read of the name operand would take is no index in the pool). The unit
+/// and the prefix byte.
+fn wide_store_site(name_wide: bool, pad: u32) -> (ep9_bytecode::VerifiedUnit, u8) {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(ep9_bytecode::FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("f0");
+    s.b.lda_undefined().return_();
+    let mut b = ep9_bytecode::FunctionBuilder::new(meta("f0", 2, 0, 0, 0));
+    let (a, x) = (b.parameter(0), b.parameter(1));
+    for _ in 0..pad {
+        b.feedback_slot(ep9_bytecode::FeedbackSlotKind::StoreNamed);
+    }
+    let slot = b.feedback_slot(ep9_bytecode::FeedbackSlotKind::StoreNamed);
+    if name_wide {
+        for i in 0..300 {
+            b.number_constant(f64::from(i) + 0.5);
+        }
+    }
+    let k = b.string_constant("x");
+    assert_eq!(k.index() >= 256, name_wide);
+    b.ldar(x).set_named_property(a, k, slot);
+    b.return_();
+    let u = unit("", vec![s.finish(), b.finish().unwrap()]);
+    let code = &u.functions[1].bytecode;
+    let at = code
+        .iter()
+        .position(|&c| c == ep9_bytecode::Opcode::SetNamedProperty as u8)
+        .unwrap();
+    let prefix = code[at - 1];
+    (u, prefix)
+}
+
+/// A `Wide` and an `ExtraWide` SetNamedProperty at a megamorphic site (the name or only the
+/// slot widened): the fast body runs `ic::store` (the scale test of `ic::store_or_mega`), so
+/// the second store of a shape hits in the cold body and never in the fast body.
+#[test]
+fn a_prefixed_set_named_probes_in_its_cold_body_only() {
+    each(prefixed_store_at::<true, 0, { ep9_bytecode::Opcode::Wide as u8 }>);
+    each(prefixed_store_at::<false, 256, { ep9_bytecode::Opcode::Wide as u8 }>);
+    each(prefixed_store_at::<false, 65_536, { ep9_bytecode::Opcode::ExtraWide as u8 }>);
+}
+
+/// [`a_prefixed_set_named_probes_in_its_cold_body_only`] for [`wide_store_site`] with
+/// `NAME_WIDE` and `PAD`, which must give the prefix `PREFIX`, under the preset `c`.
+fn prefixed_store_at<const NAME_WIDE: bool, const PAD: u32, const PREFIX: u8>(
+    c: crate::IsolateConfig,
+) {
+    let stress = c.heap.gc_stress != 0;
+    let (u, got) = wide_store_site(NAME_WIDE, PAD);
+    assert_eq!(got, PREFIX);
+    let mut iso = isolate(c);
+    iso.with_cx_checkpoint(|cx| cx.run_script(u, "wide-store.js").map(|_| ()))
+        .unwrap();
+    let mut t = T { iso };
+    let op = object_prototype(t.rt());
+    let pads = ["a", "b", "c", "d", "e", "f"];
+    let mut kept = vec![];
+    let mut objs = vec![];
+    for (i, p) in pads.iter().enumerate() {
+        let o = object_with(t.rt(), op, &[(p, int(0)), ("x", int(10 + i as i32))]);
+        kept.push(t.keep(o));
+        objs.push(o);
+    }
+    for &o in objs.iter().take(5) {
+        t.ok(0, o, int(1));
+    }
+    assert_eq!(ic::state(t.vector(0), PAD), State::Megamorphic);
+    let o = objs[5];
+    t.ok(0, o, int(2));
+    let (h, f) = store_counts();
+    t.ok(0, o, int(3));
+    assert_eq!(own(t.rt(), o, "x"), Some(int(3)));
+    if !stress {
+        assert_eq!(store_counts(), (h + 1, f), "a cold-body hit");
+    }
+    assert_eq!(fast_store_hits(), f);
+    t.release_all(kept);
+}
