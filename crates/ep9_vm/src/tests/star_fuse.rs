@@ -834,3 +834,159 @@ fn below_the_native_limit_the_star_runs_in_its_own_handler() {
         }
     }
 }
+
+/// The 257 slot names of the [`prefixed_code`] context scope (slot 256 needs a Wide operand).
+fn wide_slot_names() -> &'static [&'static str] {
+    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        (0..257)
+            .map(|i| &*Box::leak(format!("v{i}").into_boxed_str()))
+            .collect()
+    })
+}
+
+/// The operand scales (Codex M10-P3 sl2-r1 F3). f1, called once:
+///
+/// ```text
+///     CreateFunctionContext (257 slots); PushContext save; slot 256 = 13   ; Wide store
+///     LdaCurrentContext; Star cur              ; narrow producer, narrow Star: fused
+///     LdaConstant k (k >= 256); Star r0         ; Wide producer, narrow Star: fused
+///     LdaConstant k (k >= 65536); Star r1       ; ExtraWide producer, narrow Star: fused
+///     LdaCurrentContextSlot 256; Star r2        ; Wide producer, narrow Star: fused
+///     LdaContextSlot cur, 256, 0; Star r3       ; Wide producer, narrow Star: fused
+///     LdaZero; Star hi (local index >= 128)     ; narrow producer, Wide Star: not fused
+///     PopContext save; Ldar hi; Return
+/// ```
+///
+/// A print of each register (but `cur`) comes right after its Star, so the instruction after
+/// the Star runs and shows the stored value. The padding constants are distinct (the builder dedups
+/// equal values), and `print` has a small constant index (it comes before the padding).
+fn prefixed_code() -> FunctionCode {
+    let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+    let (save, cur) = (f.b.new_register(), f.b.new_register());
+    let regs: Vec<_> = (0..4).map(|_| f.b.new_register()).collect();
+    let hi = f.b.new_register_list(200).get(199);
+    assert!(hi.local_index().unwrap() >= 128, "{hi:?}");
+    let ks = f.b.scope_constant(ScopeId(0));
+    f.b.string_constant("print");
+    f.b.create_function_context(ks, 257).push_context(save);
+    f.b.lda_smi(13).sta_current_context_slot(256);
+    f.b.lda_current_context().star(cur);
+    for i in 0..256 {
+        f.b.number_constant(f64::from(i) + 0.25);
+    }
+    let kw = f.b.number_constant(1000.5);
+    assert!((256..65536).contains(&kw.0), "{kw:?}");
+    f.b.lda_constant(kw).star(regs[0]);
+    print_reg(&mut f, regs[0]);
+    for i in 0..65536 {
+        f.b.number_constant(f64::from(i) + 100_000.25);
+    }
+    let kx = f.b.number_constant(2000.5);
+    assert!(kx.0 >= 65536, "{kx:?}");
+    f.b.lda_constant(kx).star(regs[1]);
+    print_reg(&mut f, regs[1]);
+    f.b.lda_current_context_slot(256).star(regs[2]);
+    print_reg(&mut f, regs[2]);
+    f.b.lda_context_slot(cur, 256, 0).star(regs[3]);
+    print_reg(&mut f, regs[3]);
+    f.b.lda_zero().star(hi);
+    print_reg(&mut f, hi);
+    f.b.pop_context(save);
+    f.b.ldar(hi).return_();
+    f.finish()
+}
+
+fn prefixed() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let kf = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(kf, s.closure, 0);
+    s.sta_global("f");
+    s.lda_global("f");
+    s.b.star(s.f)
+        .call_undefined_receiver0(s.f, s.call)
+        .return_();
+    let slots = wide_slot_names()
+        .iter()
+        .map(|&n| (n, VariableMode::Var))
+        .collect();
+    unit_with_scopes(
+        "",
+        vec![(ScopeKind::Function, None, slots)],
+        vec![s.finish(), prefixed_code()],
+    )
+}
+
+#[test]
+fn a_prefixed_producer_fuses_a_narrow_star_and_a_prefixed_star_does_not_fuse() {
+    use ep9_bytecode::{Instructions, OperandScale as Sc};
+    // The decoded scales of each producer of the pick and the Star after it.
+    let code = prefixed_code();
+    let insns: Vec<_> = Instructions::new(code.bytecode())
+        .map(|i| i.unwrap())
+        .map(|i| (i.offset, i.opcode, i.scale, i.size()))
+        .collect();
+    let picked = [
+        Opcode::LdaCurrentContext,
+        Opcode::LdaConstant,
+        Opcode::LdaCurrentContextSlot,
+        Opcode::LdaContextSlot,
+        Opcode::LdaZero,
+    ];
+    let pairs: Vec<_> = insns
+        .windows(2)
+        .filter(|w| picked.contains(&w[0].1) && w[1].1 == Opcode::Star)
+        .map(|w| (w[0], w[1]))
+        .collect();
+    let scales: Vec<_> = pairs.iter().map(|(p, s)| (p.1, p.2, s.2)).collect();
+    assert_eq!(
+        scales,
+        [
+            (Opcode::LdaCurrentContext, Sc::Single, Sc::Single),
+            (Opcode::LdaConstant, Sc::Wide, Sc::Single),
+            (Opcode::LdaConstant, Sc::ExtraWide, Sc::Single),
+            (Opcode::LdaCurrentContextSlot, Sc::Wide, Sc::Single),
+            (Opcode::LdaContextSlot, Sc::Wide, Sc::Single),
+            (Opcode::LdaZero, Sc::Single, Sc::Wide),
+        ]
+    );
+    // Each Star starts where its producer ends (the prefix is in the producer's size).
+    for (p, s) in &pairs {
+        assert_eq!(p.0 + p.3, s.0, "{p:?} {s:?}");
+    }
+    // The Stars that fuse (at the Star offset): every narrow Star of the list. The Wide Star
+    // runs through the Wide handler: in no list (its prefix offset and its Star byte).
+    let want: Vec<At> = pairs
+        .iter()
+        .filter(|(_, s)| s.2 == Sc::Single)
+        .map(|(_, s)| (1, s.0))
+        .collect();
+    let wide = (pairs.last().unwrap().1).0;
+    let wide_at = [(1, wide), (1, wide + 1)];
+
+    let mut first: Option<(String, Run)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let on = run_one(d, stress, true, prefixed);
+            let off = run_one(d, stress, false, prefixed);
+            let label = format!("{} stress={stress}", d.name());
+            check_plain(&label, d, &on, &off, true);
+            assert_eq!(sorted(&on.fused), want, "{label}");
+            for at in &wide_at {
+                for (v, which) in [(&on.fused, "fused"), (&on.plain, "on"), (&off.plain, "off")] {
+                    assert!(!v.contains(at), "{label}: the Wide Star {at:?} in {which}");
+                }
+            }
+            for (r, which) in [(on.run, "on"), (off.run, "off")] {
+                let label = format!("{label} lookahead={which}");
+                match &first {
+                    None => first = Some((label, r)),
+                    Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+                }
+            }
+        }
+    }
+    let r = first.unwrap().1;
+    assert_eq!(r.result, Ok("0".to_string()));
+    assert_eq!(r.output, ["1000.5", "2000.5", "13", "13", "0"]);
+}
