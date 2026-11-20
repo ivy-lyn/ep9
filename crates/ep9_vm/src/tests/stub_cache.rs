@@ -1931,3 +1931,98 @@ fn prefixed_store_at<const NAME_WIDE: bool, const PAD: u32, const PREFIX: u8>(
     assert_eq!(fast_store_hits(), f);
     t.release_all(kept);
 }
+
+/// The SLOTS cell of `o` (undefined if it has none) and its capacity (0 then).
+fn slots_of(o: u64) -> (u64, i32) {
+    match object::rd(object::cell(o), object::obj::SLOTS) {
+        UNDEFINED => (UNDEFINED, 0),
+        s => (s, object::rd_i32(object::cell(s), shape::slf::CAPACITY)),
+    }
+}
+
+/// A fast-body hit out of the object (the SLOTS branch of `ic::store_with`): a field store and
+/// an add with room, at each of the 0x24, 0x25 and strict 0x24 sites. The objects and their
+/// SLOTS cells are old (a major GC); the stored values are young strings. A minor GC then
+/// runs V1 (the remembered-set verifier, `verify_after_gc`) first, so a store with no write
+/// barrier fails there. The values are right after the minor GC and after a major GC.
+/// (M10-P2 LEVER-12, Codex lv12-r1 F2: the other fast-hit tests store in the object only.)
+#[test]
+fn a_fast_store_hit_out_of_the_object_keeps_a_young_value_over_a_minor_gc() {
+    each(|c| {
+        let stress = c.heap.gc_stress != 0;
+        let mut t = T::new(c, &STORE_SITES);
+        let op = object_prototype(t.rt());
+        let mut kept = Vec::new();
+        for i in 0..3 {
+            let objs = megamorphic_store(&mut t, i, op, "x");
+            kept.push(t.keep_all(&objs));
+        }
+        for i in 0..3 {
+            let s0 = string::new_string(t.rt(), &format!("old{i}"));
+            // A field store: own `x` out of the object (after `h<i>`, the first field there).
+            let h = key(t.rt(), &format!("h{i}"));
+            let f = |t: &T| {
+                let o = at_capacity(t.rt(), op);
+                props::own_define(t.rt(), o, h, int(0), attr::DEFAULT);
+                props::own_define(t.rt(), o, key(t.rt(), "x"), s0, attr::DEFAULT);
+                o
+            };
+            let (o, o2) = (f(&t), f(&t));
+            assert_ne!(slots_of(o2).0, UNDEFINED, "x is out of the object");
+            assert_eq!(id(o), id(o2));
+            // An add with room: the SLOTS cell holds `g<i>` and has room for `x`.
+            let g = key(t.rt(), &format!("g{i}"));
+            let a = |t: &T| {
+                let o = at_capacity(t.rt(), op);
+                props::own_define(t.rt(), o, g, int(0), attr::DEFAULT);
+                o
+            };
+            let (a1, a2) = (a(&t), a(&t));
+            assert!(slots_of(a2).1 > 1, "the SLOTS cell has room for x");
+            assert_eq!(id(a1), id(a2));
+            let ks = t.keep_all(&[s0, o, o2, a1, a2]);
+            // A major GC: the objects, their SLOTS cells and `s0` are old. It also empties the
+            // stub cache, so the next stores fill the entries again.
+            t.collect();
+            let sop = store_op_of(i);
+            t.ok(i, o, s0);
+            t.ok(i, a1, s0);
+            assert!(
+                stress || entry(&t, sop, o2, "x").is_some(),
+                "site {i}: the field entry"
+            );
+            assert!(
+                stress || entry(&t, sop, a2, "x").is_some(),
+                "site {i}: the add entry"
+            );
+            let y = string::new_string(t.rt(), &format!("young{i}"));
+            let z = string::new_string(t.rt(), &format!("added{i}"));
+            let (hs, n) = store_counts();
+            t.ok(i, o2, y);
+            if !stress {
+                assert_eq!(
+                    store_counts(),
+                    (hs + 1, n + 1),
+                    "site {i}: a fast-body field hit"
+                );
+            }
+            let (hs, n) = store_counts();
+            t.ok(i, a2, z);
+            if !stress {
+                assert_eq!(store_counts(), (hs + 1, n + 1), "site {i}: a fast-body add");
+            }
+            assert_eq!(id(a2), id(a1), "both took the add");
+            t.rt().heap.collect_minor();
+            let text = |t: &T, o: u64| own(t.rt(), o, "x").map(string::to_rust_string);
+            assert_eq!(text(&t, o2).as_deref(), Some(format!("young{i}").as_str()));
+            assert_eq!(text(&t, a2).as_deref(), Some(format!("added{i}").as_str()));
+            t.collect();
+            assert_eq!(text(&t, o2).as_deref(), Some(format!("young{i}").as_str()));
+            assert_eq!(text(&t, a2).as_deref(), Some(format!("added{i}").as_str()));
+            t.release_all(ks);
+        }
+        for k in kept {
+            t.release_all(k);
+        }
+    });
+}
