@@ -38,7 +38,7 @@ use crate::interp::dsl::{
     self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
-use crate::interp::{Done, Flow, St};
+use crate::interp::{Done, Flow, St, tails};
 use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
@@ -1128,7 +1128,7 @@ op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
-            Flow::Next
+            tails::star_next::<true>(st)
         }
         None => {
             ic::ic_count!(miss, Load, st.info(), s.0);
