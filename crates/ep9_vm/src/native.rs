@@ -578,8 +578,8 @@ fn call_at(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> Res<u64> {
         return Err(not_call(cx, off));
     };
     let reg = |i: usize| -> isize {
-        let o = insn.operand(i) as isize;
-        if o < 0 { o - HEADER as isize } else { o }
+        // ABI 7 (form N): the register operand is the slot offset from `fp`.
+        insn.operand(i) as isize
     };
     // SAFETY: register operands of verified code name slots of the live frame `fp`.
     let rd = |s: isize| unsafe { *fp.offset(s) };

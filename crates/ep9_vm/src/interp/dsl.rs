@@ -18,7 +18,7 @@
 
 use ep9_bytecode::{OperandKind, OperandScale};
 
-use crate::frame::HEADER;
+const _: () = assert!(crate::frame::HEADER as i32 == ep9_bytecode::Register::HEADER_SLOTS);
 
 // ---- operand scales ------------------------------------------------------------------------
 
@@ -84,16 +84,16 @@ unsafe fn read_signed<S: Scale>(p: *const u8) -> i32 {
 // ---- typed operand values ------------------------------------------------------------------
 
 /// A register as a slot offset from `fp` (H14 frame layout): local `r<v>` is `fp + v`, the
-/// receiver (`v = -1`) is `fp - 9`, parameter `a<k>` (`v = -2 - k`) is `fp - 10 - k`.
+/// receiver (operand `-9`) is `fp - 9`, parameter `a<k>` (operand `-10 - k`) is `fp - 10 - k`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct R(pub isize);
 
 impl R {
-    /// Maps an encoded register operand to its slot offset, without a branch.
+    /// Maps an encoded register operand to its slot offset: the operand is the offset (ABI 7).
     #[inline(always)]
     pub const fn from_operand(v: i32) -> R {
         let o = v as isize;
-        R(o + ((o >> (isize::BITS - 1)) & -(HEADER as isize)))
+        R(o)
     }
 
     /// The register `i` places after this one (register pairs and triples hold locals).
@@ -1388,21 +1388,41 @@ pub(crate) fn count_scaled(i: usize) {
     });
 }
 
-// ---- the x86-64 register operand decode ------------------------------------------------------
+// ---- the register operand decode (ABI 7, form N: the identity) ------------------------------
 
 impl R {
     /// [`R::from_operand`] for the register operand decoders of the handlers (`kind::Reg` and
-    /// the other register kinds). x86-64: the same map as a select, which LLVM keeps as `lea`,
-    /// `test`, `cmov` and puts the slot offset into the load or store address (3 instructions;
-    /// the shift form of `from_operand` gave 4-5 there: `xor`, `test`, `setns`, `shl`, `add`
-    /// or `mov`, `sar`, `and`, `add`). Other targets: `from_operand` (their code does not
-    /// change).
+    /// the other register kinds). ABI 7 (the REG-SLOT-ENCODE probe, form N): the operand is the
+    /// slot offset from `fp`, so every target uses it as it is, and the load or the store puts
+    /// it into its address (0 instructions before the access).
     ///
-    /// aarch64 (M7-P4 TSPASS2): the sign bit, through an empty `asm!` block, times `HEADER`,
-    /// subtracted (`R::from_operand_sign`): `lsr` and `sub` with a shifted register (2
-    /// instructions before the load). Without the block LLVM turned the shift form of
-    /// `from_operand` into `cmp`, `mov`, `csel`, `add` (4) in each register operand decode of
-    /// each handler. Other targets: `from_operand`.
+    /// ABI 6 had the signed register name in the operand, and each target mapped it to the
+    /// slot: x86-64 with a select (`lea`, `test`, `cmov`: 3 instructions; the shift form gave
+    /// 4-5 there), aarch64 with the sign bit, through an empty `asm!` block, times `HEADER`
+    /// (`lsr` and `sub` with a shifted register: 2 instructions; M7-P4 TSPASS2), the other
+    /// targets with the shift form. The cfg arms stay, so each target keeps its own form and a
+    /// later target form has its place.
+    ///
+    /// ```text
+    ///  operand v    ABI 6 (the name)       ABI 7 (the slot, form N)
+    ///  0 ..         fp + v (r<v>)          fp + v (r<v>)        the same bytes
+    ///  -1           fp - 9 (<this>)        a header slot: the verifier refuses it
+    ///  -2 - k       fp - 10 - k (a<k>)     a header slot (k <= 6), <this> (k = 7), a<k - 8>
+    ///  -9           a7                     fp - 9 (<this>)
+    ///  -10 - k      a<k + 8>               fp - 10 - k (a<k>)
+    /// ```
+    ///
+    /// The identity is safe only with the verifier: it refuses an operand in `-8 ..= -1` at
+    /// every scale, for `Reg`, `RegOut` and `RegInOut` (`ep9_bytecode` `verify.rs`,
+    /// `register_ok`), so no handler reads or writes a header word (the caller's `fp`, the
+    /// return `pc`) through a register operand. Lists, pairs and triples hold locals only.
+    /// `ep9_bytecode::Register::HEADER_SLOTS` is `HEADER` (the check at the top of this file).
+    ///
+    /// The slow paths (`interp::slow::call`, `interp::ops`) decode raw operand bytes through
+    /// [`R::from_operand`], and `call::decode_call` and `native::call_at` take the operand as
+    /// the offset too; `Insn::register` (`ep9_bytecode`) gives the name of a slot operand to
+    /// the name users (slack, REGOPT, the deopt names, the printer). So the VM has one decode
+    /// rule: the operand is the slot offset.
     #[inline(always)]
     pub fn of_operand(v: i32) -> R {
         #[cfg(target_arch = "x86_64")]
@@ -1420,16 +1440,16 @@ impl R {
     }
 
     /// [`R::of_operand`] for an output register (`kind::RegOut`: `Star`, the `Mov` target,
-    /// `PushContext`, `ToObject`). aarch64 (M7-P5 Q6 DISPATCH): a branch on the sign
-    /// (`R::from_operand_branch`): `tbnz`, and `sub` on the negative arm only. A local costs 1
-    /// instruction before the store, not 2; a parameter or the receiver costs 2, as before (LLVM
-    /// copies the rest of the handler into the negative arm). `Star`: 6 instructions on the
-    /// local path, not 7. Other targets: [`R::of_operand`].
+    /// `PushContext`, `ToObject`). ABI 7: the identity, as [`R::of_operand`].
     ///
-    /// Only the outputs take the branch: a handler writes a parameter rarely, so the branch is
-    /// well predicted. Inputs read parameters and the receiver often (`Ldar a0`, a load from
-    /// `this`), and the branch of every register kind made a64 richards about 7% slower in wall
-    /// time (2026-11-10, mac M5 Max, a report) although it ran 1.7% fewer instructions.
+    /// ABI 6, aarch64 (M7-P5 Q6 DISPATCH): a branch on the sign (`R::from_operand_branch`):
+    /// `tbnz`, and `sub` on the negative arm only. A local cost 1 instruction before the store,
+    /// not 2; a parameter or the receiver cost 2 (LLVM copied the rest of the handler into the
+    /// negative arm). Only the outputs took the branch: a handler writes a parameter rarely.
+    /// The branch on every register kind made a64 richards about 7% slower in wall time
+    /// (2026-11-10, mac M5 Max, a report) although it ran 1.7% fewer instructions. Form N has
+    /// no sign to test, so no target has a branch here, and a parameter store costs what a
+    /// local store costs.
     #[inline(always)]
     pub fn of_out_operand(v: i32) -> R {
         #[cfg(target_arch = "aarch64")]
@@ -1442,67 +1462,47 @@ impl R {
         }
     }
 
-    /// The aarch64 form of [`R::of_operand`]: `v - HEADER` for a negative `v`, else `v`, as
-    /// `v - sign(v) * HEADER`. It builds on every target for the test; only aarch64 has the
-    /// `asm!` block.
+    /// The aarch64 form of [`R::of_operand`]. ABI 7: the identity. It builds on every target
+    /// for the test.
+    ///
+    /// ABI 6 gave `v - HEADER` for a negative `v`, else `v`, as `v - sign(v) * HEADER`, with
+    /// the sign bit through an empty `asm!` block. Without the block LLVM turned the shift form
+    /// of `from_operand` into `cmp`, `mov`, `csel`, `add` (4 instructions) in each register
+    /// operand decode of each handler. The slot form needs none of the 4.
     #[cfg(any(target_arch = "aarch64", test))]
     #[inline(always)]
     fn from_operand_sign(v: i32) -> R {
-        let o = v as isize;
-        // 1 for a negative operand (the receiver or a parameter), else 0.
-        #[allow(unused_mut)]
-        let mut neg = (o as usize) >> (usize::BITS - 1);
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
-        // change. `neg` comes back as it went in.
-        unsafe {
-            core::arch::asm!(
-                "/* {n} */",
-                n = inout(reg) neg,
-                options(pure, nomem, nostack, preserves_flags)
-            );
-        }
-        R(o - (neg * HEADER) as isize)
+        // The operand is the slot offset (ABI 7).
+        R::from_operand(v)
     }
 
-    /// The aarch64 form of [`R::of_out_operand`]: `v - HEADER` for a negative `v`, else `v`,
-    /// with the subtraction on its own (cold) arm. It builds on every target for the test; only
-    /// aarch64 has the `asm!` block, which keeps the arm a branch (LLVM does not speculate an
-    /// `asm!` block into a select).
+    /// The aarch64 form of [`R::of_out_operand`]. ABI 7: the identity. It builds on every
+    /// target for the test.
+    ///
+    /// ABI 6 gave `v - HEADER` for a negative `v`, else `v`, with the subtraction on its own
+    /// (cold) arm; an empty `asm!` block kept the arm a branch (LLVM does not speculate an
+    /// `asm!` block into a select). The slot form has no negative arm: a parameter and the
+    /// receiver are stores at a negative offset from `fp`, as a local is at a positive one.
     #[cfg(any(target_arch = "aarch64", test))]
     #[inline(always)]
     fn from_operand_branch(v: i32) -> R {
-        let o = v as isize;
-        if o < 0 {
-            core::hint::cold_path();
-            #[allow(unused_mut)]
-            let mut n = o;
-            #[cfg(target_arch = "aarch64")]
-            // SAFETY: an empty block (a comment): no instruction, no memory access, no flag
-            // change. `n` comes back as it went in.
-            unsafe {
-                core::arch::asm!(
-                    "/* {n} */",
-                    n = inout(reg) n,
-                    options(pure, nomem, nostack, preserves_flags)
-                );
-            }
-            R(n - HEADER as isize)
-        } else {
-            R(o)
-        }
+        // The operand is the slot offset (ABI 7).
+        R::from_operand(v)
     }
 
-    /// The x86-64 form of [`R::of_operand`]. It builds on every target for the test.
+    /// The x86-64 form of [`R::of_operand`]. ABI 7: the identity. It builds on every target
+    /// for the test.
+    ///
+    /// ABI 6 gave `v - HEADER` for a negative `v`, else `v`, as
+    /// `core::hint::select_unpredictable`, which LLVM kept as `lea`, `test`, `cmov` and put the
+    /// slot offset into the load or store address (3 instructions in each register operand
+    /// decode of each handler). The slot form needs none of the 3. The rule 81 lines of the
+    /// probe commit give the x86-64 instruction counts of the named handlers, before and after.
     #[cfg(any(target_arch = "x86_64", test))]
     #[inline(always)]
     fn from_operand_select(v: i32) -> R {
-        let o = v as isize;
-        R(core::hint::select_unpredictable(
-            o < 0,
-            o - HEADER as isize,
-            o,
-        ))
+        // The operand is the slot offset (ABI 7).
+        R::from_operand(v)
     }
 }
 

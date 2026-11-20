@@ -475,3 +475,129 @@ mod tests {
         assert_eq!(RegisterList::EMPTY.first(), Register::local(0));
     }
 }
+
+// ---- the slot form of a register operand (REG-SLOT-ENCODE probe, form N; ABI 7) -----------
+
+/// The instruction stream holds a register operand in its slot form: the slot offset from the
+/// VM frame pointer `fp` (H14 frame layout). The [`Register`] value (the name) stays the form of
+/// every other place: the handler table, the deopt records, REGOPT, slack and the spikes.
+///
+/// ```text
+///  name      Register value    slot operand (the bytes)
+///  r<v>      v                 v                 (the same bytes)
+///  <this>    -1                -9
+///  a<k>      -2 - k            -10 - k           (a119 .. a126: Wide, H02 F4)
+///  (header)  -                 -1 .. -8          refused by the verifier
+/// ```
+impl Register {
+    /// The frame header slots between the receiver and `r0` (`fp - 1` .. `fp - 8`, H14). The VM
+    /// checks that its `frame::HEADER` has this value.
+    pub const HEADER_SLOTS: i32 = 8;
+
+    /// The slot operand of this register: its slot offset from `fp`. Panics if the offset is
+    /// below `i32::MIN` (a parameter index above `i32::MAX - 9`).
+    pub const fn to_slot_operand(self) -> i32 {
+        if self.0 >= 0 {
+            return self.0;
+        }
+        match self.0.checked_sub(Self::HEADER_SLOTS) {
+            Some(v) => v,
+            None => panic!("parameter index out of range for the slot form"),
+        }
+    }
+
+    /// The register of the slot operand `v` (the inverse of [`Register::to_slot_operand`]).
+    /// `None` for a header slot (`-8 ..= -1`): no register lives there.
+    pub const fn from_slot_operand(v: i32) -> Option<Register> {
+        if v >= 0 {
+            Some(Register(v))
+        } else if Self::is_header_slot_operand(v) {
+            None
+        } else {
+            Some(Register(v + Self::HEADER_SLOTS))
+        }
+    }
+
+    /// True for a slot operand in the frame header (`-8 ..= -1`: the caller's `fp`, the return
+    /// `pc` and the other header words, H14). The verifier refuses such an operand.
+    pub const fn is_header_slot_operand(v: i32) -> bool {
+        v < 0 && v >= -Self::HEADER_SLOTS
+    }
+
+    /// The printed form of the slot operand `v`: the register name, or `<fp-N>` for a header
+    /// slot (only unverified code has one).
+    pub fn slot_operand_text(v: i32) -> impl core::fmt::Display {
+        struct Text(i32);
+        impl core::fmt::Display for Text {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match Register::from_slot_operand(self.0) {
+                    Some(r) => core::fmt::Display::fmt(&r, f),
+                    None => write!(f, "<fp{}>", self.0),
+                }
+            }
+        }
+        Text(v)
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn slot_operands() {
+        assert_eq!(Register::local(0).to_slot_operand(), 0);
+        assert_eq!(Register::local(7).to_slot_operand(), 7);
+        assert_eq!(Register::RECEIVER.to_slot_operand(), -9);
+        assert_eq!(Register::parameter(0).to_slot_operand(), -10);
+        assert_eq!(Register::parameter(3).to_slot_operand(), -13);
+        assert_eq!(Register::from_slot_operand(-9), Some(Register::RECEIVER));
+        assert_eq!(
+            Register::from_slot_operand(-10),
+            Some(Register::parameter(0))
+        );
+        assert_eq!(Register::from_slot_operand(5), Some(Register::local(5)));
+        // The header slots: no register.
+        for v in -8..=-1 {
+            assert!(Register::is_header_slot_operand(v), "{v}");
+            assert_eq!(Register::from_slot_operand(v), None, "{v}");
+            assert_eq!(
+                Register::slot_operand_text(v).to_string(),
+                format!("<fp{v}>")
+            );
+        }
+        for v in [i32::MIN, -10, -9, 0, 1, i32::MAX] {
+            assert!(!Register::is_header_slot_operand(v), "{v}");
+        }
+        assert_eq!(Register::slot_operand_text(-9).to_string(), "<this>");
+        assert_eq!(Register::slot_operand_text(-11).to_string(), "a1");
+        assert_eq!(Register::slot_operand_text(3).to_string(), "r3");
+        // H02 F4: the builder takes the scale from the slot operand, so a118 is the last
+        // parameter at the 1-byte scale and a119 .. a126 move to Wide.
+        let scale = |k: u32| OperandScale::for_signed(Register::parameter(k).to_slot_operand());
+        assert_eq!(scale(118), OperandScale::Single);
+        assert_eq!(scale(119), OperandScale::Wide);
+        assert_eq!(scale(126), OperandScale::Wide);
+        // The last parameter index the slot form holds.
+        let last = (i32::MAX - 9) as u32;
+        assert_eq!(Register::parameter(last).to_slot_operand(), i32::MIN);
+    }
+
+    /// The slot form and the name form are inverse maps of each other for every name.
+    #[test]
+    fn slot_operands_round_trip() {
+        let ends = [i32::MIN + 8, i32::MIN + 9, i32::MAX - 1, i32::MAX];
+        for v in (-70_000..=70_000).chain(ends) {
+            let r = Register::from_operand(v);
+            let s = r.to_slot_operand();
+            assert!(!Register::is_header_slot_operand(s), "{v}");
+            assert_eq!(Register::from_slot_operand(s), Some(r), "{v}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range for the slot form")]
+    fn a_parameter_past_the_slot_range_panics() {
+        let _ = Register::parameter((i32::MAX - 8) as u32).to_slot_operand();
+    }
+}

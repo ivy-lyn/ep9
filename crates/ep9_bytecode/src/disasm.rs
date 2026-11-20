@@ -255,7 +255,7 @@ pub fn instruction_text(unit: &CompiledUnit, func: &Function, insn: &Instruction
     let mut notes: Vec<String> = Vec::new();
     for (k, op) in info.operands.iter().enumerate() {
         let v = insn.operand(k);
-        let reg = |v: i64| Register::from_operand(v as i32).to_string();
+        let reg = |v: i64| Register::slot_operand_text(v as i32).to_string();
         let range = |first: i64, n: i64| match n {
             0 => "()".to_string(),
             1 => reg(first),

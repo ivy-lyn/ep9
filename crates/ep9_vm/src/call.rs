@@ -861,8 +861,8 @@ pub(crate) fn decode_call(fp: *mut u64, pc: *const u8) -> CallSite {
     let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
     let insn = ep9_bytecode::decode_at(code, off).expect("verified bytecode decodes");
     let reg = |i: usize| -> isize {
-        let o = insn.operand(i) as isize;
-        if o < 0 { o - HEADER as isize } else { o }
+        // ABI 7 (form N): the register operand is the slot offset from `fp`.
+        insn.operand(i) as isize
     };
     // SAFETY: register operands of verified code name slots of the live frame `fp`.
     let rd = |s: isize| unsafe { *fp.offset(s) };

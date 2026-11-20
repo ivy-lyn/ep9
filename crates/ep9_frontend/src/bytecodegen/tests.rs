@@ -700,7 +700,7 @@ pub(crate) fn binding_accesses(f: &ep9_bytecode::Function, named: u32) -> Vec<St
     use ep9_bytecode::{OperandKind as K, Register};
     let binding =
         |r: Register| r.parameter_index().is_some() || r.local_index().is_some_and(|i| i < named);
-    let reg = |v: i64| Register::from_operand(v as i32);
+    let reg = |v: i64| Register::from_slot_operand(v as i32).expect("not a header slot");
     let mut out = Vec::new();
     for insn in ep9_bytecode::Instructions::new(&f.bytecode) {
         let insn = insn.expect("verified code decodes");

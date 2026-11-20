@@ -152,13 +152,13 @@ impl<'a> Instruction<'a> {
         self.operand(i) as i32
     }
 
-    /// Operand `i` as a register. Panics if it is not a register kind.
+    /// Operand `i` as a register name. Panics if it is not a register kind or a header slot.
     pub fn register(&self, i: usize) -> Register {
         assert!(
             self.operand_kind(i).is_register(),
             "operand {i} is not a register"
         );
-        Register::from_operand(self.operand(i) as i32)
+        Register::from_slot_operand(self.operand(i) as i32).expect("not a header slot")
     }
 
     /// The jump target of a jump instruction (`None` for other opcodes). A target outside

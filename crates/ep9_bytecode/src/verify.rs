@@ -7,7 +7,7 @@
 //! |---|---|
 //! | Decoding | Every instruction decodes, inside its function; no undefined, `Illegal` or reserved opcode; a generator opcode only in a function with the `GENERATOR` or `ASYNC` flag (ABI 3) |
 //! | Prefixes | A prefix precedes an opcode with a scalable operand; never two; never a larger scale than the operands need |
-//! | Registers | Local `r<i>`: `i < register_count`. Parameter `a<k>`: `k < parameter_count`. Lists, pairs (read or written) and triples: locals only, inside the frame; an empty list is `r0, 0` |
+//! | Registers | Local `r<i>`: `i < register_count`. Parameter `a<k>`: `k < parameter_count`. A header slot operand (-1..-8, ABI 7) is refused at every scale. Lists, pairs (read or written) and triples: locals only, inside the frame; an empty list is `r0, 0` |
 //! | Constants | Index in range; the kind matches the operand (`Const(..)` parameter) |
 //! | Feedback | Slot index in range; the slot kind matches the operand (`Slot(..)` parameter) |
 //! | Flags | `Flag8`/`Flag16` use only defined bits; `TypeOfLiteral` and `Runtime` ids are defined; `CallRuntime` and `CallRuntimeForPair` pass the arity; a function that returns a pair only through `CallRuntimeForPair`, every other one only through `CallRuntime` |
@@ -346,11 +346,11 @@ impl Ctx<'_> {
         })
     }
 
-    fn register_ok(&self, r: Register) -> bool {
-        match (r.local_index(), r.parameter_index()) {
-            (Some(i), _) => i < self.func.register_count,
-            (_, Some(k)) => k < self.func.parameter_count,
-            _ => true, // receiver
+    fn register_ok(&self, v: i32) -> bool {
+        match Register::from_slot_operand(v).map(|r| (r.local_index(), r.parameter_index())) {
+            Some((Some(i), _)) => i < self.func.register_count,
+            Some((_, Some(k))) => k < self.func.parameter_count,
+            r => r.is_some(), // the receiver; `None`: a header slot (-1..-8), refused
         }
     }
 
@@ -466,7 +466,7 @@ fn verify_function(
             let v = insn.operand(k);
             let ok = match op.kind {
                 OperandKind::Reg | OperandKind::RegOut | OperandKind::RegInOut => {
-                    cx.register_ok(Register::from_operand(v as i32))
+                    cx.register_ok(v as i32)
                 }
                 OperandKind::RegList | OperandKind::RegOutList => {
                     let n = insn.operand(k + 1) as u64;

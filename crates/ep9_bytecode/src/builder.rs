@@ -170,7 +170,7 @@ macro_rules! into_value {
 }
 
 into_value! {
-    Register => |r| i64::from(r.to_operand());
+    Register => |r| i64::from(r.to_slot_operand());
     u32 => |v| i64::from(v);
     i32 => |v| i64::from(v);
     u8 => |v| i64::from(v);
