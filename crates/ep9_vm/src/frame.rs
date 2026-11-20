@@ -144,7 +144,7 @@ impl VmStack {
     /// Allocates `slots` words of zeroed memory (the OS commits pages on first touch).
     pub fn new(slots: usize) -> VmStack {
         assert!(slots >= 64, "VM stack too small");
-        let layout = std::alloc::Layout::array::<u64>(slots).expect("VM stack size");
+        let layout = std::alloc::Layout::array::<u64>(slots + Self::GUARD).expect("VM stack size");
         // SAFETY: the layout has a non-zero size (slots >= 64).
         let base = unsafe { std::alloc::alloc_zeroed(layout) }.cast::<u64>();
         if base.is_null() {
@@ -152,7 +152,7 @@ impl VmStack {
         }
         VmStack {
             base,
-            slots,
+            slots: slots + Self::GUARD,
             fp: Cell::new(ptr::null_mut()),
             scratch_top: Cell::new(ptr::null_mut()),
         }
@@ -164,7 +164,7 @@ impl VmStack {
 
     /// One past the last slot.
     pub fn end(&self) -> *mut u64 {
-        self.base.wrapping_add(self.slots)
+        self.base.wrapping_add(self.slots - Self::GUARD)
     }
 
     pub fn fp(&self) -> *mut u64 {

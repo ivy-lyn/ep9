@@ -1076,7 +1076,7 @@ pub(crate) unsafe fn write_call_header(
         *fp.offset(slot::NEW_TARGET) = UNDEFINED;
         *fp.offset(slot::CONTEXT) = context();
         *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
-        fill_undefined(fp, fp.wrapping_add(fi.register_count as usize));
+        fill_registers(fp, fi.register_count);
     }
 }
 
@@ -2227,4 +2227,70 @@ pub(crate) fn call_host_from_bytecode(
         fi.name
     );
     r
+}
+
+// ---- the x86-64 register fill of a T0 call frame (M10-P3 LEVER-13, CALL-FILL) ----------------
+//
+// On x86-64 (not `spike-native`: the `call_fast` form of `interp/ops.rs`), a call frame of at
+// most `FILL_BLOCK` registers gets `FILL_BLOCK` undefined stores from `fp` in one step, with
+// no loop (variant B). The stores past the frame top lie above the new top frame:
+//
+// ```text
+// fp            fp + register_count = top           fp + FILL_BLOCK
+// |  r0 .. r(m-1): undefined  |  undefined: no frame owns it, the GC does not scan it  |
+//                             ^ top <= limit <= VmStack::end(); [end, end + GUARD) is allocated
+// ```
+//
+// Bytecode runs with no scratch top (frame.rs; the module doc above), so no Value lies above the
+// top frame there, and the GC scans `[base, top)` only. The next frame push writes these slots
+// again. A frame that ends at the stack limit has the `VmStack::GUARD` slots past the end for
+// the stores. The other targets and a bigger frame take `fill_undefined`, as before.
+
+/// The register count up to which the x86-64 call fast path writes the registers of a new
+/// frame in one step of this many stores (see above).
+const FILL_BLOCK: usize = 8;
+
+impl crate::frame::VmStack {
+    /// Slots past [`VmStack::end`](crate::frame::VmStack::end) that the stack allocates and no
+    /// frame owns: room for the stores of [`fill_registers`] past the top of a frame that ends
+    /// at the stack end. 0 where [`fill_registers`] takes the loop.
+    pub(crate) const GUARD: usize =
+        if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
+            FILL_BLOCK
+        } else {
+            0
+        };
+}
+
+/// Writes undefined to the `count` registers of the frame at `fp` ([`write_call_header`]). On
+/// x86-64 (not `spike-native`), for `count <= FILL_BLOCK`: `FILL_BLOCK` scalar stores from `fp`
+/// with no loop; the slots `[fp + count, fp + FILL_BLOCK)` above the frame top get undefined
+/// too. Else [`fill_undefined`]. The stores are volatile, as in [`fill_undefined`], so LLVM
+/// does not join them into vector stores.
+///
+/// # Safety
+/// `[fp, fp + count)` is the register file of a call frame that ends at most at the stack limit
+/// (`call_frame_fp`), above every live frame and scratch Value, and the stack limit is at most
+/// `VmStack::end()`.
+#[inline(always)]
+unsafe fn fill_registers(fp: *mut u64, count: u32) {
+    #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+    if count as usize <= FILL_BLOCK {
+        // SAFETY: `fp + count <= limit <= end` (caller contract), so `[fp, fp + FILL_BLOCK)`
+        // lies below `end + GUARD`, in the stack allocation. The slots past `fp + count` are
+        // above the new top frame, where no live Value is (bytecode runs with no scratch top).
+        unsafe {
+            fp.write_volatile(UNDEFINED);
+            fp.wrapping_add(1).write_volatile(UNDEFINED);
+            fp.wrapping_add(2).write_volatile(UNDEFINED);
+            fp.wrapping_add(3).write_volatile(UNDEFINED);
+            fp.wrapping_add(4).write_volatile(UNDEFINED);
+            fp.wrapping_add(5).write_volatile(UNDEFINED);
+            fp.wrapping_add(6).write_volatile(UNDEFINED);
+            fp.wrapping_add(7).write_volatile(UNDEFINED);
+        }
+        return;
+    }
+    // SAFETY: `[fp, fp + count)` is writable (caller contract).
+    unsafe { fill_undefined(fp, fp.wrapping_add(count as usize)) }
 }
