@@ -38,7 +38,7 @@ use crate::interp::dsl::{
     self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
-use crate::interp::{Done, Flow, St};
+use crate::interp::{Done, Flow, St, tails};
 use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
@@ -962,7 +962,7 @@ op!(LdaConstant(st, k: K) {
         return Flow::Cold;
     }
     st.acc = v;
-    Flow::Next
+    tails::star_next::<false>(st)
 } cold {
     // The Oddball hole (a BigInt constant is a BIGINT cell since spec-temporal B2).
     st.acc = HOLE;
