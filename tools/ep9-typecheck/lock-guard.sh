@@ -11,8 +11,9 @@
 #   - ep9-typecheck or ep9_hints: a path package (no source) that the tsrs lock does not have,
 #     each exactly once.
 # Anything else FAILs and names the package: an extra one, or a tsrs package with another
-# version, source or checksum. Either lock absent: PASS with a note (the root PR jobs do not
-# sync tsrs). Exit 1 on FAIL, 2 on bad arguments.
+# version, source or checksum. A line that is not in the form that cargo writes FAILs too.
+# Either lock absent: PASS with a note (the root PR jobs do not sync tsrs). Exit 1 on FAIL, 2 on
+# bad arguments.
 set -euo pipefail
 export LC_ALL=C
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,6 +32,21 @@ if [ -n "$missing" ]; then
   echo "PASS: (27) the ep9-typecheck lock guard did not run: $missing absent (scripts/sync-tsrs.sh makes both)"
   exit 0
 fi
+
+# form <lock>: "N|text" for the first line that is not in the form that cargo writes, else nothing.
+# The parser below reads only that form, so any other line (a header with a comment, a key with
+# no spaces, another table) FAILs: no valid TOML entry can stay out of the comparison.
+form() {
+  awk '{ sub(/\r$/, "") }
+    !/^(\[\[package\]\]|name = "[^"]+"|version = ("[^"]+"|[0-9]+)|source = "[^"]+"|checksum = "[0-9a-f]+"|dependencies = \[\]?| "[^"]+",|\]|# .*)?$/ {
+      print NR "|" $0; exit
+    }' "$1"
+}
+for l in "$tl" "$el"; do
+  b="$(form "$l")"
+  [ -z "$b" ] || bad "line ${b%%|*} of $l is not in the Cargo lock form: ${b#*|}"
+done
+[ "$fail" = 0 ] || exit 1
 
 # pkgs <lock>: one line per [[package]] entry, "name|version|source|checksum", sorted; a path
 # package has an empty source and checksum.
