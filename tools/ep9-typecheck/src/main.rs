@@ -7,7 +7,8 @@
 //!
 //! Exit status: 0 done (a file with type errors is data, not a failure); 1 tsrs made no program,
 //! a file could not be read, written or verified, or `--out` names an input of the project (the
-//! config or a source file; the file does not change); 2 bad arguments.
+//! config, a config that it extends, or a source file; the file does not change); 2 bad
+//! arguments.
 //!
 //! The output goes to a temporary file next to `--out` first, then a rename replaces `--out`,
 //! so a failed write never leaves a part of a file.

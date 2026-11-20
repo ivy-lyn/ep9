@@ -34,8 +34,9 @@ pub struct Checked {
     pub ts_flags: TsFlags,
     /// Error lines for the log: `TS<code> <path>: <message>`; `(program)` when no file is named.
     pub errors: Vec<String>,
-    /// The absolute paths of the files that the check read: the config file and each source
-    /// file of the table. `--out` must not name one of them.
+    /// The absolute paths of the files that the check read: the config file, each config that it
+    /// extends (all steps of an `extends` chain) and each source file of the table. `--out` must
+    /// not name one of them.
     pub inputs: Vec<String>,
 }
 
@@ -95,6 +96,9 @@ pub fn check(project: &str) -> Result<Checked, String> {
         return Err(format!("cannot read {project}: {}", text.join("; ")));
     };
     let config_dir = tspath::get_directory_path(&config_path);
+    // Every step of an `extends` chain: tsrs adds the extended files of each extended config.
+    let mut inputs = vec![config_path.clone()];
+    inputs.extend(config.extended_source_files());
 
     // 2 host, 3 program
     let compiler_host =
@@ -113,7 +117,6 @@ pub fn check(project: &str) -> Result<Checked, String> {
     // The file table: every source file but the bundled default lib files. The hash is of the
     // text that tsrs parsed (the decoded text), read before the check.
     let mut files = Vec::new();
-    let mut inputs = vec![config_path.clone()];
     let mut index: HashMap<String, usize> = HashMap::new();
     for &sf in program.source_files() {
         if program.is_source_file_default_library(sf.path()) {

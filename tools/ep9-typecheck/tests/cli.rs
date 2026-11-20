@@ -282,6 +282,52 @@ fn out_never_replaces_an_input() {
     assert_eq!(std::fs::read(&config).unwrap(), config_bytes);
     // No temporary file is left.
     assert_eq!(names(&p.join("src")), src_names);
+    // A config that "extends" names: one step (tsconfig.json -> base.json), and a chain of 2
+    // steps (tsconfig.json -> cfg/mid.json -> base.json). Each one is an input.
+    let one = dir.join("one");
+    copy_dir(&fixture(), &one);
+    std::fs::write(one.join("base.json"), &config_bytes).unwrap();
+    std::fs::write(one.join("tsconfig.json"), r#"{"extends":"./base.json"}"#).unwrap();
+    let chain = dir.join("chain");
+    copy_dir(&fixture(), &chain);
+    std::fs::write(chain.join("base.json"), &config_bytes).unwrap();
+    std::fs::create_dir_all(chain.join("cfg")).unwrap();
+    std::fs::write(chain.join("cfg/mid.json"), r#"{"extends":"../base.json"}"#).unwrap();
+    std::fs::write(
+        chain.join("tsconfig.json"),
+        r#"{"extends":"./cfg/mid.json"}"#,
+    )
+    .unwrap();
+    let mid_bytes = std::fs::read(chain.join("cfg/mid.json")).unwrap();
+    refused(
+        &dir,
+        one.to_str().unwrap(),
+        one.join("base.json").to_str().unwrap(),
+    );
+    refused(&one, "tsconfig.json", "base.json");
+    let cp = chain.to_str().unwrap();
+    refused(&dir, cp, chain.join("base.json").to_str().unwrap());
+    refused(&dir, cp, chain.join("cfg/mid.json").to_str().unwrap());
+    refused(&chain, "tsconfig.json", "cfg/../base.json");
+    assert_eq!(std::fs::read(one.join("base.json")).unwrap(), config_bytes);
+    assert_eq!(
+        std::fs::read(chain.join("base.json")).unwrap(),
+        config_bytes
+    );
+    assert_eq!(
+        std::fs::read(chain.join("cfg/mid.json")).unwrap(),
+        mid_bytes
+    );
+    // The chain is read: the fixture's flags (hints checks them) and file table.
+    let h = hints(&check(&dir, &chain, &dir.join("chain.ep9h")));
+    assert_eq!(
+        table(&h),
+        [
+            ("src/bad.ts", true),
+            ("src/bom.ts", false),
+            ("src/ok.ts", false)
+        ]
+    );
     // An output that is not an input is replaced, and no temporary file is left.
     let out = dir.join("out.ep9h");
     std::fs::write(&out, b"old").unwrap();
