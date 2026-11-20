@@ -1255,9 +1255,9 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 154
-    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096) took 20 min. Rule 25: max 102.6 min (run
-    # 44221214860; 99 in 44204833743, 98 in 44098903097), so 154 (was 147; M6-ORCH-136, -905, -919, -965).
+    timeout-minutes: 195
+    # Plan v11 section 2.9. Rule 25: 97.1 min in the m10-p2 tag CI (run 44682633859; 81.0 in m10-p1, 51.9
+    # in m10-p0; the old max 102.6 in 44221214860), so 195 (2x, rule 25; was 154; M10-P3-WPRE-5).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
@@ -1425,9 +1425,9 @@ jobs:
           LEG: ${{ matrix.name }}
           BRANCH_SIM: ${{ matrix.branch_sim }}
           WORKLOADS: ${{ steps.mode.outputs.workloads }}
-          # Rule 81: a _cold handler is judged by its X86IR rows, so the 2 store cold bodies are
-          # always in the function table (TS-STORE), not only when they are in the top cut.
-          FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold
+          # Rule 81: a _cold handler is judged by its X86IR rows, so the 2 store cold bodies (TS-STORE) are always in the function table, not only in the top cut.
+          # The call handlers (CALLPROP-PROBE kill line item 4) and Star (the STAR-LA2 pre-read) are always in it too (substrings, bench-set.mjs:41-42; a report, no gate).
+          FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold,CallProperty,CallAnyReceiver,Star
         run: |
           sim=()
           if [ "$BRANCH_SIM" = true ]; then sim=(--branch-sim); fi
@@ -1491,12 +1491,12 @@ jobs:
           || (inputs.exit_inputs == 'pathb' && '[{"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-l1","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}, {"name":"pathb-l2","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}]')
           || '[{"name":"off","os":"ubuntu-24.04","kind":"off","plat":"off"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: 1.5x the longest measured leg: 138.8 min (memjs-linux-x64, dry dispatch
-    # 43873371893 on fa2b687f), so 210 (was 300 before the first dispatch; M9-P2-WPRE-7). The
-    # other legs of that dispatch: memjs-windows-x64 125.7 min, memjs-linux-arm64 116.0 min,
-    # pathb-w1..w4 77.7-78.2 min. Read the value again when a leg gets longer (a new workload or
-    # engine) and set 1.5x the longest measured leg.
-    timeout-minutes: 210
+    # Rule 25: 2x the longest measured leg: 159.3 min (memjs-windows-x64, dispatch 44678207050 on
+    # 2856a698), so 319 (was 210, which was 1.5x of 138.8 min in 43873371893; M10-P3-WPRE-5). The
+    # other legs of 44678207050: memjs-linux-arm64 114.4 min, pathb-w3 105.0 min, pathb-w1..w4
+    # 81.8-105.0 min, pathb-l1..l2 48.9-60.2 min. Read the value again when a leg gets longer (a
+    # new workload or engine) and set 2x the longest measured leg (rule 25, plan v15 :108).
+    timeout-minutes: 319
     steps:
       - name: exit-inputs mode
         env:

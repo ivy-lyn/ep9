@@ -236,11 +236,11 @@ test("ci.yml: bench_workloads is a dispatch input, in the concurrency group, and
   // The input reaches the job through env only: no ${{ }} inside a run script of bench-set.
   for (const name of ["bench mode", "bench workloads", "count"]) assert.doesNotMatch(stepScript(name), /\$\{\{/, name);
   assert.match(CI, /\n {10}WORKLOADS: \$\{\{ inputs\.bench_workloads \}\}\n/);
-  // The count step passes the list and the 2 store cold bodies (rule 81 rows).
+  // The count step passes the list and the FUNCTIONS list (the 2 store cold bodies, rule 81 rows; the call and Star rows).
   const count = stepScript("count");
   assert.match(count, /"\$\{wl\[@\]\}"/);
   assert.match(count, /--functions "\$FUNCTIONS"/);
-  assert.match(CI, /\n {10}FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold\n/);
+  assert.match(CI, /\n {10}FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold,CallProperty,CallAnyReceiver,Star\n/);
 });
 
 test("ci.yml bench mode step: bench_workloads is checked before any build (exit 2), then passed on", (t) => {
