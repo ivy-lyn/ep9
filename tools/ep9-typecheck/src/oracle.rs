@@ -34,6 +34,9 @@ pub struct Checked {
     pub ts_flags: TsFlags,
     /// Error lines for the log: `TS<code> <path>: <message>`; `(program)` when no file is named.
     pub errors: Vec<String>,
+    /// The absolute paths of the files that the check read: the config file and each source
+    /// file of the table. `--out` must not name one of them.
+    pub inputs: Vec<String>,
 }
 
 struct Host {
@@ -110,12 +113,14 @@ pub fn check(project: &str) -> Result<Checked, String> {
     // The file table: every source file but the bundled default lib files. The hash is of the
     // text that tsrs parsed (the decoded text), read before the check.
     let mut files = Vec::new();
+    let mut inputs = vec![config_path.clone()];
     let mut index: HashMap<String, usize> = HashMap::new();
     for &sf in program.source_files() {
         if program.is_source_file_default_library(sf.path()) {
             continue;
         }
         index.insert(sf.file_name().to_owned(), files.len());
+        inputs.push(sf.file_name().to_owned());
         files.push(FileFacts {
             path: relative(&config_dir, sf.file_name()),
             text_hash: text_hash(sf.text()),
@@ -168,5 +173,6 @@ pub fn check(project: &str) -> Result<Checked, String> {
         files,
         ts_flags,
         errors,
+        inputs,
     })
 }

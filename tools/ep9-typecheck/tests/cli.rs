@@ -235,3 +235,59 @@ fn bad_arguments_and_a_missing_config() {
     let o = run(&dir, &["--verify", "no-such-file.ep9h"]);
     assert_eq!(o.status.code(), Some(1));
 }
+
+#[test]
+fn out_never_replaces_an_input() {
+    let dir = scratch("out-input");
+    let p = fixture_copy(&dir);
+    let ok = p.join("src/ok.ts");
+    let config = p.join("tsconfig.json");
+    let ok_bytes = std::fs::read(&ok).unwrap();
+    let config_bytes = std::fs::read(&config).unwrap();
+    let names = |d: &Path| {
+        let mut v: Vec<_> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        v.sort();
+        v
+    };
+    let src_names = names(&p.join("src"));
+    let refused = |cwd: &Path, project: &str, out: &str| {
+        let o = run(cwd, &[project, "--out", out]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "--out {out}: {err}");
+        assert!(
+            err.contains("is an input of the project"),
+            "--out {out}: {err}"
+        );
+    };
+    let pp = p.to_str().unwrap();
+    // A source file, the config, a source file by another path form, a relative path.
+    refused(&dir, pp, ok.to_str().unwrap());
+    refused(&dir, pp, config.to_str().unwrap());
+    refused(&dir, pp, p.join("src/../src/ok.ts").to_str().unwrap());
+    refused(&p, "tsconfig.json", "src/ok.ts");
+    #[cfg(unix)]
+    {
+        // A link to a source file.
+        let link = dir.join("link.ts");
+        std::os::unix::fs::symlink(&ok, &link).unwrap();
+        refused(&dir, pp, link.to_str().unwrap());
+        let hard = dir.join("hard.ts");
+        std::fs::hard_link(&ok, &hard).unwrap();
+        refused(&dir, pp, hard.to_str().unwrap());
+    }
+    assert_eq!(std::fs::read(&ok).unwrap(), ok_bytes);
+    assert_eq!(std::fs::read(&config).unwrap(), config_bytes);
+    // No temporary file is left.
+    assert_eq!(names(&p.join("src")), src_names);
+    // An output that is not an input is replaced, and no temporary file is left.
+    let out = dir.join("out.ep9h");
+    std::fs::write(&out, b"old").unwrap();
+    let before = names(&dir);
+    let bytes = check(&dir, &p, &out);
+    assert_ne!(bytes, b"old");
+    hints(&bytes);
+    assert_eq!(names(&dir), before);
+}

@@ -6,8 +6,13 @@
 //! ```
 //!
 //! Exit status: 0 done (a file with type errors is data, not a failure); 1 tsrs made no program,
-//! or a file could not be read, written or verified; 2 bad arguments.
+//! a file could not be read, written or verified, or `--out` names an input of the project (the
+//! config or a source file; the file does not change); 2 bad arguments.
+//!
+//! The output goes to a temporary file next to `--out` first, then a rename replaces `--out`,
+//! so a failed write never leaves a part of a file.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: ep9-typecheck <tsconfig.json | dir> --out <file.ep9h>\n       \
@@ -50,11 +55,48 @@ fn run_check(project: &str, out: &str) -> Result<String, String> {
     let total = checked.files.len();
     let with_errors = checked.files.iter().filter(|f| f.has_type_errors).count();
     let bytes = ep9_typecheck::write_v0(checked.files, checked.ts_flags)?;
-    std::fs::write(out, &bytes).map_err(|e| format!("cannot write {out}: {e}"))?;
+    write_out(out, &bytes, &checked.inputs)?;
     Ok(format!(
         "ep9-typecheck: {total} files ({with_errors} with type errors), 0 records, {} bytes -> {out}\n",
         bytes.len()
     ))
+}
+
+/// `a` and `b` are one file (after links): the same device and inode on unix, else the same
+/// canonical path. A path that does not exist is no file.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+    }
+}
+
+/// Writes `bytes` to `out`: refused when `out` is one of `inputs`; else a temporary file in the
+/// same directory, then a rename over `out` (it replaces the file on Windows too).
+fn write_out(out: &str, bytes: &[u8], inputs: &[String]) -> Result<(), String> {
+    let path = Path::new(out);
+    if inputs.iter().any(|i| same_file(path, Path::new(i))) {
+        return Err(format!(
+            "--out {out} is an input of the project; it is not written"
+        ));
+    }
+    let tmp = format!("{out}.tmp{}", std::process::id());
+    if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot write {out}: {e}"));
+    }
+    Ok(())
 }
 
 fn run_verify(file: &str) -> Result<String, String> {
