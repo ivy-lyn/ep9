@@ -38,7 +38,7 @@ use crate::interp::dsl::{
     self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
-use crate::interp::{Done, Flow, St};
+use crate::interp::{Done, Flow, St, tails};
 use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
@@ -954,7 +954,7 @@ op!(LdaTrue(st) {
 });
 op!(LdaFalse(st) {
     st.acc = FALSE;
-    Done::Next
+    tails::star_done::<false>(st)
 });
 op!(LdaConstant(st, k: K) {
     let v = st.constant(k);
