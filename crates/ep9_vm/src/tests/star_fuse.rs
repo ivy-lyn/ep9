@@ -697,6 +697,11 @@ const FLOOR_STACK: usize = 4 << 20;
 /// `native_limit` and above the floor (`DEBUG_SLACK` below it). There the lookahead does not
 /// fuse (`tails::star_room`): the Star runs in its own handler, which checks the floor before
 /// its write. The other expansions keep the native stack flat and run all turns.
+///
+/// Become is not run here: [`counting_star`] calls the Star handler with an ordinary call, so
+/// under become each plain Star keeps one wrapper frame (208 bytes, aarch64 debug), and
+/// 20,000 turns would reach native_limit on this thread; its handlers keep the stack flat, so
+/// it has no floor case.
 fn near_the_floor_code() -> FunctionCode {
     let mut s = Asm::script(0);
     let (n, t, u, ctx, one) = (
@@ -764,7 +769,7 @@ fn noop<'s>(
 #[test]
 fn below_the_native_limit_the_star_runs_in_its_own_handler() {
     let at = (0, floor_star_at());
-    for &d in Dispatch::ALL {
+    for d in [Dispatch::Match, Dispatch::Sibling] {
         for stress in [false, true] {
             let run = |on: bool| {
                 std::thread::Builder::new()
