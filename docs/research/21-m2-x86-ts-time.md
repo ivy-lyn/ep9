@@ -336,7 +336,7 @@ Short forms of this section:
 5. **The month-10 Ir-to-time factor is about 0.64 (jit) and 1.08 (jitless)** (derived, §9.3). The jitless value is not a pure Ir effect, because the box kernel and the node --jitless times changed too. So the factor stays a range.
 6. **REG-SLOT-ENCODE measured -7.923% (jit) and -8.013% (jitless) of x64 TS Ir.** That is more than the R21 estimate -3.4..-5.1% (upper bound; §0, §6.1 W9, §6.3). R21 counted the decode in 4 handlers only (Star, Ldar, Mov and GetNamedProperty, §4). These 4 handlers gave -5.20%. The other T0 handlers (-1.60%), the slow path `R::from_operand` (-0.38%) and the rows not listed (-0.75%) gave the rest (DL M10-P4-LEVER14). Its x86 time is not read.
 7. **PGO with a training set that holds no gate workload met no line.** With PGO, jit items 1, 2 and 6 and jitless item 6 (splay) read slower. Jitless item 1 and jitless TS did not read wholly above 1.0. The +3% x86 TS line failed on both builds (DL M10-P0-WPRE-2).
-8. **The merged month-10 levers cut x64 TS Ir by 3.62% (jit) and 3.73% (jitless)** (derived, §9.4). Only one merged lever had an x86 box A/B: LEVER-12 NAMED-MISS. Its TS wall did not move on that box (DL M10-P1-B1).
+8. **The merged month-10 levers cut x64 TS Ir by 3.61% (jit) and 3.71% (jitless)** (derived, §9.4). Only one merged lever had an x86 box A/B: LEVER-12 NAMED-MISS. Its TS wall did not move on that box (DL M10-P1-B1).
 
 ### 9.2 The reads, one row each
 
