@@ -138,7 +138,7 @@ on:
       # The exit-inputs mode (header; plan v14 section 4.1): set, the run has scope and the
       # exit-inputs legs only. `pathb` alone is the one retry when the 4 windows legs gave no pair.
       exit_inputs:
-        description: "exit-inputs mode: off, all (MEMREAD + JetStream per platform, windows Path B), memjs or pathb"
+        description: "exit-inputs mode: off, all (MEMREAD + JetStream per platform, macos-arm64 too; windows and linux-x64 Path B), memjs or pathb"
         default: "off"
         type: choice
         options:
@@ -326,8 +326,8 @@ jobs:
       # The release tests of ep9_vm and ep9_builtins (plan v10 section 2.8 task 1) ran here until
       # M6-P0. They have their own job now, release-tests (plan v11 section 2.9, rule 25): here
       # they took 19.3 of the 80 min of windows-x64 (run 41350992446), after the debug tests.
-      # There they run next to them, on the release cache of their target. The two steps above
-      # keep their names: m0-exit and m1-exit read them.
+      # There they run next to them, on the release cache of their target. The two steps above keep their names: m0-exit and m1-exit read them.
+      - { name: regress unicode_escape_hex (utf16), if: "${{ !cancelled() }}", env: { CARGO_TARGET_DIR: "${{ runner.temp }}/regress" }, run: cargo test --manifest-path third_party/regress/Cargo.toml --features utf16 --test unicode_escape_hex } # regress fork patch 0008 (FUZZ-RX-M9P2, Codex r1): the vendored parser test with no Rx0 prepass; third_party/regress is its own workspace with its own target dir; no --locked: upstream regress git-ignores its Cargo.lock, so a fresh sync has none
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -580,9 +580,9 @@ jobs:
         shards: [6]
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.target.os }}
-    # Rule 25: run 42135182874 (after B0) cut 8 of 24 shards at 40 min; the same shard grew
-    # 1.66x, so about 50 min (est.) x 1.5: 80 (was 40; feature-matrix 60 -> 75; DL B0-GCSKIP).
-    timeout-minutes: 90
+    # Rule 25 (2x): 2x the m10-p0 max 63.5 min (macos-arm64 1/6, run 44499084786; RULE25-MARGIN-M10P1;
+    # was 90; 80 before: 1.5 x about 50 min, run 42135182874, DL B0-GCSKIP; was 40): 127.
+    timeout-minutes: 127
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -956,8 +956,8 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
     runs-on: ubuntu-24.04
-    # Rule 25: max 68.55 min (run 44204833743; 47.5 in 44221214860, 68 in 44074556351): 103 (was 102).
-    timeout-minutes: 103
+    # Rule 25 (2x): 2x the m9-p5 max 67.5 min (RULE25-MARGIN-M10; was 103 at 1.5x 68.55): 135.
+    timeout-minutes: 135
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
@@ -997,7 +997,7 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       MIRI_TOOLCHAIN: nightly-2026-10-04
     steps:
@@ -1097,7 +1097,8 @@ jobs:
           if-no-files-found: error
 
   # SP-tsrs-win (docs/plan/08-repo.md section 5 item 7; 09-milestones section 4): the result is
-  # recorded in the job summary and an artifact. It never blocks (continue-on-error).
+  # recorded in the job summary and an artifact. It never blocks (continue-on-error). From A1h
+  # (H37 item 7) it also builds tools/ep9-typecheck, runs its lock guard and a fixture smoke.
   sp-tsrs-win:
     name: SP-tsrs-win (recorded, not blocking)
     needs: scope
@@ -1118,11 +1119,22 @@ jobs:
           sync_dep tsrs https://github.com/oxc-project/tsrs.git
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: third_party/tsrs -> target
-      - name: Build tsrs_cli
+          workspaces: |
+            third_party/tsrs -> target
+            tools/ep9-typecheck -> target
+      - name: Build tsrs_cli and ep9-typecheck
         run: bash scripts/sync-tsrs.sh 2>&1 | tee sp-tsrs-win.log
       - name: Smoke tests
         run: bash .github/scripts/tsrs-smoke.sh third_party/tsrs/target/release/tsrs.exe 2>&1 | tee -a sp-tsrs-win.log
+      # H26:42: the lock that sync-tsrs.sh made is the tsrs lock plus only the 2 ep9 packages.
+      - name: ep9-typecheck lock guard
+        run: bash tools/ep9-typecheck/lock-guard.sh 2>&1 | tee -a sp-tsrs-win.log
+      # The fixture project gives a .ep9h file, and --verify reads it back with ep9_hints.
+      - name: ep9-typecheck smoke
+        run: |
+          tc=tools/ep9-typecheck/target/release/ep9-typecheck.exe
+          "$tc" tools/ep9-typecheck/tests/fixture --out fixture.ep9h 2>&1 | tee -a sp-tsrs-win.log
+          "$tc" --verify fixture.ep9h 2>&1 | tee -a sp-tsrs-win.log
       - name: Record the result
         if: ${{ always() }}
         run: |
@@ -1218,8 +1230,8 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 85
-    # Rule 25 (M6-ORCH-545, -905, -965): max 56.25 min (windows-x64, run 44204833743; windows-x64 54.2 in 44221214860; macos-arm64 <= 50), so 85 (was 81 = 1.5 x 54).
+    timeout-minutes: 133
+    # Rule 25 (2x): 2x the m10-p0 max 66.4 min (macos-arm64, run 44499084786; RULE25-MARGIN-M10P1), so 133 (was 85 = 1.5 x 56.25, windows-x64, run 44204833743; M6-ORCH-545, -905, -965).
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1243,9 +1255,9 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.bench != 'true' && needs.scope.outputs.exit != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 154
-    # Plan v11 section 2.9; the M6-P0 probe (run 41565402096) took 20 min. Rule 25: max 102.6 min (run
-    # 44221214860; 99 in 44204833743, 98 in 44098903097), so 154 (was 147; M6-ORCH-136, -905, -919, -965).
+    timeout-minutes: 195
+    # Plan v11 section 2.9. Rule 25: 97.1 min in the m10-p2 tag CI (run 44682633859; 81.0 in m10-p1, 51.9
+    # in m10-p0; the old max 102.6 in 44221214860), so 195 (2x, rule 25; was 154; M10-P3-WPRE-5).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
@@ -1413,9 +1425,9 @@ jobs:
           LEG: ${{ matrix.name }}
           BRANCH_SIM: ${{ matrix.branch_sim }}
           WORKLOADS: ${{ steps.mode.outputs.workloads }}
-          # Rule 81: a _cold handler is judged by its X86IR rows, so the 2 store cold bodies are
-          # always in the function table (TS-STORE), not only when they are in the top cut.
-          FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold
+          # Rule 81: a _cold handler is judged by its X86IR rows, so the 2 store cold bodies (TS-STORE) are always in the function table, not only in the top cut.
+          # The call handlers (CALLPROP-PROBE kill line item 4) and Star (the STAR-LA2 pre-read) are always in it too (substrings, bench-set.mjs:41-42; a report, no gate).
+          FUNCTIONS: SetNamedProperty_cold,DefineNamedOwnProperty_cold,CallProperty,CallAnyReceiver,Star
         run: |
           sim=()
           if [ "$BRANCH_SIM" = true ]; then sim=(--branch-sim); fi
@@ -1446,17 +1458,26 @@ jobs:
   # jitless build with --no-default-features in target/jitless), measures the runner's idle
   # baseline (exit-inputs.mjs host: a host file with gate_host = false and the load source,
   # typeperf on Windows) and uploads out/ as m2-exit-inputs-<leg>:
-  #   memjs-<platform> (linux-x64, linux-arm64, windows-x64): MEMREAD (mem.mjs, item 4) and the
-  #     JetStream M2 list on both ep9 builds and node --jitless (jetstream/run.mjs, item 7).
-  #     Linux arm64 has no d8 (jsvu has no linux-arm64 V8 build): no d8 cap there.
-  #   pathb-w1..w4 (windows-x64): the Path B M2 set (V14-D12): run.mjs --workloads m2, 31 paired
-  #     rounds, both builds in each round (--ep9-jitless, V14-D11), node --jitless, the load guard
-  #     on the typeperf source. No QuickJS on Windows (sync-shells.sh), so no item 1 interval.
-  # The legs give the runs only. The reader downloads the 4 pathb artifacts and runs
-  # `node .github/scripts/exit-inputs.mjs pathb --leg <dir> x4 --out pathb.json`: it pairs the
-  # first 2 runners of one CPU model; no pair (exit 3): dispatch `pathb` once more, then the
-  # reading is NOT-RUN (a DL line). With exit_inputs off (push, pull_request, a plain dispatch)
-  # the one "off" leg runs, so the job reads success (a skipped job fails the tag gate).
+  #   memjs-<platform> (linux-x64, linux-arm64, windows-x64, macos-arm64): MEMREAD (mem.mjs, item
+  #     4) and the JetStream M2 list on both ep9 builds and node --jitless (jetstream/run.mjs,
+  #     item 7). Linux arm64 has no d8 (jsvu has no linux-arm64 V8 build): no d8 cap there.
+  #     macos-arm64 is the MEMREAD fallback of plan v15 V15-D19 (class Mem may run on any host
+  #     that passes the load guard, mem.mjs): a DL row reads it only when the gate windows
+  #     GW12b/GW12c leave block B MISSING.
+  #   pathb-w1..w4 (windows-x64) and pathb-l1, pathb-l2 (linux-x64; plan v15 V15-D16): the Path B
+  #     M2 set (V14-D12): run.mjs --workloads m2, 31 paired rounds, both builds in each round
+  #     (--ep9-jitless, V14-D11), QuickJS (on Windows sync-shells.sh builds the pinned qjs.exe
+  #     with the runner's mingw gcc; V15-D17) and node --jitless, the load guard (typeperf on
+  #     Windows).
+  # The legs give the runs only. The reader downloads the 6 pathb artifacts and runs
+  # `node .github/scripts/exit-inputs.mjs pathb --platform win32-x64 --leg <dir> x4 --out
+  # pathb.json`, and the same with `--platform linux-x64` on the 2 Linux legs (--out linux.json):
+  # it pairs the first 2 runners of one CPU model; no windows pair (exit 3): dispatch `pathb` once
+  # more, then the reading is NOT-RUN (a DL line). `cargo xtask m2-exit --pathb pathb.json
+  # --linux-pathb linux.json` pairs each Windows leg with the Linux legs of its CPU model
+  # (V15-D16); with no such pair the win-x64 cell keeps the Path B form. With exit_inputs off
+  # (push, pull_request, a plain dispatch) the one "off" leg runs, so the job reads success (a
+  # skipped job fails the tag gate).
   exit-inputs:
     name: exit inputs (${{ matrix.name }})
     # Skipped in the bench mode only (header).
@@ -1465,17 +1486,17 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(
-          (inputs.exit_inputs == 'all' && '[{"name":"memjs-linux-x64","os":"ubuntu-24.04","kind":"memjs","plat":"linux-x64"}, {"name":"memjs-linux-arm64","os":"ubuntu-24.04-arm","kind":"memjs","plat":"linux-arm64"}, {"name":"memjs-windows-x64","os":"windows-2025","kind":"memjs","plat":"windows-x64"}, {"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}]')
-          || (inputs.exit_inputs == 'memjs' && '[{"name":"memjs-linux-x64","os":"ubuntu-24.04","kind":"memjs","plat":"linux-x64"}, {"name":"memjs-linux-arm64","os":"ubuntu-24.04-arm","kind":"memjs","plat":"linux-arm64"}, {"name":"memjs-windows-x64","os":"windows-2025","kind":"memjs","plat":"windows-x64"}]')
-          || (inputs.exit_inputs == 'pathb' && '[{"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}]')
+          (inputs.exit_inputs == 'all' && '[{"name":"memjs-linux-x64","os":"ubuntu-24.04","kind":"memjs","plat":"linux-x64"}, {"name":"memjs-linux-arm64","os":"ubuntu-24.04-arm","kind":"memjs","plat":"linux-arm64"}, {"name":"memjs-windows-x64","os":"windows-2025","kind":"memjs","plat":"windows-x64"}, {"name":"memjs-macos-arm64","os":"macos-15","kind":"memjs","plat":"macos-arm64"}, {"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-l1","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}, {"name":"pathb-l2","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}]')
+          || (inputs.exit_inputs == 'memjs' && '[{"name":"memjs-linux-x64","os":"ubuntu-24.04","kind":"memjs","plat":"linux-x64"}, {"name":"memjs-linux-arm64","os":"ubuntu-24.04-arm","kind":"memjs","plat":"linux-arm64"}, {"name":"memjs-windows-x64","os":"windows-2025","kind":"memjs","plat":"windows-x64"}, {"name":"memjs-macos-arm64","os":"macos-15","kind":"memjs","plat":"macos-arm64"}]')
+          || (inputs.exit_inputs == 'pathb' && '[{"name":"pathb-w1","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w2","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w3","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-w4","os":"windows-2025","kind":"pathb","plat":"windows-x64"}, {"name":"pathb-l1","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}, {"name":"pathb-l2","os":"ubuntu-24.04","kind":"pathb","plat":"linux-x64"}]')
           || '[{"name":"off","os":"ubuntu-24.04","kind":"off","plat":"off"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: 1.5x the longest measured leg: 138.8 min (memjs-linux-x64, dry dispatch
-    # 43873371893 on fa2b687f), so 210 (was 300 before the first dispatch; M9-P2-WPRE-7). The
-    # other legs of that dispatch: memjs-windows-x64 125.7 min, memjs-linux-arm64 116.0 min,
-    # pathb-w1..w4 77.7-78.2 min. Read the value again when a leg gets longer (a new workload or
-    # engine) and set 1.5x the longest measured leg.
-    timeout-minutes: 210
+    # Rule 25: 2x the longest measured leg: 159.3 min (memjs-windows-x64, dispatch 44678207050 on
+    # 2856a698), so 319 (was 210, which was 1.5x of 138.8 min in 43873371893; M10-P3-WPRE-5). The
+    # other legs of 44678207050: memjs-linux-arm64 114.4 min, pathb-w3 105.0 min, pathb-w1..w4
+    # 81.8-105.0 min, pathb-l1..l2 48.9-60.2 min. Read the value again when a leg gets longer (a
+    # new workload or engine) and set 2x the longest measured leg (rule 25, plan v15 :108).
+    timeout-minutes: 319
     steps:
       - name: exit-inputs mode
         env:
@@ -1520,14 +1541,16 @@ jobs:
       - if: ${{ matrix.kind != 'off' }}
         run: bash scripts/sync-bench.sh bench-octane bench-v8v7 bench-jetstream
       # The pinned node (the node --jitless cap) and d8 (jsvu; none on linux-arm64, the script
-      # skips it). One retry: the downloads are the network steps. On Windows the script writes
-      # Git Bash paths (/d/a/...), which node cannot start: cygpath -m turns them into D:/a/...
+      # skips it); the pathb legs take the pinned QuickJS (item 1; built from source, on Windows
+      # with the mingw gcc, V15-D17). One retry: the downloads are the network steps. On Windows
+      # the script writes Git Bash paths (/d/a/...), which node cannot start: cygpath -m turns
+      # them into D:/a/...
       - name: reference shells
         if: ${{ matrix.kind != 'off' }}
         env:
           KIND: ${{ matrix.kind }}
         run: |
-          shells=(node); [ "$KIND" = memjs ] && shells=(node d8)
+          shells=(node quickjs); [ "$KIND" = memjs ] && shells=(node d8)
           bash scripts/sync-shells.sh "${shells[@]}" || { echo "sync-shells failed; one more try in 30 s"; sleep 30; bash scripts/sync-shells.sh "${shells[@]}"; }
           if [ "$RUNNER_OS" = Windows ]; then
             f=third_party/shells/versions.txt
@@ -1583,7 +1606,7 @@ jobs:
           LEG: ${{ matrix.name }}
         run: |
           node tools/bench/cross/run.mjs --ep9 "target/release/ep9$EXE" --ep9-jitless "target/jitless/release/ep9$EXE" \
-            --engines ep9,node-jitless --workloads m2 --harness base --rounds 31 --host out/host.toml \
+            --engines ep9,qjs,node-jitless --workloads m2 --harness base --rounds 31 --host out/host.toml \
             --label "exit-inputs $LEG" --out out/run-jit.json --out-jitless out/run-jitless.json --md out/run.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && matrix.kind != 'off' }}
@@ -1612,10 +1635,10 @@ jobs:
           || '[{"name":"macos-arm64","os":"macos-15"}, {"name":"linux-x64","os":"ubuntu-24.04"},
                {"name":"linux-arm64","os":"ubuntu-24.04-arm"}, {"name":"windows-x64","os":"windows-2025"}]') }}
     runs-on: ${{ matrix.os }}
-    # Rule 25: 1.5x the last measured max: 103.1 min (linux-arm64, run 44204833743, the M9-P4 merge-head
-    # CI; 102.5 in 44221214860, the tag CI; other targets <= 95), so 155 (was 153 = 1.5 x 102;
+    # Rule 25 (2x): 2x the m9-p5 max 102.5 min (linux-arm64; RULE25-MARGIN-M10), so 205 (was 155 = 1.5x
+    # 103.1 min, run 44204833743; was 153 = 1.5 x 102 before; other targets <= 95;
     # M6-ORCH-864, -890, -905, -919, -965; route BUILTINS-TIMEOUT closed at 153 in M9-P3).
-    timeout-minutes: 155
+    timeout-minutes: 205
     steps:
       # Windows: keep LF in our files, allow long paths (as build-test).
       - run: git config --global core.autocrlf false && git config --global core.longpaths true

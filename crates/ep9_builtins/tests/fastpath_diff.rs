@@ -938,6 +938,57 @@ const CASES: &[Case] = &[
              print(r.join(), log.join());",
         ),
     },
+    // M10-P2 LEVER-12 NAMED-STORE-MEGA: a one-byte megamorphic 0x24 or 0x25 probes the stub
+    // cache in its fast body (`ic::store_or_mega`) and on a hit stores with no cold-body call.
+    // Field stores and adds at megamorphic sloppy and strict 0x24 sites (12 shapes; each round
+    // after the first one hits); then a read-only `y` on the prototype: the 0x24 add misses
+    // (its validity cell) and fails, a TypeError when strict; then class fields, 0x25 adds at
+    // a megamorphic site past that read-only `y` (a define does not check the chain). The spec
+    // form stores with Reflect.set and defines with Reflect.defineProperty. node v26 gives the
+    // same line for both forms.
+    Case {
+        path: "ic-named",
+        name: "megamorphic stores, adds and defines (the store probe of the SetNamedProperty and DefineNamedOwnProperty fast bodies) past a read-only property on the prototype, or Reflect.set and Reflect.defineProperty",
+        src: "function mk(i) { var o = {}; o['p' + i] = i; o.x = i; return o; }\n\
+              function setx(o, v) { o.x = v; return o.x; }\n\
+              function ssetx(o, v) { 'use strict'; o.x = v; return o.x; }\n\
+              function addy(o, v) { o.y = v; return o.y; }\n\
+              function saddy(o, v) { 'use strict'; o.y = v; return o.y; }\n\
+              var os = [], r = [], s = 0;\n\
+              for (var i = 0; i < 12; i++) os.push(mk(i));\n\
+              for (var k = 0; k < 20; k++) for (var i = 0; i < 12; i++) s += setx(os[i], k + i) + ssetx(os[i], k - i) + addy(mk(i), k) + saddy(mk(i), -k);\n\
+              var P = { pp: 0 };\n\
+              function under(i) { var c = Object.create(P); c['p' + i] = i; return c; }\n\
+              for (var k = 0; k < 2; k++) for (var i = 0; i < 12; i++) r.push(addy(under(i), k), saddy(under(i), k));\n\
+              Object.defineProperty(P, 'y', { value: 'ro', writable: false, configurable: true });\n\
+              for (var i = 0; i < 12; i++) { r.push(addy(under(i), i)); try { saddy(under(i), i); } catch (e) { r.push(e.name); } }\n\
+              class A { constructor(n) { for (var i = 0; i < n; i++) this['q' + i] = i; } }\n\
+              class B extends A { y = 5; constructor(n) { super(n); } }\n\
+              Object.setPrototypeOf(B.prototype, Object.create(A.prototype, { y: { value: 'ro', writable: false, configurable: true } }));\n\
+              for (var k = 0; k < 3; k++) for (var n = 0; n < 12; n++) { var b = new B(n); r.push(b.y, Object.keys(b).length); }\n\
+              print(s, r.join());",
+        spec: Some(
+            "function mk(i) { var o = {}; o['p' + i] = i; o.x = i; return o; }\n\
+             function setx(o, v) { Reflect.set(o, 'x', v); return o.x; }\n\
+             function ssetx(o, v) { 'use strict'; if (!Reflect.set(o, 'x', v)) throw new TypeError('x'); return o.x; }\n\
+             function addy(o, v) { Reflect.set(o, 'y', v); return o.y; }\n\
+             function saddy(o, v) { 'use strict'; if (!Reflect.set(o, 'y', v)) throw new TypeError('y'); return o.y; }\n\
+             var os = [], r = [], s = 0;\n\
+             for (var i = 0; i < 12; i++) os.push(mk(i));\n\
+             for (var k = 0; k < 20; k++) for (var i = 0; i < 12; i++) s += setx(os[i], k + i) + ssetx(os[i], k - i) + addy(mk(i), k) + saddy(mk(i), -k);\n\
+             var P = { pp: 0 };\n\
+             function under(i) { var c = Object.create(P); c['p' + i] = i; return c; }\n\
+             for (var k = 0; k < 2; k++) for (var i = 0; i < 12; i++) r.push(addy(under(i), k), saddy(under(i), k));\n\
+             Object.defineProperty(P, 'y', { value: 'ro', writable: false, configurable: true });\n\
+             for (var i = 0; i < 12; i++) { r.push(addy(under(i), i)); try { saddy(under(i), i); } catch (e) { r.push(e.name); } }\n\
+             function dp(o, k, v) { Reflect.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true }); }\n\
+             class A { constructor(n) { for (var i = 0; i < n; i++) this['q' + i] = i; } }\n\
+             class B extends A { constructor(n) { super(n); dp(this, 'y', 5); } }\n\
+             Object.setPrototypeOf(B.prototype, Object.create(A.prototype, { y: { value: 'ro', writable: false, configurable: true } }));\n\
+             for (var k = 0; k < 3; k++) for (var n = 0; n < 12; n++) { var b = new B(n); r.push(b.y, Object.keys(b).length); }\n\
+             print(s, r.join());",
+        ),
+    },
     // ---- ic-global (M7-P2 GLOBALS) ----
     // Each form runs its harness (the counters, the loops, the called functions) in a function
     // scope, so only the binding under test is global, and the functions that read or write it

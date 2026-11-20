@@ -2141,3 +2141,181 @@ fn a_keyed_hit_reads_the_same_in_both_feedback_modes() {
         }
     }
 }
+
+// ---- the keyed dictionary home (M10-P0 HASH-SEED, R20 §8 HB-1) --------------------------------
+
+/// The old multiplicative constant of `dict_home` (before M10-P0).
+const OLD_DICT_MUL: u32 = 0x9E37_79B1;
+
+/// The inverse of the odd `a` modulo 2^32 (Newton: each step doubles the good low bits).
+fn inverse_u32(a: u32) -> u32 {
+    let mut x = a;
+    for _ in 0..5 {
+        x = x.wrapping_mul(2u32.wrapping_sub(a.wrapping_mul(x)));
+    }
+    assert_eq!(a.wrapping_mul(x), 1);
+    x
+}
+
+/// The R20 §8 HB-1 set: 1,999 array indices with one home under the old hash in a table of
+/// 2^16 buckets, `i = inv(0x9E3779B1) * ((h << 16) | t)` for one `h` and `t` = 0, 1, ...
+/// (2^32 - 1 is not an array index, so it is skipped).
+fn old_colliding_indices() -> Vec<u32> {
+    let inv = inverse_u32(OLD_DICT_MUL);
+    let h = 0x2B5Du32;
+    (0..1 << 16)
+        .map(|t: u32| inv.wrapping_mul((h << 16) | t))
+        .filter(|&i| i != u32::MAX)
+        .take(1999)
+        .collect()
+}
+
+/// HB-1: the indices that had one home under the old unkeyed hash (R20:229) now spread.
+/// The keyed SipHash-1-3 home gives no bucket more than 8 of the 1,999 keys in a table of
+/// 2^16 (est. bound; the mean is 0.03), for any per-process key.
+#[test]
+fn dict_home_spreads_indices_that_shared_one_home() {
+    let ix = old_colliding_indices();
+    assert_eq!(ix.len(), 1999);
+    let old_home = |i: u32| i.wrapping_mul(OLD_DICT_MUL) >> 16;
+    assert!(
+        ix.iter().all(|&i| old_home(i) == old_home(ix[0])),
+        "the set shares one old home"
+    );
+    let mut per_home = vec![0u32; 1 << 16];
+    for &i in &ix {
+        per_home[elements::dict_home(i, 1 << 16)] += 1;
+    }
+    let most = per_home.iter().copied().max().unwrap();
+    assert!(most <= 8, "a home has {most} of the 1,999 keys");
+    // The smallest table (`MIN_BUCKETS`, a shift of 61) gives a home in range.
+    for &i in &ix[..64] {
+        assert!(elements::dict_home(i, 8) < 8);
+    }
+}
+
+/// HB-1: a sparse array with the old colliding indices (a DICTIONARY array) reads back each
+/// value, and its own keys are ascending (`dict_entries` sorts), with and without GC stress.
+#[test]
+fn sparse_array_with_the_old_colliding_indices_reads_back() {
+    each(|cx, rt| {
+        let ix = old_colliding_indices();
+        let a = object::new_array(rt, 0);
+        for (n, &i) in ix.iter().enumerate() {
+            assert!(property::set_index(cx, a, u64::from(i), int(n as i32)).unwrap());
+        }
+        assert_eq!(elements::kind_of(a), ek::DICTIONARY);
+        checked(rt, a);
+        for (n, &i) in ix.iter().enumerate() {
+            assert_eq!(
+                property::get_index(cx, a, u64::from(i)).unwrap(),
+                int(n as i32)
+            );
+        }
+        let mut sorted = ix.clone();
+        sorted.sort_unstable();
+        let mut want: Vec<String> = sorted.iter().map(u32::to_string).collect();
+        want.push("length".into());
+        assert_eq!(texts(property::own_property_keys(cx, a)), want);
+    });
+}
+
+// ---- the pin to keyed SipHash-1-3 (M10-P0 HASH-SEED re-check F1) -------------------------------
+
+/// The 64-bit words `w` as code units (4 per word, little end first): the `sip13` form of
+/// `Sip::word`. With no tail, the last word is (8 * words) << 56, the same as `sip13_word`.
+fn units_of(w: &[u64]) -> Vec<u16> {
+    w.iter()
+        .flat_map(|&x| (0..4).map(move |j| (x >> (16 * j)) as u16))
+        .collect()
+}
+
+/// The reference SipHash-1-3 of the words `w` with the per-process key. (The name is not
+/// `keyed`: this file uses `profile::keyed`.)
+fn keyed_sip13(w: &[u64]) -> u64 {
+    crate::string::testing::sip13(crate::string::testing::keys(), &units_of(w))
+}
+
+/// HB-1: `dict_home` is the top bits of SipHash-1-3 of the index with the per-process key,
+/// not a fixed multiply (a fixed hash has no key, so JS can find indices that share a home).
+/// The set is `old_colliding_indices`. The asserts hold for any key, so the test does not set
+/// `EP9_HASH_SEED`.
+#[test]
+fn dict_home_is_keyed_siphash13_of_the_index() {
+    for i in old_colliding_indices() {
+        let h = keyed_sip13(&[u64::from(i)]);
+        assert_eq!(
+            elements::dict_home(i, 1 << 16),
+            (h >> 48) as usize,
+            "index {i}"
+        );
+        assert_eq!(elements::dict_home(i, 8), (h >> 61) as usize, "index {i}");
+    }
+}
+
+// ---- the REFUSED entries by equality (M10-P1 HASH-SEED-2, HB-7-ADDR-INDEX.1) ---------------
+
+/// A plain object whose dense store of 4004 slots holds 4 elements (the store of
+/// `a_refused_store_is_counted_once`): each far store in [4004, 5028) is refused.
+fn refused_store(cx: &mut VmCx, rt: &Runtime) -> u64 {
+    let o = object::new_plain_object(rt);
+    for i in [0, 1000, 2000, 3000] {
+        assert!(property::set_index(cx, o, i, int(i as i32)).unwrap());
+    }
+    assert_eq!(capacity(o), 4004);
+    o
+}
+
+/// Stores `v` at the far index `i` of `o`: the density counts that the store ran.
+fn far_store_counts(cx: &mut VmCx, o: u64, i: u64, v: i32) -> u32 {
+    let before = elements::DENSITY_COUNTS.with(core::cell::Cell::get);
+    assert!(property::set_index(cx, o, i, int(v)).unwrap());
+    elements::DENSITY_COUNTS.with(core::cell::Cell::get) - before
+}
+
+/// HB-7-ADDR-INDEX.1 (H12-Q2 (a)): a `REFUSED` entry is found by an equality scan of the 8
+/// entries, never by a hash of the cell address. 8 objects that take far stores in turn each
+/// keep their entry: the density count runs once per object, then not in the next round (with
+/// the address hash, two of the 8 shared one entry with a probability of 1 - 8!/8^8, about
+/// 99.8%). A ninth object replaces the oldest entry (a miss replaces the entries in turn): its
+/// first far store counts; then the far stores of objects 2-9 count nothing, and object 1
+/// counts once. Every far store is refused (the capacity stays 4004) and reads back. With and
+/// without GC stress.
+#[test]
+fn refused_entries_are_found_by_equality_in_turn() {
+    each(|cx, rt| {
+        // A stack array: the conservative stack scan keeps the objects.
+        let mut objects = [0u64; 9];
+        for o in &mut objects {
+            *o = refused_store(cx, rt);
+        }
+        let mut next = [4005u64; 9];
+        let mut far = |cx: &mut VmCx, k: usize| {
+            let n = far_store_counts(cx, objects[k], next[k], k as i32);
+            next[k] += 1;
+            n
+        };
+        for k in 0..8 {
+            assert_eq!(far(cx, k), 1, "round 1, object {k}: the first count");
+        }
+        for k in 0..8 {
+            assert_eq!(far(cx, k), 0, "round 2, object {k}: its entry is kept");
+        }
+        assert_eq!(far(cx, 8), 1, "the ninth object: a miss");
+        for k in 1..9 {
+            assert_eq!(far(cx, k), 0, "round 3, object {k}: its entry is kept");
+        }
+        assert_eq!(far(cx, 0), 1, "object 1 lost its entry to the ninth");
+        for (k, &o) in objects.iter().enumerate() {
+            assert_eq!(capacity(o), 4004, "object {k}: every far store is refused");
+            assert!(shape::is_dictionary(shape::shape_of(o)));
+            for i in 4005..next[k] {
+                assert_eq!(property::get_index(cx, o, i).unwrap(), int(k as i32));
+            }
+            for i in [0, 1000, 2000, 3000] {
+                assert_eq!(property::get_index(cx, o, i).unwrap(), int(i as i32));
+            }
+            checked(rt, o);
+        }
+    });
+}

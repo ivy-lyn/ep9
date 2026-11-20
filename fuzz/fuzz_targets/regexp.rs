@@ -69,18 +69,6 @@
 //!   way regress takes a third `&` as the right operand of `&&` just before the class end, for
 //!   example `/[a&&&]/v` (ECMA-262 22.2.1: ClassIntersection has [lookahead is not &] after `&&`);
 //!   the target skips it only when the error position is that `&` and a `]` follows it.
-//! - Validity: a `\u` escape with a `+` sign before its hex digits, with `u` or `v` (for
-//!   example `/[\u+1F6]/u`, also `\u{+1F600}` and outside a class) and in a group name in
-//!   every mode (for example `/(?<a\u+041>x)/`, also in `\k<..>`). RX1 says
-//!   InvalidUnicodeEscape (ECMA-262 22.2.1: HexDigits have no sign), and node and ep9's front
-//!   end refuse it; regress takes `+1F6` as the 4 hex digits (a sign that Rust's
-//!   `u32::from_str_radix` accepts). The target skips an RX1 InvalidUnicodeEscape only when the
-//!   error position is just after such a `\u` whose `\` opens an escape (in `/\\u+041/u` the
-//!   second `\` is the escaped one, and the pattern is valid) and, without `u` and `v`, inside
-//!   a real group name: not in a class (`/[(?<a\u+041]/` is a valid class), and `\k<..>` only
-//!   when the pattern has a group name (found by the M7-P5 fixer r1 and r2 10-minute runs,
-//!   forms `/[\u+1F600}-\u14F6{P{Uu}]/u` and `/..(?<a\u+03e:>x)\k<a>/gs`; narrowed by fixer
-//!   r7).
 //! - Validity: a `v` class range that ends in `\b`, for example `/[$-\b]/v`. RX1 says
 //!   OutOfOrderCharacterClass (`\b` is U+0008 in a class, ECMA-262 22.2.1), and node and ep9's
 //!   front end refuse it; regress reads that `\b` as `b` (U+0062; the set row of `[\b]`
@@ -88,7 +76,7 @@
 //!   OutOfOrderCharacterClass with `v` only when the error position is just after such a `-\b`
 //!   (the `\` opens an escape) and RX0 refuses the text with that `\b` (and a `\b` range
 //!   start) written `\x08` (found by the M7-P5 fixer r7 10-minute run).
-//! - The proof of the 4 rows above (fixer r2 and r7, node v26.13.0; in ep9 `new RegExp` is RX0
+//! - The proof of the 3 rows above (fixer r2 and r7, node v26.13.0; in ep9 `new RegExp` is RX0
 //!   and the literal is the front end; "Syntax" = a SyntaxError):
 //!
 //! ```text
@@ -101,10 +89,6 @@
 //!   /[A-]x]/v        Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 3
 //!   /[a&&&]/v        Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 4
 //!   /[[a]&&&]/v      Syntax, Syntax          ok, Syntax             InvalidCharacterInClass, 6
-//!   /[\u+1F6]/u      Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 3
-//!   /\u{+1F600}/u    Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 2
-//!   /(?<a\u+041>x)/  Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 6
-//!   /(?<a\u{+41}>x)/ Syntax, Syntax          ok, Syntax             InvalidUnicodeEscape, 6
 //!   /[$-\b]/v        Syntax, Syntax          ok, Syntax             OutOfOrderCharacterClass, 5
 //!   /[a-\b]/v        Syntax, Syntax          ok, Syntax             OutOfOrderCharacterClass, 5
 //! ```
@@ -162,19 +146,6 @@
 //!   /[&a-c]/v        "a"          true    true
 //!   /[\q{a&b}x]/v    "x"          true    true
 //!   /[[a]--&]/v      "&"          false   false
-//! ```
-//! - Sets: `\u+HHH` (a `+` sign and 3 hex digits) in a class without `u` and `v`, for example
-//!   `/[\u+041]/`. regress reads `+041` as the 4 hex digits (as in the validity row of the `+`
-//!   sign above), so it matches A and not `+` (node and RX1: `\u` is the identity escape `u`,
-//!   Annex B, so the class is `u`, `+`, `0`, `4` and `1`; found by the M7-P5 fixer r7 10-minute
-//!   run). With fewer than 3 hex digits regress agrees (`/[\u+04x]/`). Proof (fixer r7):
-//!
-//! ```text
-//!   class            subject      node    ep9
-//!   /[\u+041]/       "+"          true    false
-//!   /[\u+041]/       "A"          false   true
-//!   /[\u+13D]/       "+"          true    false
-//!   /[\u+04x]/       "+"          true    true
 //! ```
 //! - Sets: the empty string of a `v` class, for example `/^[\q{}]$/v` on "". regress never
 //!   matches it (node and RX1 do; ClassString can be empty, ECMA-262 22.2.1).
@@ -613,10 +584,8 @@ fn probes(units: &[u16], ranges: &[CharacterRange], flags: Flags) -> Vec<u32> {
 }
 
 /// True for an RX1 error where RX0 is known to take the pattern (the module doc). The `v` class
-/// rows and the `\u` row match only their proven form at the RX1 error position, so an RX1
-/// false reject of a valid pattern is still a crash. Without `u` and `v` the `\u` row needs a
-/// group name too (there `\u` is always a RegExpUnicodeEscapeSequence; elsewhere `\u+` is the
-/// identity escape `u` and a quantifier).
+/// rows match only their proven form at the RX1 error position, so an RX1 false reject of a
+/// valid pattern is still a crash.
 fn known_rx0_false_accept(e: &ParseError, units: &[u16], flags: Flags) -> bool {
     match e.error {
         Error::RangeOutOfOrder | Error::NegatedCharacterClassWithStrings => true,
@@ -625,10 +594,6 @@ fn known_rx0_false_accept(e: &ParseError, units: &[u16], flags: Flags) -> bool {
             bracket_in_class_string(units, e.pos)
                 || bracket_after_set_operator(units, e.pos)
                 || amp_after_intersection(units, e.pos)
-        }
-        Error::InvalidUnicodeEscape => {
-            plus_sign_hex_escape(units, e.pos)
-                && (flags.either_unicode() || in_group_name(units, e.pos - 2))
         }
         Error::OutOfOrderCharacterClass if flags.unicode_sets() => {
             backspace_range_end(units, e.pos, flags)
@@ -731,19 +696,6 @@ fn not_escaped(units: &[u16], pos: usize) -> bool {
     i == pos
 }
 
-/// True if `units[i]` is inside a group name, in the syntax without `u` and `v` (the only
-/// mode that asks): from an unescaped `(?<` outside a class (not a look-behind `(?<=`, `(?<!`)
-/// to the next `>`. An unescaped `\k<` outside a class starts a group name only when the
-/// pattern has such a group (without one, `\k` is an identity escape, ECMA-262 B.1.2). An
-/// unescaped `[` starts a class up to the next unescaped `]`; there `(?<` and `\k<` are class
-/// characters.
-fn in_group_name(units: &[u16], i: usize) -> bool {
-    let has_group = !group_names(units, false).is_empty();
-    group_names(units, has_group)
-        .iter()
-        .any(|&(start, end)| start <= i && i < end)
-}
-
 /// The group names of the text (the syntax without `u` and `v`), each as `(start, end)`: from
 /// the unit after the `<` to the `>` (or the text end). `with_k`: a `\k<` starts one too.
 fn group_names(units: &[u16], with_k: bool) -> Vec<(usize, usize)> {
@@ -778,17 +730,6 @@ fn group_names(units: &[u16], with_k: bool) -> Vec<(usize, usize)> {
         }
     }
     out
-}
-
-/// True if `pos` is just after a `\u` whose `\` opens an escape (it is not the escaped unit of
-/// another `\`) and starts `+` or `{+` (a sign before the hex digits).
-fn plus_sign_hex_escape(units: &[u16], pos: usize) -> bool {
-    pos >= 2
-        && unit_is(units, pos - 2, b'\\')
-        && not_escaped(units, pos - 2)
-        && unit_is(units, pos - 1, b'u')
-        && (unit_is(units, pos, b'+')
-            || (unit_is(units, pos, b'{') && unit_is(units, pos + 1, b'+')))
 }
 
 /// True if the class text has `\<letter>`. A `\\<letter>` counts too: skipping more classes
@@ -844,26 +785,7 @@ fn known_rx0_set_difference(units: &[u16], flags: Flags) -> bool {
         || (v && i && has_nested_negation(units))
         || (v && has_negation(units) && has_escape(units, b'q'))
         || (!u && has_control_before_escape(units))
-        || (!u && has_signed_hex4_escape(units))
         || (v && first_operand_before_single_amp(units))
-}
-
-/// True if the class text has `\u+HHH`: a `\u` whose `\` opens an escape, a `+` and 3 hex
-/// digits (without `u` and `v` regress reads `+HHH` as the 4 hex digits; the module doc).
-fn has_signed_hex4_escape(units: &[u16]) -> bool {
-    let hex = |j: usize| {
-        units
-            .get(j)
-            .and_then(|&d| char::from_u32(u32::from(d)))
-            .is_some_and(|c| c.is_ascii_hexdigit())
-    };
-    (0..units.len()).any(|i| {
-        unit_is(units, i, b'\\')
-            && unit_is(units, i + 1, b'u')
-            && unit_is(units, i + 2, b'+')
-            && (i + 3..i + 6).all(hex)
-            && not_escaped(units, i)
-    })
 }
 
 /// True if a class of the `v` class text (the outer class or a nested one) has a single `&`

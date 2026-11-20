@@ -198,13 +198,13 @@ struct ProgramCache {
     compiles: usize,
 }
 
-/// FNV-1a over the code units of `t`.
-fn hash_units(t: JsStr<'_>) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for i in 0..t.len() {
-        h = (h ^ u64::from(t.at(i))).wrapping_mul(0x0100_0000_01b3);
-    }
-    h
+/// The cache hash of the pattern string `source`: its keyed process hash (`string::hash`:
+/// SipHash-1-3 with the per-process key, cached in the hash field), not an unkeyed hash of the
+/// units. JS picks the text, so with a fixed hash it can pick texts that share one hash (R20
+/// section 7, class (a)). The full text compare of `find` comes after the hash. Not a GC
+/// point.
+fn cache_hash(source: u64) -> u64 {
+    u64::from(string::hash(source))
 }
 
 /// Whether the text `t` equals the code units `u`.
@@ -706,10 +706,10 @@ fn program_index(cx: &mut Cx, re: u64) -> Res<i32> {
 fn compiled(cx: &mut Cx, source: u64, flags: Flags) -> Res<Rc<Compiled>> {
     let rt = cx.rt();
     let table = &rt.regexp_programs;
-    let (hit, hash) = string::with_text(source, |t| {
-        let hash = hash_units(t);
-        (table.cache.borrow_mut().find(t, hash, flags.bits()), hash)
-    });
+    // `insert` keeps no pattern longer than CACHE_MAX_UNITS, so a longer one has no hash.
+    let hash = (string::str_len(source) <= CACHE_MAX_UNITS).then(|| cache_hash(source));
+    let find = |t: JsStr<'_>, h| table.cache.borrow_mut().find(t, h, flags.bits());
+    let hit = hash.and_then(|h| string::with_text(source, |t| find(t, h)));
     if let Some(c) = hit {
         return Ok(c);
     }
@@ -726,7 +726,7 @@ fn compiled(cx: &mut Cx, source: u64, flags: Flags) -> Res<Rc<Compiled>> {
     {
         cache.compiles += 1;
     }
-    cache.insert(hash, flags.bits(), &units, &c);
+    cache.insert(hash.unwrap_or(0), flags.bits(), &units, &c);
     Ok(c)
 }
 

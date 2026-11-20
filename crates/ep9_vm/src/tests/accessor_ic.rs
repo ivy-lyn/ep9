@@ -772,3 +772,142 @@ fn ops_of_reads_the_getter_and_setter_cases() {
         t.release_all(kept);
     });
 }
+
+/// M10 LEVER-12 NAMED-MISS: a getter on the prototype chain at a megamorphic site. The stub
+/// cache has no entry for it, so the probe in the `GetNamedProperty` fast body misses and
+/// every load calls the getter, with its receiver as `this`; a new getter is seen at once.
+#[test]
+fn an_inherited_getter_at_a_megamorphic_site_runs_on_every_load() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::Get("x")]);
+        reset();
+        let op = object_prototype(t.rt());
+        let (ga, gb) = (host(t.rt(), get_this, "ga"), host(t.rt(), get_two, "gb"));
+        let holder = object_with(t.rt(), op, &[("h", int(0))]);
+        let kept_h = t.keep(holder);
+        define_accessor(t.rt(), holder, "x", ga, UNDEFINED);
+        // Each receiver is rooted as it is made (GC stress: the conservative scan does not see
+        // a `Vec`'s buffer; Codex nm-r1 F3).
+        let (mut objs, mut kept) = (vec![], vec![]);
+        for p in ["a", "b", "c", "d", "e", "f"] {
+            let o = object_with(t.rt(), holder, &[(p, int(0))]);
+            kept.push(t.keep(o));
+            objs.push(o);
+        }
+        // A collection: the receivers live on through their handles only.
+        t.collect();
+        for &o in &objs {
+            assert_eq!(t.ok(0, o, UNDEFINED), o);
+        }
+        assert_eq!(t.state(0), State::Megamorphic);
+        let fast = ic::FAST_PROBE_HITS.with(Cell::get);
+        for _ in 0..3 {
+            for &o in &objs {
+                assert_eq!(t.ok(0, o, UNDEFINED), o);
+            }
+        }
+        assert_eq!(calls()[0], 6 + 18);
+        assert_eq!(ic::FAST_PROBE_HITS.with(Cell::get), fast);
+        let x = key(t.rt(), "x");
+        let id = shape_of(objs[5]) as u32;
+        assert_eq!(
+            crate::stub_cache::probe(t.rt(), crate::stub_cache::Op::Load, id, x),
+            None
+        );
+        // A new pair on the holder: the next load calls the new getter.
+        define_accessor(t.rt(), holder, "x", gb, UNDEFINED);
+        assert_eq!(t.ok(0, objs[5], UNDEFINED), int(2));
+        assert_eq!(calls()[1], 1);
+        t.release(kept_h);
+        t.release_all(kept);
+    });
+}
+
+/// M10-P2 LEVER-12 NAMED-STORE-MEGA: own and inherited setters at megamorphic 0x24 sites
+/// (sloppy and strict) and an inherited setter at a megamorphic 0x25 site. The stub cache has
+/// no entry for a setter case, so the probe in the store fast bodies never stores
+/// (`FAST_STORE_HITS` does not move): every 0x24 store calls the setter with its receiver and
+/// its argument, and a new setter is seen at once; every 0x25 store makes an own data property
+/// and calls no setter (CreateDataProperty does not read the chain).
+#[test]
+fn setters_at_megamorphic_store_sites_run_on_every_store() {
+    each(|c| {
+        let sites = [
+            Site::Set("x", false),
+            Site::Set("x", true),
+            Site::Define("x"),
+        ];
+        let mut t = T::new(c, &sites);
+        reset();
+        let op = object_prototype(t.rt());
+        let set = host(t.rt(), set_record, "set");
+        let holder = object_with(t.rt(), op, &[("h", int(0))]);
+        let kept_h = t.keep(holder);
+        define_accessor(t.rt(), holder, "x", UNDEFINED, set);
+        // Each receiver is rooted as it is made (GC stress). Six inherit the setter; six have
+        // an own one.
+        let (mut inh, mut owned, mut kept) = (vec![], vec![], vec![]);
+        for p in ["a", "b", "c", "d", "e", "f"] {
+            let o = object_with(t.rt(), holder, &[(p, int(0))]);
+            kept.push(t.keep(o));
+            inh.push(o);
+            let q = object_with(t.rt(), op, &[(p, int(0)), ("z", int(0))]);
+            kept.push(t.keep(q));
+            define_accessor(t.rt(), q, "x", UNDEFINED, set);
+            owned.push(q);
+        }
+        for i in [0, 1] {
+            for &o in inh.iter().chain(&owned) {
+                t.ok(i, o, int(1));
+            }
+            assert_eq!(t.state(i), State::Megamorphic);
+        }
+        assert_eq!(calls()[2], 24);
+        let fast = ic::FAST_STORE_HITS.with(Cell::get);
+        for j in 0..3 {
+            for i in [0, 1] {
+                for &o in inh.iter().chain(&owned) {
+                    let v = int(10 * j + i as i32);
+                    t.ok(i, o, v);
+                    assert_eq!(seen(&t), (o, v));
+                }
+            }
+        }
+        assert_eq!(calls()[2], 24 + 72);
+        assert!(
+            inh.iter().all(|&o| own(t.rt(), o, "x").is_none()),
+            "no own `x` added"
+        );
+        let x = key(t.rt(), "x");
+        let id = shape_of(inh[5]) as u32;
+        assert_eq!(
+            crate::stub_cache::probe(t.rt(), crate::stub_cache::Op::Store, id, x),
+            None
+        );
+        // A new pair on the holder: the next store calls the new setter (here: none, so a
+        // sloppy store is ignored and a strict one throws).
+        define_accessor(t.rt(), holder, "x", UNDEFINED, UNDEFINED);
+        t.ok(0, inh[5], int(7));
+        t.throws(1, inh[5], int(7), "TypeError");
+        assert_eq!(calls()[2], 24 + 72);
+        // 0x25 with an inherited setter: an own data `x`, no setter call. The site is
+        // megamorphic after six shapes; the stores after that make a new shape each.
+        let calls_before = calls()[2];
+        let (mut defs, mut kept_d) = (vec![], vec![]);
+        for p in ["a", "b", "c", "d", "e", "f", "g"] {
+            let o = object_with(t.rt(), holder, &[(p, int(0)), ("d", int(0))]);
+            kept_d.push(t.keep(o));
+            defs.push(o);
+        }
+        for (k, &o) in defs.iter().enumerate() {
+            t.ok(2, o, int(k as i32));
+            assert_eq!(own(t.rt(), o, "x"), Some(int(k as i32)));
+        }
+        assert_eq!(t.state(2), State::Megamorphic);
+        assert_eq!(calls()[2], calls_before);
+        assert_eq!(ic::FAST_STORE_HITS.with(Cell::get), fast);
+        t.release_all(kept_d);
+        t.release(kept_h);
+        t.release_all(kept);
+    });
+}

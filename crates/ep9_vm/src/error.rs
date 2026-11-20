@@ -64,19 +64,12 @@ impl FrameRef {
     }
 }
 
-/// One JS frame of a captured stack.
-#[derive(Clone, Debug)]
-pub(crate) struct StackFrame {
-    pub name: String,
-    pub site: Option<Site>,
-}
-
-/// Walks the VM frames from the top (`rt.stack().fp()`); returns up to `limit` JS frames.
-pub(crate) fn capture(rt: &Runtime, limit: usize) -> Vec<StackFrame> {
-    let mut out = Vec::new();
+/// Calls `each(name, site)` for up to `limit` JS frames from the top; allocates nothing (K16).
+pub(crate) fn capture(rt: &Runtime, limit: usize, mut each: impl FnMut(&str, Option<Site>)) {
+    let mut n = 0;
     let mut f = FrameRef(rt.stack().fp());
     let mut above_ret: *const u8 = core::ptr::null();
-    while !f.is_null() && out.len() < limit {
+    while !f.is_null() && n < limit {
         let fi = f.info();
         if fi.is_bytecode() {
             let off = fi
@@ -89,15 +82,12 @@ pub(crate) fn capture(rt: &Runtime, limit: usize) -> Vec<StackFrame> {
                     unit: u.index,
                     offset: o,
                 });
-            out.push(StackFrame {
-                name: fi.name.clone(),
-                site,
-            });
+            each(&fi.name, site);
+            n += 1;
         }
         above_ret = f.return_pc();
         f = f.caller();
     }
-    out
 }
 
 /// `file:line:col` of a site (UTF-16 column), or `file` when the unit has no source.
@@ -110,20 +100,27 @@ pub(crate) fn site_text(rt: &Runtime, s: Site) -> String {
     }
 }
 
-pub(crate) fn stack_lines(rt: &Runtime, frames: &[StackFrame]) -> String {
-    let mut s = String::new();
-    for f in frames {
-        let at = f
-            .site
-            .map(|x| site_text(rt, x))
-            .unwrap_or_else(|| "<anonymous>".into());
-        if f.name.is_empty() {
-            s.push_str(&format!("\n    at {at}"));
-        } else {
-            s.push_str(&format!("\n    at {} ({at})", f.name));
-        }
+/// Appends `"\n    at <site>"` or `"\n    at <name> (<site>)"`; site: `site_text` or `<anonymous>`.
+fn push_stack_line(rt: &Runtime, out: &mut String, name: &str, site: Option<Site>) {
+    use core::fmt::Write as _;
+    out.push_str("\n    at ");
+    if !name.is_empty() {
+        out.extend([name, " ("]);
     }
-    s
+    match site {
+        Some(s) => {
+            // SAFETY: as in `site_text`.
+            let u = unsafe { &*rt.unit(s.unit) };
+            match u.line_column(s.offset) {
+                Some((l, c)) => write!(out, "{}:{l}:{c}", u.file).expect("a String write"),
+                None => out.push_str(&u.file),
+            }
+        }
+        None => out.push_str("<anonymous>"),
+    }
+    if !name.is_empty() {
+        out.push(')');
+    }
 }
 
 /// "Name: message" of an error object, without running JS: a `name` or `message` accessor
@@ -155,12 +152,15 @@ pub(crate) fn error_header(cx: &mut Cx, e: u64) -> String {
 /// Captures the VM stack into the `stack` property of the new error `e` and records its site.
 pub(crate) fn install_stack(cx: &mut Cx, e: u64) {
     let rt = cx.rt();
-    let frames = capture(rt, rt.stack_trace_limit);
-    if let Some(site) = frames.iter().find_map(|f| f.site) {
+    let (mut lines, mut first) = (String::new(), None);
+    capture(rt, rt.stack_trace_limit, |name, site| {
+        first = first.or(site);
+        push_stack_line(rt, &mut lines, name, site);
+    });
+    if let Some(site) = first {
         object::set_error_site(rt, e, site.unit, site.offset);
     }
-    let text = format!("{}{}", error_header(cx, e), stack_lines(rt, &frames));
-    let s = message_string(rt, &text);
+    let s = message_string(rt, &(error_header(cx, e) + &lines));
     own_define(rt, e, rt.atom(Atom::Stack), s, attr::HIDDEN);
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn bounded_message(parts: &[Part<'_>]) -> String {
     if units > crate::string::MAX_STRING_LENGTH {
         return OVER_LIMIT_MESSAGE.into();
     }
-    let mut out = String::new();
+    let mut out = String::with_capacity(units);
     for p in parts {
         match *p {
             Part::Text(t) => out.push_str(t),

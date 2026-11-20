@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // The exit-inputs mode of ci.yml (plan v14 section 4.1; V14-D12, V14-D59): the helpers of the
 // `exit-inputs` job and of its reading. The job runs MEMREAD (tools/bench/cross/mem.mjs) and the
-// JetStream M2 list (tools/bench/jetstream/run.mjs) per platform, and the Windows Path B M2 set
-// (tools/bench/cross/run.mjs, both builds in each paired round) on 4 windows x64 runners.
+// JetStream M2 list (tools/bench/jetstream/run.mjs) per platform, and the Path B M2 set
+// (tools/bench/cross/run.mjs, both builds in each paired round) on 4 windows x64 runners and on
+// 2 Linux x64 runners (plan v15 V15-D16: the same-CPU-model pairs of the win-x64 cell).
 //
 //   node .github/scripts/exit-inputs.mjs host --out host.toml [--id ID] [--minutes N] [--every-s S]
 //       Measures the idle baseline of this runner (tools/bench/cross/idle.mjs, its load source:
@@ -12,11 +13,13 @@
 //       build or benchmark process (no baseline, no file).
 //
 //   node .github/scripts/exit-inputs.mjs pathb --leg DIR [--leg DIR]... --out compare.json
-//       [--md compare.md]
+//       [--md compare.md] [--platform P]
 //       The Path B compare of the runner legs (V14-D12, the box protocol of 10-quality.md
 //       section 3): each leg DIR holds run-jit.json and run-jitless.json, the two views of one
-//       both-builds run.mjs run (--out, --out-jitless). The runners are grouped by CPU model, in
-//       the order given; the first 2 legs of the first model with 2 legs are box 1 and box 2.
+//       both-builds run.mjs run (--out, --out-jitless). The runners are grouped by platform and
+//       CPU model, in the order given; the first 2 legs of the first group with 2 legs are box 1
+//       and box 2 (2 legs of 2 platforms are never a pair). --platform P (win32-x64, linux-x64)
+//       reads only the legs of P; the runners table names the others.
 //       The output is the ep9-pathb-compare/v1 file that `cargo xtask m2-exit --pathb` reads:
 //       commit, platform (of the 2 boxes' runs; null when they differ), boxes, runners (every
 //       leg and its CPU model), checks (box, build,
@@ -25,22 +28,39 @@
 //       A box reading that the gates refuse (void, gross only, a void or net invalid kernel row,
 //       any other m2gate reason except the run labels of a runner that is not a gate host and,
 //       for item 3, the QuickJS ratio) gives no interval (boxBlockers).
-//       No 2 legs of one CPU model: the file says pair null and the exit status is 3. Then the
-//       dispatch runs again once; a second miss is NOT-RUN (a DL line; plan v14 section 4.1 (6)).
+//       No 2 legs of one CPU model: the file says pair null and the exit status is 3. On
+//       --platform win32-x64 the dispatch then runs again once; a second miss is NOT-RUN (a DL
+//       line; plan v14 section 4.1 (6)). On --platform linux-x64 exit 3 is normal (2 legs, often of
+//       2 CPU models): do not run the dispatch again; m2-exit reads the `legs` block of the file.
 //       The Markdown also gives the TS ratio to node --jitless per box and build (V14-D59).
+//       The file also has `legs` (V15-D16), with a pair or not: every leg that was read, its CPU
+//       model, its own commit, a run check per build and the box value of each cell per build
+//       (item 3 also `time_s`: the gross ep9 TS time, whose 1 / t is the cross-host TS speed).
+//       Each leg also names the id, run_id and run_attempt of its host.toml when they are set (the
+//       host step writes run_id and run_attempt from GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT; a run
+//       off GitHub, such as a box run, has none).
+//       `cargo xtask m2-exit --host x86_64-pc-windows-msvc --pathb <windows compare>
+//       --linux-pathb <linux-x64 compare>` pairs each Windows leg with each Linux x64 leg of the
+//       same CPU model from these legs (the 09:66 cross-host form).
+//       A leg that was not read is in `runners` only (with its `error`): m2-exit then reads
+//       NO AGREEMENT, as the same-model pairs of the dispatch are not known. It also reads NO
+//       AGREEMENT when the legs name more than one run_id, or only some legs name one (EI2-R1);
+//       when a compare does not hold each slot id once (gha-pathb-w1..w4, gha-pathb-l1 and -l2;
+//       EI2-R3-LEG-SLOT); and when a windows compare with `legs` has no --linux-pathb (option B).
+//       With no run_id on any leg (an older input), m2-exit gives a note only.
 //
 // Exit status: 0 done; 2 usage error or an input that cannot be read; 3 no baseline (host) or
 // no pair (pathb).
 // Tests: node --test .github/scripts/exit-inputs.test.mjs
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readM2Gate, TS } from "../../tools/bench/cross/m2gate.mjs";
-import { cpuModel, loadSource } from "../../tools/bench/lib/host.mjs";
+import { cpuModel, loadSource, parseToml } from "../../tools/bench/lib/host.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const SCHEMA = "ep9-pathb-compare/v1";
@@ -73,12 +93,19 @@ export function parseIdle(stdout) {
 
 const tomlString = (s) => `"${String(s).replace(/["\\#]/g, "_")}"`;
 
-/** The host file text (the TOML subset of lib/host.mjs: no '#', '"' or '\' in a string). */
-export function hostToml({ id, cpu, cores, platform, osText, idle, source, measured }) {
+/**
+ * The host file text (the TOML subset of lib/host.mjs: no '#', '"' or '\' in a string). `runId`
+ * and `runAttempt` (GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT; EI2-R1) give the run_id and run_attempt
+ * lines only when they are set: a run off GitHub (a box) has none.
+ */
+export function hostToml({ id, runId, runAttempt, cpu, cores, platform, osText, idle, source, measured }) {
+  const run = (k, v) => (v === undefined || v === null || String(v) === "" ? [] : [`${k} = ${tomlString(v)}`]);
   return [
     "# Host file of a GitHub-hosted runner, written by .github/scripts/exit-inputs.mjs host",
     `# (${measured}). A GitHub runner is never a gate host (10-quality.md section 3).`,
     `id = ${tomlString(id)}`,
+    ...run("run_id", runId),
+    ...run("run_attempt", runAttempt),
     `cpu = ${tomlString(cpu)}`,
     `cores = ${cores}`,
     `platform = ${tomlString(platform)}`,
@@ -90,8 +117,12 @@ export function hostToml({ id, cpu, cores, platform, osText, idle, source, measu
   ].join("\n");
 }
 
-/** The host subcommand. `deps.idle(args)` runs idle.mjs: { status, stdout, stderr }. */
+/**
+ * The host subcommand. `deps.idle(args)` runs idle.mjs: { status, stdout, stderr }. `deps.env`
+ * (process.env by default) gives GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT (EI2-R1).
+ */
 export function host(o, deps = {}) {
+  const env = deps.env ?? process.env;
   const idle =
     deps.idle ??
     ((args) => spawnSync(process.execPath, [path.join(ROOT, "tools/bench/cross/idle.mjs"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
@@ -107,6 +138,8 @@ export function host(o, deps = {}) {
   };
   const text = hostToml({
     id: o.id,
+    runId: env.GITHUB_RUN_ID,
+    runAttempt: env.GITHUB_RUN_ATTEMPT,
     ...info,
     idle: base,
     measured: `idle baseline: ${o.minutes} min, a sample every ${o.everyS} s, ${new Date().toISOString()}`,
@@ -137,7 +170,7 @@ export function agreement(s1, s2) {
  * stop a box interval. Any other reason does.
  */
 const RUN_REASONS = [/^not a gate host$/, /^provisional run \(/];
-/** The TS reasons of the QuickJS ratio: not part of the item 3 cell (no QuickJS on Windows). */
+/** The TS reasons of the QuickJS ratio: not part of the item 3 cell (its comparator is node). */
 const QJS_REASONS = [/^no qjs row$/, /^the net ratio to qjs /, /^ratios to qjs void /, /^the qjs row is not valid: /];
 
 /**
@@ -190,28 +223,56 @@ export function boxValue(gate, spec, build) {
   return box(r.value ?? null, r.interval ?? null, [metric, r.status].filter(Boolean).join(", "));
 }
 
-/** Pairs the legs: the first 2 of the first CPU model that has 2, in the order given. */
+/** A CPU model that names a model: not null, not empty, not the cpuModel sentinel "unknown". */
+export const knownCpu = (cpu) => typeof cpu === "string" && cpu.trim() !== "" && cpu.trim() !== "unknown";
+
+/**
+ * Pairs the legs: the first 2 of the first (platform, CPU model) group that has 2, in the order
+ * given. A leg with no CPU model, or with the cpuModel sentinel "unknown" (host.mjs), is never
+ * in a pair.
+ */
 export function pairLegs(legs) {
   const by = new Map();
   for (const l of legs) {
-    const k = l.cpu ?? "unknown";
+    if (!knownCpu(l.cpu)) continue;
+    const k = JSON.stringify([l.platform ?? null, l.cpu]);
     if (!by.has(k)) by.set(k, []);
     by.get(k).push(l);
   }
-  for (const [cpu, ls] of by) if (cpu !== "unknown" && ls.length >= 2) return { cpu, boxes: ls.slice(0, 2) };
+  for (const ls of by.values()) if (ls.length >= 2) return { cpu: ls[0].cpu, boxes: ls.slice(0, 2) };
   return null;
 }
 
-/** Reads a leg dir: { name, cpu, platform, jit, jitless, error }. */
+/**
+ * Reads a leg dir: { name, id, runId, runAttempt, cpu, platform, jit, jitless, error }. `id`,
+ * `runId` and `runAttempt` are the id, run_id and run_attempt of the leg's host.toml (the host
+ * step writes it in the leg's out/; EI2-R1, EI2-R3-LEG-SLOT), null when the file or the key is
+ * not there (an older leg). A host.toml that cannot be read is a read error of the leg. A run
+ * file whose host.id is not the host.toml id is a read error too (not the run files of this leg).
+ */
 export function readLeg(dir) {
   const name = path.basename(path.resolve(dir));
   const read = (f) => JSON.parse(readFileSync(path.join(dir, f), "utf8"));
+  const none = { id: null, runId: null, runAttempt: null };
   try {
     const jit = read("run-jit.json");
     const jitless = read("run-jitless.json");
-    return { name, cpu: jit.host?.measured?.cpu ?? null, platform: jit.host?.measured?.platform ?? null, jit, jitless, error: null };
+    const file = path.join(dir, "host.toml");
+    let ids = none;
+    if (existsSync(file)) {
+      let h;
+      try {
+        h = parseToml(readFileSync(file, "utf8"));
+      } catch (e) {
+        throw new Error(`host.toml: ${e.message}`);
+      }
+      ids = { id: h.id ?? null, runId: h.run_id ?? null, runAttempt: h.run_attempt ?? null };
+      for (const [b, r] of [["jit", jit], ["jitless", jitless]])
+        if (ids.id !== null && r.host?.id !== ids.id) throw new Error(`host.toml id ${ids.id}: run-${b}.json names host ${r.host?.id ?? "none"} (not the run files of this leg)`);
+    }
+    return { name, ...ids, cpu: jit.host?.measured?.cpu ?? null, platform: jit.host?.measured?.platform ?? null, jit, jitless, error: null };
   } catch (e) {
-    return { name, cpu: null, platform: null, jit: null, jitless: null, error: e.message };
+    return { name, ...none, cpu: null, platform: null, jit: null, jitless: null, error: e.message };
   }
 }
 
@@ -219,11 +280,94 @@ export function readLeg(dir) {
  * The ep9-pathb-compare/v1 object of the legs (see the header). `deps.readGate` (m2gate.mjs
  * readM2Gate by default) is injectable for tests.
  */
+/** The commit that a leg's jit binary names (P0-BUILDID), or null. */
+const legCommit = (l) => l.jit.commit?.binary?.commit ?? l.jit.commit?.ep9 ?? null;
+
+/** The m2gate result of a leg's 2 views: { gate, why } (`why`: readGate refused them). */
+function legGate(leg, readGate) {
+  try {
+    return {
+      gate: readGate([
+        { res: leg.jit, source: `${leg.name}/run-jit.json` },
+        { res: leg.jitless, source: `${leg.name}/run-jitless.json` },
+      ]),
+      why: null,
+    };
+  } catch (e) {
+    return { gate: null, why: e.message };
+  }
+}
+
+/**
+ * The run check of one build of a leg: the run is of `commit`, its binary was built clean
+ * (P0-BUILDID) and the gate read the build.
+ */
+function runCheck(res, build, commit, g) {
+  const own = g.gate?.builds?.find((b) => b.build === build);
+  return {
+    build,
+    commit_ok: !!commit && res.commit?.ep9 === commit && res.commit?.binary?.dirty === false && !!own,
+    rounds: res.M?.rounds ?? null,
+    platform: res.host?.measured?.platform ?? null,
+    cpu: res.host?.measured?.cpu ?? null,
+    load: { before: res.load?.before ?? null, after: res.load?.after ?? null },
+    ...(g.why ? { error: g.why } : {}),
+  };
+}
+
+/**
+ * The gross ep9 TS time (s) of a build of a leg: { median, interval, note }. The win-x64
+ * same-CPU-model form reads the TS speed as 1 / this time at each end (10-quality.md section 3,
+ * P0-WININT), not the ratio to node --jitless (EI2 Codex r1 F2). The interval is null when
+ * boxBlockers gives a reason or the gross times are void (the note names them).
+ */
+export function tsTime(gate, build) {
+  const r = gate?.readings?.find((x) => x.id === TS.id && x.build === build);
+  if (!r) return { median: null, interval: null, note: "no reading" };
+  const why = boxBlockers(r, CELLS.find((s) => s.id === TS.id));
+  if (r.gross_s?.void) why.push("gross times void");
+  const note = ["gross", r.status].filter(Boolean).join(", ");
+  return { median: r.value ?? null, interval: why.length ? null : (r.interval ?? null), note: why.length ? `${note}; no interval: ${why.join("; ")}` : note };
+}
+
+/**
+ * The `legs` block (V15-D16): every leg that was read, with its own commit, a run check per
+ * build against that commit, and the box value of each cell per build (for item 3 also
+ * `time_s`, the gross ep9 TS time: see tsTime). The leg's host.toml id, run_id and run_attempt
+ * (readLeg) are copied when they are set; m2-exit checks them (EI2-R1, EI2-R3-LEG-SLOT).
+ */
+function legBlocks(usable, gateOf) {
+  const set = (k, v) => (v === undefined || v === null ? {} : { [k]: v });
+  return usable.map((l) => {
+    const commit = legCommit(l);
+    const g = gateOf(l);
+    return {
+      leg: l.name,
+      ...set("id", l.id),
+      ...set("run_id", l.runId),
+      ...set("run_attempt", l.runAttempt),
+      cpu: l.cpu,
+      platform: l.platform,
+      commit,
+      checks: BUILDS.map((build) => runCheck(l[build], build, commit, g)),
+      cells: BUILDS.flatMap((build) => CELLS.map((spec) => ({ build, cell: spec.cell, value: boxValue(g.gate, spec, build), ...(spec.id === TS.id ? { time_s: tsTime(g.gate, build) } : {}) }))),
+    };
+  });
+}
+
 export function compare(legs, deps = {}) {
   const readGate = deps.readGate ?? readM2Gate;
-  const runners = legs.map((l) => ({ leg: l.name, cpu: l.cpu, platform: l.platform, error: l.error }));
-  const usable = legs.filter((l) => !l.error);
+  const only = deps.platform ?? null;
+  const other = (l) => only !== null && !l.error && l.platform !== only;
+  const runners = legs.map((l) => ({ leg: l.name, cpu: l.cpu, platform: l.platform, error: other(l) ? `platform ${l.platform ?? "unknown"}, not ${only} (not read)` : l.error }));
+  const usable = legs.filter((l) => !l.error && !other(l));
   const pair = pairLegs(usable);
+  // One m2gate read per leg, for the pair and for the legs block.
+  const seen = new Map();
+  const gateOf = (l) => {
+    if (!seen.has(l)) seen.set(l, legGate(l, readGate));
+    return seen.get(l);
+  };
   if (!pair) {
     return {
       schema: SCHEMA,
@@ -235,42 +379,20 @@ export function compare(legs, deps = {}) {
       boxes: [],
       checks: [],
       cells: [],
+      legs: legBlocks(usable, gateOf),
     };
   }
   const [b1, b2] = pair.boxes;
   // The commit that box 1's jit binary names (P0-BUILDID); each run must be a clean build of it.
-  const commit = b1.jit.commit?.binary?.commit ?? b1.jit.commit?.ep9 ?? null;
+  const commit = legCommit(b1);
   // The platform of the compare: both boxes' runs name it (m2-exit checks it against --host).
   const plat = b1.platform && b1.platform === b2.platform ? b1.platform : null;
   const checks = [];
   const gates = [];
   for (const [n, leg] of [[1, b1], [2, b2]]) {
-    let gate = null;
-    let why = null;
-    try {
-      gate = readGate([
-        { res: leg.jit, source: `${leg.name}/run-jit.json` },
-        { res: leg.jitless, source: `${leg.name}/run-jitless.json` },
-      ]);
-    } catch (e) {
-      why = e.message;
-    }
-    gates.push(gate);
-    for (const [build, res] of [["jit", leg.jit], ["jitless", leg.jitless]]) {
-      const own = gate?.builds?.find((b) => b.build === build);
-      checks.push({
-        box: n,
-        leg: leg.name,
-        build,
-        // The run is of the compare commit and its binary was built clean (P0-BUILDID).
-        commit_ok: !!commit && res.commit?.ep9 === commit && res.commit?.binary?.dirty === false && !!own,
-        rounds: res.M?.rounds ?? null,
-        platform: res.host?.measured?.platform ?? null,
-        cpu: res.host?.measured?.cpu ?? null,
-        load: { before: res.load?.before ?? null, after: res.load?.after ?? null },
-        ...(why ? { error: why } : {}),
-      });
-    }
+    const g = gateOf(leg);
+    gates.push(g.gate);
+    for (const build of BUILDS) checks.push({ box: n, leg: leg.name, ...runCheck(leg[build], build, commit, g) });
   }
   const cells = [];
   for (const build of BUILDS) {
@@ -300,6 +422,7 @@ export function compare(legs, deps = {}) {
     boxes: [b1.name, b2.name],
     checks,
     cells,
+    legs: legBlocks(usable, gateOf),
   };
 }
 
@@ -316,6 +439,8 @@ export function renderMarkdown(c) {
   L.push("");
   if (!c.pair) {
     L.push(`**${c.result}.**`);
+    L.push("");
+    legTable(c, L);
     return `${L.join("\n")}\n`;
   }
   L.push(`Pair: ${c.pair.legs.join(" and ")} (${c.pair.cpu}).`);
@@ -331,7 +456,25 @@ export function renderMarkdown(c) {
   L.push("");
   const ts = c.cells.filter((x) => x.cell.startsWith("item 3:"));
   L.push(`TS ratio to node --jitless (V14-D59 input): ${ts.map((x) => `${x.build} box 1 ${f3(x.box1.median)}, box 2 ${f3(x.box2.median)}`).join("; ")}.`);
+  L.push("");
+  legTable(c, L);
   return `${L.join("\n")}\n`;
+}
+
+/** The legs table (V15-D16 input): the value of each cell per leg and build. */
+function legTable(c, L) {
+  const legs = c.legs ?? [];
+  if (!legs.length) return;
+  L.push("Per leg (the input of the win-x64 same-CPU-model cell, V15-D16):");
+  L.push("");
+  L.push(`| leg | CPU model | build | commit ok | ${CELLS.map((s) => `item ${s.item}`).join(" | ")} |`);
+  L.push(`|---|---|---|---|${CELLS.map(() => "---|").join("")}`);
+  for (const l of legs) {
+    for (const k of l.checks) {
+      const v = CELLS.map((s) => l.cells.find((x) => x.build === k.build && x.cell === s.cell)?.value).map((x) => `${f3(x?.median)} [${iv(x?.interval)}]`);
+      L.push(`| ${l.leg} | ${l.cpu ?? "-"} | ${k.build} | ${k.commit_ok ? "yes" : "no"} | ${v.join(" | ")} |`);
+    }
+  }
 }
 
 // ---- main ----------------------------------------------------------------------------------
@@ -339,7 +482,7 @@ export function renderMarkdown(c) {
 export function parseArgs(argv) {
   const [cmd, ...rest] = argv;
   if (cmd !== "host" && cmd !== "pathb") throw new UsageError("the first argument is host or pathb");
-  const o = { cmd, out: null, md: null, id: `gha-${process.platform}-${process.arch}`, minutes: 10, everyS: 10, legs: [] };
+  const o = { cmd, out: null, md: null, id: `gha-${process.platform}-${process.arch}`, minutes: 10, everyS: 10, legs: [], platform: null };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     const val = () => {
@@ -357,6 +500,7 @@ export function parseArgs(argv) {
     else if (cmd === "host" && a === "--minutes") o.minutes = num();
     else if (cmd === "host" && a === "--every-s") o.everyS = num();
     else if (cmd === "pathb" && a === "--leg") o.legs.push(val());
+    else if (cmd === "pathb" && a === "--platform") o.platform = val();
     else throw new UsageError(`unknown option ${a} for ${cmd}`);
   }
   if (!o.out) throw new UsageError("--out is required");
@@ -382,7 +526,7 @@ function main() {
     process.stdout.write(r.text);
     return;
   }
-  const c = compare(o.legs.map(readLeg));
+  const c = compare(o.legs.map(readLeg), { platform: o.platform });
   writeFileSync(o.out, `${JSON.stringify(c, null, 1)}\n`);
   const md = renderMarkdown(c);
   if (o.md) writeFileSync(o.md, md);

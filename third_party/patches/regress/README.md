@@ -16,8 +16,8 @@ third_party/regress/                checkout + patches                       git
 
 - Pin: `aae35dee1596cc9a9caaad2425b088081c09e5d5`, the commit of the annotated tag `v0.12.0` of
   https://github.com/ridiculousfish/regress.
-- Patches: 7 (M5-P3 RX0b), each one upstreamable commit on the pin with its own test (the
-  test file the patch adds under `tests/`, or its new `#[test]`s):
+- Patches: 8 (0001-0007 M5-P3 RX0b; 0008 M10-P0 FUZZ-RX-M9P2), each one upstreamable commit on
+  the pin with its own test (the test file the patch adds under `tests/`, or its new `#[test]`s):
 
   | File | What | Test | ep9 use |
   |---|---|---|---|
@@ -28,6 +28,7 @@ third_party/regress/                checkout + patches                       git
   | `0005-latin1-input-and-start-predicates.patch` | `Text::Latin1` (one byte per unit) and code-unit start predicates (a first-unit set, a literal prefix, an anchor) under the `utf16` feature; the start-position search counts one step per scan call and one per 1,024 start positions it looks at past the first 1,024 (Latin-1, UCS-2, UTF-16: rejected prefix candidates and a set with no member spend the budget and poll; a subject too short for the prefix, or a candidate found at once, is one step), the UTF-16 prefix search compares at most 16 units per candidate, and a Latin-1 prefix chunk is at least 4 times the prefix (memmem reads each unit at most 1.25 times) | `tests/latin1.rs` (also prefixes at chunk edges); `tests/limits.rs` (a long prefix polls; rejected candidates are metered; a 256 KiB Latin-1 prefix takes about one memmem pass; a 256 KiB prefix on a short subject finds no match within a budget of 20 on all three forms) | a Latin-1 subject is read in place, not widened; a failed position costs a scan, not a match attempt |
   | `0006-caller-owned-scratch.patch` | `Regex::exec_into` with a caller-owned `Scratch` and capture buffer: no allocation per exec, no group-name clone | `tests/scratch.rs` | one `Scratch` per isolate |
   | `0007-flat-string-property-tables.patch` | the tables of the properties of strings (`\p{RGI_Emoji}` with `v`) as two integer arrays each (`StringSetTable`), not one pointer per string; `gen-unicode` writes the new form | `tests/string_properties.rs`, `unicode::tests::string_tables_are_well_formed` | 7,905 fewer load-time fixups: `ep9 --version` about 4.5% fewer instructions (W-REGEXP-1) |
+  | `0008-unicode-escape-hex-digits-only.patch` | `\u{...}`, `\uXXXX` and the trail surrogate take only ASCII hex digits (Rust `from_str_radix` takes a leading `+`); a lead surrogate escape with no trail keeps the next `\u` escape | `tests/unicode_escape_hex.rs` | `/\u+0ff/` and `/[\u+fff-z]/` follow Annex B as in node |
 
   The source of the patches is the branch `rx0b` of a regress checkout; each file is its
   `git format-patch --zero-commit --no-signature` with the author `ep9` and no date.

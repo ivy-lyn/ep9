@@ -649,8 +649,8 @@ fn sort_into<'s>(
     let bigint = is_bigint_row(row(cx, obj));
     if comparefn.is_undefined() {
         if bigint {
-            // A BigInt64 or BigUint64 element fits an i128.
-            let mut items = Vec::new();
+            // A BigInt64 or BigUint64 element fits an i128. `len` items (PREALLOC K17).
+            let mut items = Vec::with_capacity(len as usize);
             for k in 0..len {
                 cx.poll_interrupt()?;
                 let v = cx.get_index(obj, k)?;
@@ -663,7 +663,7 @@ fn sort_into<'s>(
                 cx.set_index(dest, j as u64, v, true)?;
             }
         } else {
-            let mut items = Vec::new();
+            let mut items = Vec::with_capacity(len as usize);
             for k in 0..len {
                 cx.poll_interrupt()?;
                 let v = cx.get_index(obj, k)?;

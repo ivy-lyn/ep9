@@ -237,7 +237,7 @@ TS types are never PROVEN in full-ECMAScript mode. They enter only as HINTED fac
 
 ```
 JIT:  FeedbackVector --(snapshot on main thread)--> FactSnapshot{RUNTIME} --+ merge (H30) --+
-      CompiledUnit hint section (only if K-A4H keeps it) ---> HINTED -------+               |
+      container facts section (only if K-A4H keeps it)   ---> HINTED -------+               | [2026-11-19, M10-P0 MODES-TEXT-M10 (Codex r1 F1; Codex r4 F3): this input is on the hybrid re-tier path only; pure JIT reads no unit facts in v1 (doc 13 :108, :164). K-A4H gates only the HINTED input of the section; its PROFILED snapshots and tier hints stay for the hybrid re-tier, independent of that gate (doc 13 :442, :446)]
 AOT:  .ep9prof (training run) ---> PROFILED -+                                              |
       .ep9h (ep9-typecheck) -----> HINTED ---+--> ep9_aot merge --> FactSnapshot -----------+--> graph builder
       module graph ---------------> PROVEN --+                                                (bytecode + FactSnapshot)

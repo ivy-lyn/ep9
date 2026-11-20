@@ -263,6 +263,27 @@ fn expected_outputs_match_node() {
         eprintln!("skip: node is not installed (set EP9_NODE to its path)");
         return;
     };
+    // An older node gives false diffs (node 22 has no Promise.try; CI-NODE-PIN-CHECK), so
+    // fail with one line when node is older than the setup-node pin of ci.yml.
+    let v = String::from_utf8_lossy(&version.stdout).trim().to_string();
+    let major = |s: &str| {
+        s.trim_start_matches('v')
+            .split('.')
+            .next()?
+            .parse::<u32>()
+            .ok()
+    };
+    let ci = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/ci.yml");
+    let ci = std::fs::read_to_string(&ci).expect("read .github/workflows/ci.yml");
+    let pin = match ci_node_pin(&ci) {
+        Ok(pin) => pin,
+        // CI-NODE-PIN-PARSE: a pin that is not a number, or no pin line, is one clear line.
+        Err(e) => panic!("{e}"),
+    };
+    assert!(
+        major(&v).is_some_and(|m| m >= pin),
+        "node {v} is older than the CI pin {pin} (setup-node did not install it?)"
+    );
     let bless = std::env::var("EP9_E2E_BLESS").is_ok_and(|v| v == "1");
     let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/node_driver.cjs");
     let files = programs();
@@ -337,5 +358,48 @@ fn directive_parsing() {
         )
         .as_deref(),
         Some("7:9")
+    );
+}
+
+/// The major of the first `node-version:` pin in ci.yml (CI-NODE-PIN-PARSE). The value can
+/// have single quotes, double quotes or no quotes. A value that is not a number (a matrix
+/// expression such as `${{ matrix.node }}`) or no pin line gives an error of one line.
+fn ci_node_pin(ci: &str) -> Result<u32, String> {
+    let Some(raw) = ci
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("node-version:"))
+    else {
+        return Err("ci.yml has no node-version pin line".into());
+    };
+    let v = raw.split(" #").next().unwrap_or_default().trim();
+    let v = [('\'', '\''), ('"', '"')]
+        .iter()
+        .find_map(|&(a, b)| v.strip_prefix(a)?.strip_suffix(b))
+        .unwrap_or(v);
+    v.trim_start_matches('v')
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .ok_or_else(|| format!("ci.yml node-version pin is not a number: {}", raw.trim()))
+}
+
+#[test]
+fn ci_node_pin_parsing() {
+    let pin = |v: &str| ci_node_pin(&format!("jobs:\n  steps:\n          node-version: {v}\n"));
+    assert_eq!(pin("'24.22.1'"), Ok(24));
+    assert_eq!(pin("\"24.22.1\""), Ok(24));
+    assert_eq!(pin("24.22.1"), Ok(24));
+    assert_eq!(
+        pin("${{ matrix.node }}"),
+        Err("ci.yml node-version pin is not a number: ${{ matrix.node }}".into())
+    );
+    assert_eq!(
+        ci_node_pin("jobs:\n  build: {}\n"),
+        Err("ci.yml has no node-version pin line".into())
+    );
+    // The first pin wins.
+    assert_eq!(
+        ci_node_pin("node-version: '22'\nnode-version: '24'\n"),
+        Ok(22)
     );
 }

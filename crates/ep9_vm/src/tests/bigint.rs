@@ -754,3 +754,123 @@ fn a_message_names_a_very_large_bigint_without_its_digits() {
         assert_eq!(conv::describe(large), "<a very large BigInt>n");
     });
 }
+
+// ---- the keyed BigInt hash (M10-P0 HASH-SEED, R20 §7 HB-2) --------------------------------------
+
+/// The cache word of the BigInt `b` (+12; 0 = not computed).
+fn cached_hash(b: u64) -> u32 {
+    // SAFETY: `b` is a live BIGINT cell; +12 is its hash word (`bigint::bf::HASH`).
+    unsafe { object::cell(b).field::<u32>(bigint::bf::HASH).read() }
+}
+
+/// HB-2: 2 BigInts whose digits differ by a top-bit flip in 2 adjacent digits. The old hash
+/// (FNV-1a over words, `ep9_bigint::hash`) gives them one hash for every seed (the 2 flips
+/// cancel). The keyed hash gives them different hashes, and a Map finds each one.
+#[test]
+fn bigints_with_paired_top_bit_flips_hash_apart() {
+    with_cx(true, |cx| {
+        let top = 1u64 << 63;
+        let (x, y) = (0x0123_4567_89AB_CDEF, 0x7EDC_BA98_7654_3210);
+        let a = ep9_bigint::Big {
+            neg: false,
+            digits: vec![x, y, 5],
+        };
+        let b = ep9_bigint::Big {
+            neg: false,
+            digits: vec![x ^ top, y ^ top, 5],
+        };
+        for seed in [0, 1, 0x5EED, u64::MAX] {
+            assert_eq!(
+                ep9_bigint::hash(a.view(), seed),
+                ep9_bigint::hash(b.view(), seed),
+                "the old hash collides for seed {seed}"
+            );
+        }
+        let rt: &Runtime = cx.rt();
+        let ka = bigint::alloc(rt, &a);
+        let kb = bigint::alloc(rt, &b);
+        assert!(!bigint::equals(ka, kb));
+        assert_ne!(bigint::hash(ka), bigint::hash(kb));
+        let o =
+            object::new_slot_object(rt, rt.root(Root::ObjectPrototype), ObjectClass::Map.id(), 1);
+        let h = rt.heap.new_global(crate::runtime::val(o));
+        let t = table::new_empty(rt, MAP_WIDTH, false);
+        object::slot_set(rt, o, table::TABLE_SLOT, t);
+        table::set(rt, o, ka, num(1.0)).unwrap();
+        table::set(rt, o, kb, num(2.0)).unwrap();
+        let t = table::table_of(o);
+        assert_eq!(table::live_count(t), 2);
+        let found = |k: u64| table::lookup(rt, t, k).map(|i| table::value_at(t, i));
+        assert_eq!(found(ka), Some(num(1.0)));
+        assert_eq!(found(kb), Some(num(2.0)));
+        rt.heap.drop_global(h);
+    });
+}
+
+/// HB-2: the BigInt hash is by value (equal values in other cells have equal hashes, zero
+/// too) and cached in the +12 word, which is 0 until the first hash and the hash after it.
+#[test]
+fn bigint_hash_is_by_value_and_cached() {
+    with_cx(true, |cx| {
+        for text in ["0", "1", "-1", "-123456789012345678901234567890"] {
+            let k1 = big(cx, text);
+            assert_eq!(cached_hash(k1), 0, "{text}: not computed");
+            let h1 = bigint::hash(k1);
+            assert_ne!(h1, 0, "{text}");
+            assert_eq!(cached_hash(k1), h1, "{text}: cached");
+            assert_eq!(bigint::hash(k1), h1);
+            let k2 = big(cx, text);
+            assert_ne!(k1, k2, "{text}: 2 cells");
+            assert_eq!(bigint::hash(k2), h1, "{text}: by value");
+            assert_eq!(cached_hash(k2), h1);
+        }
+        // The sign is part of the value.
+        let (p, n) = (big(cx, "7"), big(cx, "-7"));
+        assert_ne!(bigint::hash(p), bigint::hash(n));
+    });
+}
+
+// ---- the pin to keyed SipHash-1-3 (M10-P0 HASH-SEED re-check F1) -------------------------------
+
+/// The 64-bit words `w` as code units (4 per word, little end first): the `sip13` form of
+/// `Sip::word`. With no tail, the last word is (8 * words) << 56, the same as `sip13_bigint`.
+fn units_of(w: &[u64]) -> Vec<u16> {
+    w.iter()
+        .flat_map(|&x| (0..4).map(move |j| (x >> (16 * j)) as u16))
+        .collect()
+}
+
+/// The reference SipHash-1-3 of the words `w` with the per-process key.
+fn keyed_sip13(w: &[u64]) -> u64 {
+    string::testing::sip13(string::testing::keys(), &units_of(w))
+}
+
+/// The hash that `bigint::hash` must give the BigInt cell `k`: the low 32 bits (0 -> 1) of
+/// keyed SipHash-1-3 of the word (sign << 63 | digit count), then each digit.
+fn want_hash(k: u64) -> u32 {
+    let v = bigint::view(&k);
+    let mut w = vec![(u64::from(v.neg) << 63) | v.digits.len() as u64];
+    w.extend_from_slice(v.digits);
+    (keyed_sip13(&w) as u32).max(1)
+}
+
+/// HB-2: `bigint::hash` is SipHash-1-3 with the per-process key, not a fixed-key or unkeyed
+/// hash (JS could then find BigInts that share a bucket). The values are those of
+/// `bigints_with_paired_top_bit_flips_hash_apart` and `bigint_hash_is_by_value_and_cached`.
+/// The asserts hold for any key, so the test does not set `EP9_HASH_SEED`.
+#[test]
+fn bigint_hash_is_keyed_siphash13_of_sign_length_and_digits() {
+    with_cx(true, |cx| {
+        let top = 1u64 << 63;
+        let (x, y) = (0x0123_4567_89AB_CDEF, 0x7EDC_BA98_7654_3210);
+        let rt: &Runtime = cx.rt();
+        for digits in [vec![x, y, 5], vec![x ^ top, y ^ top, 5]] {
+            let k = bigint::alloc(rt, &ep9_bigint::Big { neg: false, digits });
+            assert_eq!(bigint::hash(k), want_hash(k));
+        }
+        for text in ["0", "1", "-1", "7", "-7", "-123456789012345678901234567890"] {
+            let k = big(cx, text);
+            assert_eq!(bigint::hash(k), want_hash(k), "{text}");
+        }
+    });
+}

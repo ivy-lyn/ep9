@@ -292,7 +292,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::StringLiteral(s) => {
                 let k = self
                     .b
-                    .string_constant(literal::js_string(s.value.encode_utf16()));
+                    .string_constant(literal::js_text(s.value.as_str(), s.value.encode_utf16()));
                 self.b.lda_constant(k);
                 Ok(())
             }
@@ -407,7 +407,7 @@ impl<'a, 's> FnGen<'a, 's> {
         let cooked = |i: usize| -> UnitString {
             t.quasis[i].value.cooked.map_or_else(
                 || UnitString::new(""),
-                |c| literal::js_string(c.encode_utf16()),
+                |c| literal::js_text(c.as_str(), c.encode_utf16()),
             )
         };
         if t.expressions.is_empty() {
@@ -456,7 +456,7 @@ impl<'a, 's> FnGen<'a, 's> {
             .map(|q| {
                 (
                     UnitString::new(&literal::template_raw(q.value.raw.as_str())),
-                    q.value.cooked.map(|c| literal::js_string(c.encode_utf16())),
+                    literal::template_cooked(&q.value),
                 )
             })
             .collect();
@@ -487,7 +487,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::NumericLiteral(n) => Some(self.b.number_constant(n.value)),
             Expression::StringLiteral(s) => Some(
                 self.b
-                    .string_constant(literal::js_string(s.value.encode_utf16())),
+                    .string_constant(literal::js_text(s.value.as_str(), s.value.encode_utf16())),
             ),
             Expression::BooleanLiteral(b) => Some(self.b.oddball_constant(if b.value {
                 Oddball::True
@@ -524,7 +524,7 @@ impl<'a, 's> FnGen<'a, 's> {
             }
             Expression::ObjectExpression(o) if depth < 4 => {
                 let mut props = Vec::with_capacity(o.properties.len());
-                let mut seen: Vec<UnitString> = Vec::new();
+                let mut seen: Vec<UnitString> = Vec::with_capacity(o.properties.len());
                 for p in &o.properties {
                     let ObjectPropertyKind::ObjectProperty(p) = p else {
                         return None;
@@ -665,9 +665,9 @@ impl<'a, 's> FnGen<'a, 's> {
             return Ok(());
         }
         // The boilerplate: a prefix of plain properties with distinct static keys.
-        let mut entries: Vec<(ConstIndex, Option<ConstIndex>)> = Vec::new();
+        let mut entries: Vec<(ConstIndex, Option<ConstIndex>)> = Vec::with_capacity(props.len());
         let mut deferred: Vec<(usize, UnitString)> = Vec::new();
-        let mut seen: Vec<UnitString> = Vec::new();
+        let mut seen: Vec<UnitString> = Vec::with_capacity(props.len());
         let mut nested = false;
         let mut i = 0;
         while i < props.len() {

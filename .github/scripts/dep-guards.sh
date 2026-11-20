@@ -516,4 +516,32 @@ else
   ok "(26) ep9_intl does not exist yet"
 fi
 
+# 27) The ep9-typecheck lock is the tsrs lock plus only ep9-typecheck and ep9_hints (H26:42;
+#     08 section 7): each other package has the tsrs version, source and checksum. The script
+#     prints its own PASS or FAIL lines. In CI this job first syncs tsrs and makes the lock as
+#     scripts/sync-tsrs.sh step 2 does (cp, then `cargo update --workspace`: it resolves and
+#     builds nothing; the lock does not depend on the OS), so the guard compares on every PR.
+#     In CI a lock already on disk is not used (the sync and the cp make both again), and a lock
+#     absent FAILs. A lock that git tracks FAILs (in and out of CI): both are made from the pin,
+#     never committed (.gitignore). Outside CI the locks on disk are compared (a lock absent: a
+#     pass with a note). sp-tsrs-win runs the guard again after its own sync.
+tracked27="$(git ls-files -- third_party/tsrs/Cargo.lock tools/ep9-typecheck/Cargo.lock | paste -sd ' ' -)"
+if [ -n "$tracked27" ]; then
+  bad "(27) a lock is tracked by git; both are made from the pin, never committed (.gitignore): $tracked27"
+else
+  ok "(27) neither lock is tracked by git"
+fi
+if [ "${CI:-}" = true ]; then
+  # bash -c: sync_dep needs errexit, which an `if` or `||` turns off in the caller's shell.
+  # shellcheck disable=SC2016  # the inner bash expands $PWD
+  sync27='set -euo pipefail; root="$PWD"; . scripts/sync-lib.sh; sync_dep tsrs https://github.com/oxc-project/tsrs.git'
+  if ! { { bash -c "$sync27" || { echo "::warning::the tsrs sync failed; one retry in 20 s"; sleep 20; bash -c "$sync27"; }; } &&
+    chan27="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' third_party/tsrs/rust-toolchain.toml)" && [ -n "$chan27" ] &&
+    cp third_party/tsrs/Cargo.lock tools/ep9-typecheck/Cargo.lock &&
+    (cd tools/ep9-typecheck && CARGO_TARGET_DIR="$PWD/target" cargo "+$chan27" update --workspace); }; then
+    bad "(27) cannot make the ep9-typecheck lock in CI (the tsrs sync, then the sync-tsrs.sh step 2 form)"
+  fi
+fi
+bash tools/ep9-typecheck/lock-guard.sh || fail=1
+
 exit "$fail"

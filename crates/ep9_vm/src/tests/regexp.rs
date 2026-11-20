@@ -713,3 +713,145 @@ fn legacy_state_keeps_no_realm_alive() {
         iso.verify_heap().unwrap();
     }
 }
+
+// ---- the cache hash is keyed (M10-P1 HASH-SEED-2, HB-6-REGEXP-CACHE) ---------------------------
+
+/// `Cx::regexp_create` with the pattern string `p` (bits) and the flags "g"; the compile count
+/// it adds.
+fn create_count(cx: &mut Cx<'_>, rt: &Runtime, p: u64) -> usize {
+    let n0 = rt.regexp_programs.compiles();
+    let p: Local<'_> = Local::from_bits(p);
+    let (proto, f) = (cx.new_object(), cx.new_string("g").unwrap());
+    cx.regexp_create(proto, p.as_string().unwrap(), f).unwrap();
+    rt.regexp_programs.compiles() - n0
+}
+
+/// HB-6: a seen pattern is a cache hit in its Latin-1 form (a SEQ_LATIN1 cell) and its UTF-16
+/// form (a SEQ_UTF16 cell of the same text): one entry, one compile. With and without GC
+/// stress.
+#[test]
+fn latin1_and_utf16_patterns_hit_one_entry() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let text = "caf\u{e9}+(x)";
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let latin1 = object_string(rt, text);
+            assert_eq!(create_count(cx, rt, latin1), 1, "a new pattern compiles");
+            let utf16 = crate::string::testing::new_utf16_cell(rt, &units);
+            assert_eq!(create_count(cx, rt, utf16), 0, "the UTF-16 form is a hit");
+            assert_eq!(create_count(cx, rt, latin1), 0, "the Latin-1 form is a hit");
+        });
+    }
+}
+
+/// HB-6 (R20 section 7, class (a)): the cache hash of a pattern is the keyed process hash of
+/// its string (`string::hash`, cached in the hash field), not a hash of the units with no
+/// key. The hash field holds SipHash-1-3 of the units with the process keys. A string of the
+/// same text whose hash field has one other bit misses (an FNV-1a or fixed-key hash of the
+/// units would hit), and a fresh string of that text hits. The asserts hold for any key, so
+/// the test does not set `EP9_HASH_SEED`. With and without GC stress.
+#[test]
+fn the_cache_hash_is_the_keyed_string_hash() {
+    use crate::string::testing;
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let text = "keyed+(x)";
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let a = object_string(rt, text);
+            let keyed = testing::sip13(testing::keys(), &units) as u32 & crate::string::HASH_MASK;
+            assert_eq!(crate::string::hash(a), keyed, "the keyed process hash");
+            assert_eq!(create_count(cx, rt, a), 1, "a new pattern compiles");
+            let b = object_string(rt, text);
+            assert_eq!(crate::string::hash(b), keyed, "computed and cached");
+            let f = testing::raw_hash_field(b);
+            testing::set_raw_hash_field(b, f ^ (1 << 7));
+            assert_eq!(create_count(cx, rt, b), 1, "another hash field: a miss");
+            testing::set_raw_hash_field(b, f);
+            let c = object_string(rt, text);
+            assert_eq!(
+                create_count(cx, rt, c),
+                0,
+                "a fresh string of the text: a hit"
+            );
+        });
+    }
+}
+
+/// HB-6: two patterns with one cache hash and one flag set are two entries. The cache hash is
+/// only 30 bits, so the text compare of `find` after the hash keeps each text on its own
+/// program. A RegExp of the second text runs its own program, not the first one. The asserts
+/// hold for any key (with and without `EP9_HASH_SEED`). With and without GC stress.
+#[test]
+fn patterns_with_one_cache_hash_keep_their_own_programs() {
+    use crate::string::testing;
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let a = object_string(rt, "a+");
+            let hash = crate::string::hash(a);
+            let field = testing::raw_hash_field(a);
+            assert_eq!(create_count(cx, rt, a), 1, "a new pattern compiles");
+            let b = object_string(rt, "b+");
+            testing::set_raw_hash_field(b, field);
+            assert_eq!(crate::string::hash(b), hash, "one cache hash");
+            assert_eq!(create_count(cx, rt, b), 1, "one hash, another text: a miss");
+            let p: Local<'_> = Local::from_bits(b);
+            let (proto, f) = (cx.new_object(), cx.new_string("g").unwrap());
+            let rb = cx.regexp_create(proto, p.as_string().unwrap(), f).unwrap();
+            assert_eq!(exec(cx, rb, "abb", 0), "1-3", "the program of \"b+\"");
+            let ra = re(cx, "a+", "g");
+            assert_eq!(exec(cx, ra, "baa", 0), "1-3", "the program of \"a+\"");
+        });
+    }
+}
+
+/// A left-deep rope of `n` (at least 13) units "a": 13 flat units, then 1 unit at a time
+/// (`s += "a"`), so each level past the first is a CONS cell.
+fn left_deep_rope(rt: &Runtime, n: usize) -> u64 {
+    let one = object_string(rt, "a");
+    let mut s = object_string(rt, &"a".repeat(13));
+    for _ in 13..n {
+        s = crate::string::concat(rt, s, one).unwrap();
+    }
+    assert_eq!(crate::string::str_len(s), n);
+    s
+}
+
+/// HB-6 r2 (Codex hs2-r2 F1): a pattern longer than the cache limit (4096 units) is never
+/// cached, so `compiled` takes no cache hash of it. A fresh left-deep rope of 4097 units
+/// compiles each time, and its hash field stays 0 (the hash walk of a rope keeps a stack entry
+/// for each level). A pattern of 4096 units is still cached: the second create, and a flat
+/// string of the same text, are hits. With and without GC stress.
+#[test]
+fn a_pattern_past_the_cache_limit_takes_no_hash() {
+    use crate::string::testing;
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let long = left_deep_rope(rt, 4097);
+            assert_eq!(testing::raw_hash_field(long), 0, "a fresh rope has no hash");
+            assert_eq!(create_count(cx, rt, long), 1, "a long pattern compiles");
+            assert_eq!(
+                testing::raw_hash_field(long),
+                0,
+                "no cache hash of a long pattern"
+            );
+            assert_eq!(
+                create_count(cx, rt, long),
+                1,
+                "a long pattern is never cached"
+            );
+            let edge = left_deep_rope(rt, 4096);
+            assert_eq!(create_count(cx, rt, edge), 1, "a new pattern compiles");
+            assert_eq!(
+                create_count(cx, rt, edge),
+                0,
+                "a 4096-unit pattern is a hit"
+            );
+            let flat = object_string(rt, &"a".repeat(4096));
+            assert_eq!(
+                create_count(cx, rt, flat),
+                0,
+                "a flat string of the text is a hit"
+            );
+        });
+    }
+}

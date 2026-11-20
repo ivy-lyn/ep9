@@ -523,12 +523,12 @@ fn dict_key(i: u32) -> u64 {
     int32_bits(i as i32)
 }
 
-/// The first bucket of index `i` in a table of `buckets` (a power of two): the high bits of a
-/// multiplicative hash, so strided indices spread.
+/// The first bucket of index `i` in `buckets` (a power of two): the top bits of keyed
+/// SipHash-1-3 (the per-process key), so JS cannot pick indices that share a home (R20 §8 HB-1).
 #[inline]
-fn dict_home(i: u32, buckets: usize) -> usize {
+pub(crate) fn dict_home(i: u32, buckets: usize) -> usize {
     let bits = buckets.trailing_zeros();
-    (i.wrapping_mul(0x9E37_79B1) >> (32 - bits)) as usize
+    (crate::string::sip13_word(u64::from(i)) >> (64 - bits)) as usize
 }
 
 /// The byte offset of the live entry of index `i` in the ELEMENTS_DICT cell `d`. Not a GC
@@ -807,7 +807,7 @@ pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
     }
     // Past DENSE_UNCHECKED slots `cap` is above 0, so the object has its elements cell.
     let e = object::rd(object::cell(o), obj::ELEMENTS);
-    let entry = refused_entry(e);
+    let entry = refused_entry((rt.id, e, cap));
     let (id, cell, c, hits) = REFUSED.with(|r| r[entry].get());
     if (id, cell, c) == (rt.id, e, cap) && hits < cap / REFUSED_RECOUNT {
         REFUSED.with(|r| r[entry].set((id, cell, c, hits + 1)));
@@ -821,29 +821,29 @@ pub(crate) fn sparse_growth(rt: &Runtime, o: u64, cap: u32, i: u32) -> bool {
     let dict_words = (dict::DATA + dict::ENTRY * buckets) / 8;
     let refuse = grown >= SPARSE_FACTOR * dict_words;
     if refuse {
-        REFUSED.with(|r| r[entry].set((rt.id, e, cap, 0)));
+        refused_set(entry, (rt.id, e, cap, 0));
     }
     refuse
 }
 
 std::thread_local! {
-    /// The dense stores that [`sparse_growth`] refused last on this thread, by entry
-    /// ([`refused_entry`]): (`Runtime::id`, the elements cell, its capacity, the refusals since
-    /// the count). The cell is only compared, so it is not a root (plan rule 8). A stale entry
-    /// (a new cell at the address, filled holes) keeps few indices as properties (H18-Q3).
+    /// The dense stores that [`sparse_growth`] refused last on this thread ([`refused_entry`]):
+    /// (`Runtime::id`, the elements cell, its capacity, the refusals since the count). The cell
+    /// is only compared for equality, so it is not a root (plan rule 8). A stale entry (a new
+    /// cell at the address, filled holes) keeps few indices as properties (H18-Q3).
     static REFUSED: [core::cell::Cell<(u64, u64, u32, u32)>; REFUSED_ENTRIES] =
         const { [const { core::cell::Cell::new((0, 0, 0, 0)) }; REFUSED_ENTRIES] };
 }
 
-/// The entries of [`REFUSED`] (a power of two): a few objects that take far stores in turn
-/// each keep their entry.
+/// The entries of [`REFUSED`]: a few objects that take far stores in turn each keep their
+/// entry, and a miss replaces the entries in turn ([`refused_set`]).
 const REFUSED_ENTRIES: usize = 8;
 /// A [`REFUSED`] entry of capacity `cap` refuses `cap` / this far stores, then counts again.
 pub(crate) const REFUSED_RECOUNT: u32 = 64;
 
-/// The [`REFUSED`] entry of the elements cell `e` (bits of an 8-byte aligned address).
-fn refused_entry(e: u64) -> usize {
-    ((e >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 61) as usize & (REFUSED_ENTRIES - 1)
+/// The [`REFUSED`] entry of `key` (`Runtime::id`, cell, capacity), else the next one to replace.
+fn refused_entry(key: (u64, u64, u32)) -> usize {
+    refused_find(key).unwrap_or_else(|| REFUSED_NEXT.with(core::cell::Cell::get))
 }
 
 #[cfg(test)]
@@ -1122,4 +1122,35 @@ pub(crate) fn size_forms() -> Vec<(&'static str, CellSize, ep9_heap::SizeFn)> {
         ("elements-double", DOUBLE_CELL_SIZE, double_cell_size),
         ("elements-dict", DICT_CELL_SIZE, dict_cell_size),
     ]
+}
+
+// ---- the REFUSED entries by equality (M10-P1 HASH-SEED-2, HB-7-ADDR-INDEX.1) ---------------
+
+std::thread_local! {
+    /// The [`REFUSED`] entry that the next miss replaces: the entries in turn.
+    static REFUSED_NEXT: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// The [`REFUSED`] entry that holds `key` (`Runtime::id`, the elements cell, its capacity): a
+/// scan of the entries that compares the key for equality only. No address goes into an index
+/// or an order (H12-Q2 (a)), so JS cannot pick the entry that an object takes. Not a GC point.
+fn refused_find(key: (u64, u64, u32)) -> Option<usize> {
+    REFUSED.with(|r| {
+        r.iter().position(|x| {
+            let (id, cell, cap, _) = x.get();
+            (id, cell, cap) == key
+        })
+    })
+}
+
+/// Stores `v` in the [`REFUSED`] entry `entry`. A store over another key (a miss) moves
+/// [`REFUSED_NEXT`] to the entry after `entry`. Not a GC point.
+fn refused_set(entry: usize, v: (u64, u64, u32, u32)) {
+    REFUSED.with(|r| {
+        let (id, cell, cap, _) = r[entry].get();
+        if (id, cell, cap) != (v.0, v.1, v.2) {
+            REFUSED_NEXT.with(|n| n.set((entry + 1) % REFUSED_ENTRIES));
+        }
+        r[entry].set(v);
+    });
 }

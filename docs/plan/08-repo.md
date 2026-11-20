@@ -65,7 +65,7 @@ The 4 new expectation files pin HINT-SET, TYPED-KERNELS, SHORT-RUN and JITLESS-S
 | `ep9_platform` | VA reserve incl. the code range (H7); MAP_JIT/W^X under `jit`; stack bounds; signals/SEH; spill trampolines; unwind registration for JIT code and loaded units | yes | default | x | x | x | - |
 | `ep9_value` | NaN-box `Value`, `JsResult`, `Throw`, tags, NaN purification. No deps | yes (Miri) | default | x | x | x | - |
 | `ep9_heap` | Cage, pages, GC S0-S3, barrier, CSS, roots, verifier; + unit RW-data visitor hook | yes | default | x | x | x | - |
-| `ep9_bytecode` | Opcodes, encoding, verifier, disassembler; + ABI version, determinism, stable function ids, CompiledUnit serialization incl. TS flags and hint section (H2) | no | default | x | x | x | - |
+| `ep9_bytecode` | Opcodes, encoding, verifier, disassembler; + ABI version, determinism, stable function ids, CompiledUnit serialization incl. TS flags and hint section (H2; the section stays empty: doc 13 F-R1) | no | default | x | x | x | - |
 | `ep9_frontend` | The only oxc importer: parse, semantic, depth guard, scope pass, BytecodeGen + TS lowering, hint join from `.ep9h`, lone-surrogate shim, L1 cache | small, contained | default | x | x | x | - |
 | `ep9_vm` | Isolate, realms, objects, strings, interpreter, ICs, frames; + deoptimizer runtime, fuse registry, dispatch slots with AOT kinds, pc->code registry (H14), FactSnapshot export | yes (reviewed) | default | x | x | x | - |
 | `ep9_builtins` | ECMA-262 spec layer. Until M1a: one crate, one module per test262 area; its engine dependencies are `ep9_vm` and `ep9_math`, plus `ep9_temporal` for the Temporal modules (W4-BUILTINS-CRATE; dep-guards check 8; spec-temporal T1, H20:301). The split into one `ep9_builtins_*` crate per test262 area (C10) is checked again at M1a | forbid | default | x | x | x | - |
@@ -76,7 +76,7 @@ The 4 new expectation files pin HINT-SET, TYPED-KERNELS, SHORT-RUN and JITLESS-S
 | `ep9_intl` | ECMA-402 on ICU4X | forbid | `intl` | x | x | x | - |
 | `ep9_temporal` | temporal_rs glue; tz provider (Date later, below ep9_vm) | forbid | default | x | x | x | - |
 | `ep9_snapshot` | Heap serializer and deserializer, external-reference table; + stable index tables (H13) | yes | default | x | x | x | - |
-| `ep9_facts` (new) | FactSnapshot schema (= feedback schema, H16), `.ep9prof` format, HINTED entries for the hint section | no | default | x | x | x | - |
+| `ep9_facts` (new) | FactSnapshot schema (= feedback schema, H16), `.ep9prof` format, HINTED entries for the unit container `facts` section (kind 6, H35; the one home: doc 13 F-R1) | no | default | x | x | x | - |
 | `ep9_hints` (new) | `.ep9h` reader and writer (H37). **Zero dependencies** | no | default | x | x | x | x |
 | `ep9_unit` (new) | Unit container (`.ep9u`, `.o` sections), header and versions, verify; loader (map, register, resolve, install dispatch slots, fallback); writer (`object` crate) | yes (loader) | loader default; writer `aot` | x (loader) | x (loader) | x | - |
 | `ep9_masm` | MacroAssembler x64/arm64 with abstract relocation kinds (H34). JIT finalize, code space, dispatch-table writes, jitdump; unit finalize | yes | `jit` or `aot` | x | - | x | - |

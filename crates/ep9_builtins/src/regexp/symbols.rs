@@ -388,7 +388,7 @@ pub(super) fn replace<'s>(
                 Replaced {
                     position,
                     match_length,
-                    replacement,
+                    replacement: replacement.into(),
                 }
             }
             Found::Object(i) => {
@@ -428,7 +428,7 @@ fn accumulate<'s>(
     accumulated: &mut Vec<u16>,
     next_source_position: &mut usize,
     string: &ReplaceSubject<'s>,
-    replaced: Replaced,
+    replaced: Replaced<'_>,
 ) -> JsResult<()> {
     let Replaced {
         position,
@@ -452,11 +452,11 @@ fn accumulate<'s>(
 }
 
 /// The part of step 15 of @@replace that depends on one result: its position, the length of
-/// its match and its replacement text.
-struct Replaced {
+/// its match and its replacement text (the template itself when it has no "$": K14).
+struct Replaced<'t> {
     position: usize,
     match_length: usize,
-    replacement: Vec<u16>,
+    replacement: std::borrow::Cow<'t, [u16]>,
 }
 
 /// Steps 15.a-o of @@replace for a result object `result` (the spec's Gets, in order).
@@ -468,7 +468,7 @@ fn replacement_of_object<'s>(
     functional_replace: bool,
     replace_value: Local<'s>,
     template: &[u16],
-) -> JsResult<Replaced> {
+) -> JsResult<Replaced<'static>> {
     let result = result.as_object().expect("an object result");
     //  a. Let resultLength be ? LengthOfArrayLike(result).
     let result_length = length_of_array_like(cx, result)?;
@@ -526,25 +526,25 @@ fn replacement_of_object<'s>(
     Ok(Replaced {
         position,
         match_length,
-        replacement,
+        replacement: replacement.into(),
     })
 }
 
 /// Steps 15.a-o of @@replace for a match record of the builtin exec and a template (no
 /// replace function): no JS can see the result array, so its values come from the record.
-fn replacement_of_record<'s>(
+fn replacement_of_record<'s, 't>(
     cx: &mut Cx<'s>,
     m: &MatchRecord,
     string: &mut ReplaceSubject<'s>,
-    template: &[u16],
-) -> JsResult<Replaced> {
+    template: &'t [u16],
+) -> JsResult<Replaced<'t>> {
     let (position, end) = (m.start(), m.end());
     // Fast case: a template without "$" needs no capture values.
     if !template.contains(&u16::from(b'$')) {
         return Ok(Replaced {
             position,
             match_length: end - position,
-            replacement: template.to_vec(),
+            replacement: template.into(),
         });
     }
     let s = string.s;
@@ -576,7 +576,7 @@ fn replacement_of_record<'s>(
     Ok(Replaced {
         position,
         match_length: end - position,
-        replacement,
+        replacement: replacement.into(),
     })
 }
 

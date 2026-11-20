@@ -1,7 +1,7 @@
 //! Literal helpers: Smi checks, BigInt limbs, RegExp flags, strings and property names.
 
 use ep9_bytecode::{BigIntConst, UnitString};
-use oxc_ast::ast::{PropertyKey, RegExpFlags};
+use oxc_ast::ast::{PropertyKey, RegExpFlags, TemplateElementValue};
 
 /// A property name known at compile time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,13 +63,30 @@ pub(crate) fn js_string(units: impl Iterator<Item = u16>) -> UnitString {
     UnitString::from_utf16(&units)
 }
 
+/// [`js_string`] of an oxc `JSStr`, given as its `as_str()` (`None` when it holds a lone
+/// surrogate) and its `encode_utf16()`. Text with no lone surrogate goes straight through
+/// [`UnitString::new`] (no `u16` copy); the other text takes the `js_string` path. Both give
+/// the same `UnitString`.
+pub(crate) fn js_text(text: Option<&str>, units: impl Iterator<Item = u16>) -> UnitString {
+    match text {
+        Some(t) => UnitString::new(t),
+        None => js_string(units),
+    }
+}
+
+/// The cooked string of a template element (`None` = undefined), through [`js_text`].
+pub(crate) fn template_cooked(v: &TemplateElementValue<'_>) -> Option<UnitString> {
+    v.cooked.map(|c| js_text(c.as_str(), c.encode_utf16()))
+}
+
 /// The TRV of a template element: line terminators CR LF and CR become LF.
 pub(crate) fn template_raw(raw: &str) -> String {
     raw.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 pub(crate) fn is_proto_key(key: &UnitString) -> bool {
-    *key == UnitString::new("__proto__")
+    // "__proto__" is Latin-1, so its canonical form is always `Latin1` (no allocation here).
+    matches!(key, UnitString::Latin1(b) if **b == *b"__proto__")
 }
 
 /// `prefix + key` (the name of an accessor function).
@@ -97,9 +114,10 @@ pub(crate) fn property_name(key: &PropertyKey<'_>) -> Option<PropertyName> {
             Some(PropertyName::Static(UnitString::new(id.name.as_str())))
         }
         PropertyKey::PrivateIdentifier(_) => None,
-        PropertyKey::StringLiteral(s) => {
-            Some(PropertyName::Static(js_string(s.value.encode_utf16())))
-        }
+        PropertyKey::StringLiteral(s) => Some(PropertyName::Static(js_text(
+            s.value.as_str(),
+            s.value.encode_utf16(),
+        ))),
         PropertyKey::NumericLiteral(n) => small_integer_name(n.value).map(PropertyName::Static),
         _ => None,
     }
@@ -140,6 +158,62 @@ mod tests {
         assert_eq!(regexp_flags(RegExpFlags::D), 1);
         assert_eq!(regexp_flags(RegExpFlags::G | RegExpFlags::Y), 0b1000_0010);
         assert_eq!(regexp_flags(RegExpFlags::empty()), 0);
+    }
+
+    #[test]
+    fn js_text_equals_js_string() {
+        // PREALLOC K4: the `as_str` path gives the `UnitString` of the `u16` path, for ASCII,
+        // Latin-1, BMP, astral and lone-surrogate literals and template cooked strings.
+        use oxc_allocator::Allocator;
+        use oxc_ast::ast::{Expression, Statement};
+        use oxc_parser::Parser;
+        use oxc_span::SourceType;
+        // `0;` first: a string statement at the start would be a directive, not a literal.
+        let src = r#"0; "abc"; ""; "caf\xe9"; "\u20ac"; "\u{1F600}"; "a\uD800"; "\uDC00\xff";
+            `t\u00e9${0}\u{1F600}${1}\uD83D`; `plain`;"#;
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, src, SourceType::script()).parse();
+        assert!(!parsed.diagnostics.has_errors(), "{src}");
+        let (mut n, mut lone) = (0, 0);
+        let mut check = |text: Option<&str>, units: &mut dyn Iterator<Item = u16>| {
+            let units: Vec<u16> = units.collect();
+            let new = js_text(text, units.iter().copied());
+            assert_eq!(new, js_string(units.iter().copied()), "{units:x?}");
+            assert_eq!(new, UnitString::from_utf16(&units), "{units:x?}");
+            n += 1;
+            lone += usize::from(text.is_none());
+        };
+        for st in &parsed.program.body {
+            let Statement::ExpressionStatement(es) = st else {
+                panic!("an expression statement");
+            };
+            match &es.expression {
+                Expression::StringLiteral(s) => {
+                    check(s.value.as_str(), &mut s.value.encode_utf16())
+                }
+                Expression::TemplateLiteral(t) => {
+                    for q in &t.quasis {
+                        let c = q.value.cooked.expect("a cooked string");
+                        check(c.as_str(), &mut c.encode_utf16());
+                    }
+                }
+                Expression::NumericLiteral(_) => {}
+                e => panic!("unexpected {e:?}"),
+            }
+        }
+        assert_eq!((n, lone), (11, 3));
+    }
+
+    #[test]
+    fn proto_key() {
+        assert!(is_proto_key(&UnitString::new("__proto__")));
+        assert!(is_proto_key(&UnitString::from_utf16(
+            &"__proto__".encode_utf16().collect::<Vec<_>>()
+        )));
+        assert!(!is_proto_key(&UnitString::new("__proto_")));
+        assert!(!is_proto_key(&UnitString::new("__proto__x")));
+        assert!(!is_proto_key(&UnitString::new("__pro\u{20ac}__")));
+        assert!(!is_proto_key(&UnitString::new("")));
     }
 
     #[test]

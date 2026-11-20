@@ -56,6 +56,11 @@ test("RSS tools: macOS time -l in bytes, GNU time %M in KiB", () => {
   assert.equal(parseGnuM("Command exited with non-zero status 1\n50256\n"), 50256 * 1024);
   assert.equal(parseGnuM(""), null);
   assert.equal(rssTool("darwin", {}).name, "macos-time-l-maximum-resident-set-size");
+  // The memjs-macos-arm64 leg of the exit-inputs job (plan v15 V15-D19) runs this tool: the
+  // macOS /usr/bin/time, `-l -o <report>` before the engine command, bytes.
+  assert.equal(rssTool("darwin", {}).program, "/usr/bin/time");
+  assert.equal(rssTool("darwin", {}).unit, "bytes");
+  assert.deepEqual(rssTool("darwin", {}).command("r.txt", ["/x/ep9", "a.js"]), ["-l", "-o", "r.txt", "/x/ep9", "a.js"]);
   assert.deepEqual(rssTool("linux", {}).args("f"), ["-f", "%M", "-o", "f"]);
   assert.equal(rssTool("linux", { EP9_MEM_TIME: "/x/time" }).program, "/x/time");
   // Windows: the PeakWorkingSetSize wrapper (plan v14 section 4.1 (5)); before, no tool, and

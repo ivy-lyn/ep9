@@ -8,6 +8,8 @@
 //!     [--linux-gate <json>]   the m2gate JSON of the Linux x64 host (Windows host only: the ratio)
 //!     [--pathb <json>]        the Path B 2-box compare (ep9-pathb-compare/v1)       items 1, 2, 3, 6, 10, D11
 //!                             (Linux x64 and Windows x64 hosts only; V13-D37)
+//!     [--linux-pathb <json>]  the Path B compare of the Linux x64 GitHub legs       items 1, 2, 3, 6, 10, D11
+//!                             (Windows x64 host only: the same-CPU-model pairs, V15-D16)
 //!     [--mem <json>]          tools/bench/cross/mem.mjs --out (ep9-mem/v1)          item 4
 //!     [--exec <json>]         ep9-test262 exec --json (the CI artifact)             item 5
 //!     [--fastdiff <json>]     the FASTDIFF JSON (ep9-fastdiff/v1)                    item 5
@@ -23,7 +25,7 @@
 //! | Item | Cell |
 //! |---|---|
 //! | 1, 2, 3, 6 | the m2gate readings `octane7-vs-qjs` (>= 1.33x QuickJS), `v8v7-7-vs-node-jitless` (geomean >= 1.0x node --jitless; a kernel below 0.8x is parity debt, 09 section 5), `ts` (V12-D5) and `splay-vs-node-jitless` (>= 1.0x): PASS only when the reading's `gate` is `pass` in **both** builds, the jit preset and the jitless build (V12-D6); a `fail` is FAIL; a marginal or provisional reading, or a missing build, is OPEN |
-//! | 4 | MEMREAD: per build and v8-v7 kernel, the median peak RSS of ep9 over node --jitless <= 1.2 and over d8 --jitless <= 1.8 (G7, 02-architecture.md), >= 5 runs per row (class Mem), the load guard passed |
+//! | 4 | MEMREAD: per build and v8-v7 kernel, the median peak RSS of ep9 over node --jitless <= 1.2 and over d8 --jitless <= 1.8 (G7, 02-architecture.md), >= 5 runs per row (class Mem), the load guard passed. On `aarch64-unknown-linux-gnu` the d8 half is N/A by design (no linux-arm64 V8 in jsvu, DL:5351; plan v15 V15-D18): the node cap still gates |
 //! | 5 | the exec JSON by directory, by the G1 file rule (a file passes when its result is a pass; a skipped file fails): `language/` >= 95%, `annexB/` >= 90%, `built-ins/{Array, String, Object, Function, Math, JSON, Number, RegExp}` >= 95% each; and the FASTDIFF JSON: 0 mismatches, every fast path with >= 1 case (0 cases is OPEN) |
 //! | 7 | the JetStream run: every workload of `expectations/jetstream-m2.txt` has all its repetitions on each ep9 config and on node --jitless; the ratio is printed |
 //! | 8 | Fuzzilli >= 500 counted CPU-h, 0 open unique crashes (the m1-exit record rules) |
@@ -63,6 +65,25 @@
 //! least 31 `rounds` and the load guard passed before and after (10-quality.md section 3, the
 //! box protocol). The verdict line follows V13-D37: the M2 exit holds on the host when every cell is
 //! PASS or N/A, or the cells that are not read `MARGINAL (no gate host): AGREE above`.
+//!
+//! **The win-x64 same-CPU-model form** (plan v15 V15-D16). Windows x64 is compared with Linux x64
+//! on the same hardware class (10-quality.md:84) and within 10% (09-milestones.md:66). A
+//! GitHub Windows runner and a GitHub Linux x64 runner of one CPU model (the same `model name`)
+//! are the same hardware class, but not a gate host (10:157). So on `x86_64-pc-windows-msvc`,
+//! with no gate-host reading, `--pathb` (the windows compare) and `--linux-pathb` (the Linux x64
+//! compare of the same dispatch), the cell reads the `legs` of both: each Windows leg is paired
+//! only with each Linux x64 leg of the same CPU model. Per item and build, each pair gives the
+//! ratio interval [Windows low / Linux high, Windows high / Linux low] of the two leg intervals
+//! (for TS: 1 / the gross ep9 time `time_s` at each end, 10:157; not the ratio to node).
+//! The part is above when every pair's low end is >= 0.9, below when every pair's high end is
+//! < 0.9, else neither. The cell reads `MARGINAL (no gate host): AGREE above` when every part is
+//! above, `FAIL-SIDE (no gate host): AGREE below` when a part is below, else `MARGINAL: NO
+//! AGREEMENT` (also when a leg of a pair is not a valid run: a fresh full commit, one commit on
+//! every leg, a clean binary, >= 31 rounds and the load guard passed in each build; when a leg of
+//! a compare was not read, has no CPU model, or is missing or given twice; when the legs are of 2
+//! GitHub runs or a host.toml slot id is not there once (no such id on any leg: a note only); and
+//! when the windows compare has `legs` but no `--linux-pathb`: the pairs are then not known). With
+//! no same-model pair, or an older compare (no `legs`), the cell keeps the form above (CPU models).
 //!
 //! **Fresh inputs.** A speed, MEMREAD, FASTDIFF or JetStream input names a full commit id that is
 //! HEAD, or an ancestor with no change in the paths it measures since, and says that its tree
@@ -105,7 +126,9 @@
 //! - ep9-pathb-compare/v1 (the Path B compare of the 2 box runs): `commit`, `platform`,
 //!   `checks[]` with `box`, `build`, `commit_ok`, `rounds` and `load.{before, after}.pass`, and
 //!   `cells[]` with `build`, `cell` (the M2 item cells start `item <n>:`), `threshold`, `box1`
-//!   and `box2` (`median`, `interval`) and `result`.
+//!   and `box2` (`median`, `interval`) and `result`; and `legs[]` (V15-D16) with `leg`, `cpu`,
+//!   `platform`, `commit`, `checks[]` (`build`, `commit_ok`, `rounds`, `load`) and `cells[]`
+//!   (`build`, `cell`, `value.{median, interval}`).
 //!
 //! The extra rows (no exit-code effect): the parity debt of item 2 and the tripped P-gates.
 //!
@@ -248,6 +271,7 @@ const PATHB_ITEMS: [(&str, u32, f64); 4] = [
     (SPLAY, 6, 1.0),
 ];
 const PATHB_HOW: &str = "the Path B compare JSON (ep9-pathb-compare/v1) of the 2 box runs of this tree (plan section 13.2)";
+const LINUX_PATHB_HOW: &str = "node .github/scripts/exit-inputs.mjs pathb --platform linux-x64 --leg <dir> (the pathb-l1, pathb-l2 artifacts of the exit-inputs dispatch) --out linux.json";
 
 const GATE_CMD: &str = "node tools/bench/cross/run.mjs --workloads m2 --harness base --host <host file> --ep9 <build> --out run-<build>.json, for the jit preset and the jitless build, then node tools/bench/cross/m2gate.mjs run-jit.json run-jitless.json --out m2gate.json (on a gate host)";
 const MEM_CMD: &str = "node tools/bench/cross/mem.mjs --out mem.json (BENCH10)";
@@ -270,7 +294,7 @@ const LINUX_A64: &str = "aarch64-unknown-linux-gnu";
 const WINDOWS_X64: &str = "x86_64-pc-windows-msvc";
 
 const USAGE: &str = "usage: cargo xtask m2-exit --host <triple> --out <file.md> [--root <dir>] \
-     [--gate <json>] [--linux-gate <json>] [--pathb <json>] [--mem <json>] [--exec <json>] \
+     [--gate <json>] [--linux-gate <json>] [--pathb <json>] [--linux-pathb <json>] [--mem <json>] [--exec <json>] \
      [--fastdiff <json>] [--jetstream <json>] [--fuzz <json>]... [--p-gates <md>]";
 
 /// The parsed command line.
@@ -282,6 +306,7 @@ struct Options {
     gate: Option<PathBuf>,
     linux_gate: Option<PathBuf>,
     pathb: Option<PathBuf>,
+    linux_pathb: Option<PathBuf>,
     mem: Option<PathBuf>,
     exec: Option<PathBuf>,
     fastdiff: Option<PathBuf>,
@@ -309,6 +334,7 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
             "--gate" => o.gate = Some(PathBuf::from(val()?)),
             "--linux-gate" => o.linux_gate = Some(PathBuf::from(val()?)),
             "--pathb" => o.pathb = Some(PathBuf::from(val()?)),
+            "--linux-pathb" => o.linux_pathb = Some(PathBuf::from(val()?)),
             "--mem" => o.mem = Some(PathBuf::from(val()?)),
             "--exec" => o.exec = Some(PathBuf::from(val()?)),
             "--fastdiff" => o.fastdiff = Some(PathBuf::from(val()?)),
@@ -335,6 +361,11 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
     if o.linux_gate.is_some() && o.host != WINDOWS_X64 {
         return Err(format!(
             "--linux-gate is for --host {WINDOWS_X64} only\n{USAGE}"
+        ));
+    }
+    if o.linux_pathb.is_some() && o.host != WINDOWS_X64 {
+        return Err(format!(
+            "--linux-pathb is for --host {WINDOWS_X64} only (V15-D16)\n{USAGE}"
         ));
     }
     if o.pathb.is_some() && o.host != LINUX_X64 && o.host != WINDOWS_X64 {
@@ -392,6 +423,7 @@ struct Ctx<'a> {
     gate: Option<(PathBuf, Json)>,
     linux_gate: Option<(PathBuf, Json)>,
     pathb: Option<(PathBuf, Json)>,
+    linux_pathb: Option<(PathBuf, Json)>,
     mem: Option<(PathBuf, Json)>,
     exec: Option<(PathBuf, Json)>,
     fastdiff: Option<(PathBuf, Json)>,
@@ -426,6 +458,7 @@ fn run(o: &Options) -> Result<Report, String> {
         gate: one(&o.gate)?,
         linux_gate: one(&o.linux_gate)?,
         pathb: one(&o.pathb)?,
+        linux_pathb: one(&o.linux_pathb)?,
         mem: one(&o.mem)?,
         exec: one(&o.exec)?,
         fastdiff: one(&o.fastdiff)?,
@@ -444,6 +477,7 @@ fn run(o: &Options) -> Result<Report, String> {
     schema("--gate", &c.gate, "ep9-m2gate/v1")?;
     schema("--linux-gate", &c.linux_gate, "ep9-m2gate/v1")?;
     schema("--pathb", &c.pathb, PATHB_SCHEMA)?;
+    schema("--linux-pathb", &c.linux_pathb, PATHB_SCHEMA)?;
     schema("--mem", &c.mem, "ep9-mem/v1")?;
     schema("--fastdiff", &c.fastdiff, "ep9-fastdiff/v1")?;
     if let Some((p, j)) = &c.exec {
@@ -489,6 +523,14 @@ fn run(o: &Options) -> Result<Report, String> {
             "--pathb",
             "items 1, 2, 3, 6, 10, D11 with no gate host (V13-D37)",
             PATHB_HOW,
+        );
+    }
+    if o.host == WINDOWS_X64 {
+        miss(
+            c.linux_pathb.is_some() || on_gate_host(&c, &BUILDS),
+            "--linux-pathb",
+            "the same-CPU-model form of items 1, 2, 3, 6, 10, D11 with no gate host (V15-D16)",
+            LINUX_PATHB_HOW,
         );
     }
     miss(c.mem.is_some(), "--mem", "item 4", MEM_CMD);
@@ -1103,6 +1145,10 @@ fn item4(c: &Ctx) -> Cell {
                 continue;
             };
             for (cmp, cap) in MEM_CAPS {
+                if cmp == "d8-jitless" && c.o.host == LINUX_A64 {
+                    // V15-D18: no linux-arm64 V8 in jsvu, so no d8 rows; the node cap gates.
+                    continue;
+                }
                 let Some(cv) =
                     row(k, cmp).and_then(|r| rss(r, &format!("{cmp} {k}"), &mut why, &mut status))
                 else {
@@ -1127,11 +1173,16 @@ fn item4(c: &Ctx) -> Cell {
         .map(|(k, (q, kernel))| format!("{k}: largest {q:.3} ({kernel})"))
         .collect::<Vec<_>>()
         .join("; ");
+    let d8_half = if c.o.host == LINUX_A64 {
+        "; the d8 --jitless half: N/A by design (no linux-arm64 V8 in jsvu, DL:5351; V15-D18)"
+    } else {
+        ""
+    };
     with_fresh(
         cell(
             status,
             format!(
-                "{}: median peak RSS of ep9 per v8-v7 kernel; {}{}",
+                "{}: median peak RSS of ep9 per v8-v7 kernel; {}{d8_half}{}",
                 p.display(),
                 if worst_text.is_empty() {
                     "no ratio"
@@ -1952,7 +2003,20 @@ fn host_cell(c: &Ctx, ids: &[&str], builds: &[&str]) -> (Cell, Option<HostForm>)
     if (host != LINUX_X64 && host != WINDOWS_X64) || on_gate_host(c, builds) {
         return (base, None);
     }
-    let (form, text) = pathb_form(c, p, j, ids, builds);
+    let (form, text) = if host == WINDOWS_X64 {
+        match cross_form(c, ids, builds) {
+            Ok(x) => x,
+            Err(none) => {
+                let (f, t) = pathb_form(c, p, j, ids, builds);
+                (
+                    f,
+                    format!("{none}, so the cell keeps the Path B form (V15-D16): {t}"),
+                )
+            }
+        }
+    } else {
+        pathb_form(c, p, j, ids, builds)
+    };
     let gate = if c.gate.is_some() {
         format!(
             "; the --gate reading ({}): {}",
@@ -2135,6 +2199,501 @@ fn pathb_form(c: &Ctx, p: &Path, j: &Json, ids: &[&str], builds: &[&str]) -> (Ho
             }
         ),
     )
+}
+
+// ---- the win-x64 same-CPU-model form (plan v15 V15-D16) -----------------------------------
+
+/// The `legs` of a Path B compare that name `platform` and a CPU model.
+fn compare_legs<'a>(j: &'a Json, platform: &str) -> Vec<&'a Json> {
+    j.get("legs")
+        .and_then(Json::arr)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|l| l.get("platform").and_then(Json::str) == Some(platform) && leg_cpu(l).is_some())
+        .collect()
+}
+
+/// The CPU model of a leg: None when it is missing, empty, or the host.mjs `cpuModel` sentinel
+/// `unknown` (the detection failed: no model is known, so the leg is in no pair).
+fn leg_cpu(l: &Json) -> Option<&str> {
+    l.get("cpu")
+        .and_then(Json::str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "unknown")
+}
+
+fn leg_name(l: &Json) -> &str {
+    l.get("leg").and_then(Json::str).unwrap_or("?")
+}
+
+/// The legs of a Path B compare of `platform` that were not read (a `runners` row with an
+/// `error`) or that have no CPU model or no platform in `legs`, each as `<leg>: <why>`. A
+/// runner of another known platform (not read by `--platform`) is not of this set.
+fn unread_legs(j: &Json, platform: &str) -> Vec<String> {
+    let of = |x: &Json| {
+        x.get("platform")
+            .and_then(Json::str)
+            .is_none_or(|p| p == platform)
+    };
+    let runners = j.get("runners").and_then(Json::arr).unwrap_or(&[]);
+    let legs = j.get("legs").and_then(Json::arr).unwrap_or(&[]);
+    runners
+        .iter()
+        .filter(|r| of(r))
+        .filter_map(|r| {
+            let e = r.get("error").and_then(Json::str)?;
+            Some(format!("{}: {e}", leg_name(r)))
+        })
+        .chain(legs.iter().filter(|l| of(l)).filter_map(|l| {
+            if l.get("platform").and_then(Json::str).is_none() {
+                Some(format!("{}: no platform", leg_name(l)))
+            } else if leg_cpu(l).is_none() {
+                Some(format!("{}: no CPU model", leg_name(l)))
+            } else {
+                None
+            }
+        }))
+        .collect()
+}
+
+/// The CPU models of `legs`, each once, or "none".
+fn models(legs: &[&Json]) -> String {
+    let m: BTreeSet<&str> = legs.iter().filter_map(|l| leg_cpu(l)).collect();
+    if m.is_empty() {
+        "none".into()
+    } else {
+        m.into_iter().collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// The run checks of one leg for `builds` (the box protocol, as in [`pathb_form`]): the reasons
+/// why the leg is not a valid run of this tree. A clean leg adds its commit to `commits`.
+fn leg_why<'a>(
+    c: &Ctx,
+    leg: &'a Json,
+    builds: &[&str],
+    commits: &mut BTreeSet<&'a str>,
+) -> Vec<String> {
+    let name = leg_name(leg);
+    let mut why = Vec::new();
+    let checks = leg.get("checks").and_then(Json::arr).unwrap_or(&[]);
+    let mut clean = true;
+    for &b in builds {
+        let Some(run) = checks
+            .iter()
+            .find(|x| x.get("build").and_then(Json::str) == Some(b))
+        else {
+            clean = false;
+            why.push(format!("leg {name}: no {b} run check"));
+            continue;
+        };
+        if run.get("commit_ok").and_then(Json::bool) != Some(true) {
+            clean = false;
+            why.push(format!(
+                "leg {name} {b}: the run is not of the leg commit, or its binary is dirty"
+            ));
+        }
+        if num(run, "rounds").is_none_or(|r| r < PATHB_ROUNDS) {
+            why.push(format!(
+                "leg {name} {b}: fewer than {PATHB_ROUNDS} paired rounds (the box protocol)"
+            ));
+        }
+        for when in ["before", "after"] {
+            if run.path(&["load", when, "pass"]).and_then(Json::bool) != Some(true) {
+                why.push(format!(
+                    "leg {name} {b}: the load guard {when} the run did not pass"
+                ));
+            }
+        }
+    }
+    let commit = leg.get("commit").and_then(Json::str);
+    if let Err(e) = fresh(&c.o.root, commit, Some(&Json::Bool(!clean)), &FRESH_PATHS) {
+        why.push(format!("leg {name} is stale: {e}"));
+    } else if let Some(x) = commit {
+        commits.insert(x);
+    }
+    why
+}
+
+/// The speed interval (low, high) of the `build` cell of item `item` of a leg; Err: why not.
+/// Items 1, 2, 6: the ratio `value.interval`. Item 3: 1 / the gross ep9 TS time `time_s.interval`
+/// at each end (10-quality.md section 3, P0-WININT, as [`speed_interval`]); the ratio to node
+/// --jitless of each host is not the TS speed (EI2 Codex r1 F2).
+fn leg_interval(leg: &Json, build: &str, item: u32) -> Result<(f64, f64), String> {
+    let prefix = format!("item {item}:");
+    let found: Vec<&Json> = leg
+        .get("cells")
+        .and_then(Json::arr)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|x| {
+            x.get("build").and_then(Json::str) == Some(build)
+                && x.get("cell")
+                    .and_then(Json::str)
+                    .is_some_and(|l| l.starts_with(&prefix))
+        })
+        .collect();
+    let [x] = found.as_slice() else {
+        return Err(format!("{} cells (one needed)", found.len()));
+    };
+    let ts = item == 3;
+    let key = if ts { "time_s" } else { "value" };
+    match x.path(&[key, "interval"]).and_then(Json::arr) {
+        Some([a, z]) => match (a.num(), z.num()) {
+            (Some(a), Some(z)) if a > 0.0 && z >= a => {
+                Ok(if ts { (1.0 / z, 1.0 / a) } else { (a, z) })
+            }
+            _ => Err(format!("no {key} interval")),
+        },
+        _ => Err(format!("no {key} interval")),
+    }
+}
+
+/// An interval (low, high) of a leg value.
+type Span = (f64, f64);
+
+/// One part (an item in a build) over the same-model pairs: each pair's ratio interval
+/// [Windows low / Linux high, Windows high / Linux low]. Some(true) when every low end is
+/// >= 0.9, Some(false) when every high end is < 0.9, else None (also with no pair).
+fn cross_side(pairs: &[(Span, Span)]) -> Option<bool> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let iv: Vec<(f64, f64)> = pairs
+        .iter()
+        .map(|&((wl, wh), (ll, lh))| (wl / lh, wh / ll))
+        .collect();
+    if iv.iter().all(|&(lo, _)| lo >= WINDOWS_MIN) {
+        Some(true)
+    } else if iv.iter().all(|&(_, hi)| hi < WINDOWS_MIN) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The pathb legs of the exit-inputs matrix (ci.yml): pathb-w1..w4 and pathb-l1, pathb-l2. The
+/// same-model pairs are known only when each compare holds each of them once (EI2 Codex r2 F1).
+const MATRIX_LEGS: [(&str, usize); 2] = [("win32-x64", 4), ("linux-x64", 2)];
+
+/// The host.toml id of each pathb leg of the exit-inputs matrix, per platform (ci.yml: the host
+/// step's `--id "gha-$LEG"`). Each compare must hold each of its ids once (EI2-R3-LEG-SLOT).
+const MATRIX_IDS: [(&str, &[&str]); 2] = [
+    (
+        "win32-x64",
+        &[
+            "gha-pathb-w1",
+            "gha-pathb-w2",
+            "gha-pathb-w3",
+            "gha-pathb-w4",
+        ],
+    ),
+    ("linux-x64", &["gha-pathb-l1", "gha-pathb-l2"]),
+];
+
+/// A provenance field of a leg (`id`, `run_id`, `run_attempt`: the leg's host.toml, copied by
+/// exit-inputs.mjs readLeg): None when it is missing or null; else its text (a string, or a
+/// whole number), and "" for any other value.
+fn leg_field(l: &Json, key: &str) -> Option<String> {
+    match l.get(key)? {
+        Json::Null => None,
+        Json::Str(s) => Some(s.trim().to_string()),
+        Json::Num(n) if n.is_finite() && n.fract() == 0.0 => Some(format!("{n:.0}")),
+        _ => Some(String::new()),
+    }
+}
+
+/// The provenance checks of the legs of both compares (`sets`: each platform and its legs).
+/// EI2-R3-LEG-SLOT: each compare holds each host.toml id of [`MATRIX_IDS`] once. EI2-R1: every
+/// leg names the same GitHub `run_id` (one dispatch). When no leg names an id (or no leg names
+/// a run id), the input is older than these fields: that check gives a note only. Ok: the text
+/// of the checks; Err: each reason (the cell then reads NO AGREEMENT).
+fn provenance(sets: &[(&str, &[&Json])]) -> Result<String, Vec<String>> {
+    let mut why = Vec::new();
+    let mut text = Vec::new();
+    let legs: Vec<&Json> = sets.iter().flat_map(|(_, l)| l.iter().copied()).collect();
+    if legs.iter().all(|l| leg_field(l, "id").is_none()) {
+        text.push(
+            "note: no leg names its host.toml id (an older input), so the slots are not checked"
+                .to_string(),
+        );
+    } else {
+        let before = why.len();
+        for &(p, ls) in sets {
+            let want = MATRIX_IDS
+                .iter()
+                .find(|(q, _)| *q == p)
+                .map_or(&[][..], |(_, w)| *w);
+            let mut by: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+            for l in ls {
+                match leg_field(l, "id") {
+                    Some(id) => by.entry(id).or_default().push(leg_name(l)),
+                    None => why.push(format!("{p} leg {}: no host.toml id", leg_name(l))),
+                }
+            }
+            for w in want.iter().filter(|w| !by.contains_key(**w)) {
+                why.push(format!("{p}: no leg has the id {w}"));
+            }
+            for (id, names) in &by {
+                if !want.contains(&id.as_str()) {
+                    why.push(format!(
+                        "{p} leg {}: the id {id:?} is not a pathb slot of the matrix",
+                        names.join(", ")
+                    ));
+                } else if names.len() > 1 {
+                    why.push(format!(
+                        "{p}: the id {id} is given {} times (legs {})",
+                        names.len(),
+                        names.join(", ")
+                    ));
+                }
+            }
+        }
+        if why.len() == before {
+            text.push("each pathb slot once (host.toml ids)".to_string());
+        }
+    }
+    let mut runs: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut attempts = BTreeSet::new();
+    let mut without = Vec::new();
+    for l in &legs {
+        match leg_field(l, "run_id") {
+            Some(r) if r.is_empty() => why.push(format!(
+                "leg {}: the run_id is empty or not a string",
+                leg_name(l)
+            )),
+            Some(r) => {
+                runs.entry(r).or_default().push(leg_name(l));
+                attempts.insert(leg_field(l, "run_attempt").unwrap_or_else(|| "?".into()));
+            }
+            None => without.push(leg_name(l)),
+        }
+    }
+    if runs.is_empty() && without.len() == legs.len() {
+        text.push(
+            "note: no leg names a GitHub run id (an older input), so one dispatch is not checked"
+                .to_string(),
+        );
+    } else if !without.is_empty() {
+        why.push(format!(
+            "some legs name a GitHub run id and some do not (no run id: {})",
+            without.join(", ")
+        ));
+    }
+    if runs.len() > 1 {
+        why.push(format!(
+            "the legs are of {} GitHub runs, not one ({})",
+            runs.len(),
+            runs.iter()
+                .map(|(r, n)| format!("run {r}: {}", n.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    } else if let Some(r) = runs.keys().next() {
+        text.push(format!(
+            "one GitHub run {r} (attempt {})",
+            attempts.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if why.is_empty() {
+        Ok(text.join("; "))
+    } else {
+        Err(why)
+    }
+}
+
+/// The win-x64 same-CPU-model form of the readings `ids` of `builds` (V15-D16, see the module
+/// doc): the form and the evidence text. Err (the reason) when there is no same-model pair, or
+/// when an older compare (no `legs`) has no `--linux-pathb`: the caller then reads the Path B
+/// form.
+fn cross_form(c: &Ctx, ids: &[&str], builds: &[&str]) -> Result<(HostForm, String), String> {
+    let Some((wp, wj)) = &c.pathb else {
+        return Err("no --pathb input".into());
+    };
+    let Some((lp, lj)) = &c.linux_pathb else {
+        // Option B (EI2-R3-LINUX-PATHB-REQUIRED): a compare with a `legs` block is of an
+        // exit-inputs dispatch, which also has Linux x64 legs. With no Linux x64 compare the
+        // same-model pairs are not known: no verdict and no fallback. Only an older compare (no
+        // `legs`: 2 boxes, no Linux x64 legs in its run) keeps the Path B form.
+        if wj.get("legs").is_some() {
+            return Ok((
+                HostForm::NoAgreement,
+                format!(
+                    "Windows / Linux x64 same-CPU-model form (V15-D16; {}): the windows compare has a legs block (an exit-inputs dispatch); the Linux x64 compare is missing (pass --linux-pathb with the Linux x64 compare of the same dispatch), so the same-model pairs are not known",
+                    wp.display()
+                ),
+            ));
+        }
+        return Err(
+            "no --linux-pathb input (the Linux x64 GitHub legs of the exit-inputs dispatch)".into(),
+        );
+    };
+    // V15-D16 reads every same-model pair of the dispatch: a leg that was not read, or that has
+    // no CPU model, makes that set unknown, so no verdict and no fallback (EI2 Codex r1 F1).
+    let unread: Vec<String> = unread_legs(wj, "win32-x64")
+        .into_iter()
+        .chain(unread_legs(lj, "linux-x64"))
+        .collect();
+    if !unread.is_empty() {
+        return Ok((
+            HostForm::NoAgreement,
+            format!(
+                "Windows / Linux x64 same-CPU-model form (V15-D16; {} and {}): a leg of the dispatch was not read ({}), so the same-model pairs are not known; run the dispatch again",
+                wp.display(),
+                lp.display(),
+                unread.join("; ")
+            ),
+        ));
+    }
+    let (win, lin) = (compare_legs(wj, "win32-x64"), compare_legs(lj, "linux-x64"));
+    // A leg that the reader did not give (no runners row) or gave twice is in neither check
+    // above: each compare must hold each matrix leg once (EI2 Codex r2 F1).
+    let short: Vec<String> = [(&win, MATRIX_LEGS[0]), (&lin, MATRIX_LEGS[1])]
+        .into_iter()
+        .filter_map(|(legs, (p, n))| {
+            let names: BTreeSet<&str> = legs.iter().map(|l| leg_name(l)).collect();
+            (legs.len() != n || names.len() != n).then(|| {
+                format!(
+                    "{p}: {} legs, {} names, {n} needed",
+                    legs.len(),
+                    names.len()
+                )
+            })
+        })
+        .collect();
+    if !short.is_empty() {
+        return Ok((
+            HostForm::NoAgreement,
+            format!(
+                "Windows / Linux x64 same-CPU-model form (V15-D16; {} and {}): the compares do not hold each pathb leg of the matrix once ({}), so the same-model pairs are not known; run the dispatch again",
+                wp.display(),
+                lp.display(),
+                short.join("; ")
+            ),
+        ));
+    }
+    // EI2-R1, EI2-R3-LEG-SLOT: legs of 2 runs, or a slot that is missing or doubled, make the
+    // same-model pairs of one dispatch not known: no verdict and no fallback.
+    let prov = match provenance(&[("win32-x64", &win), ("linux-x64", &lin)]) {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok((
+                HostForm::NoAgreement,
+                format!(
+                    "Windows / Linux x64 same-CPU-model form (V15-D16; {} and {}): the legs are not of one exit-inputs dispatch with each pathb slot once ({}), so the same-model pairs are not known; read both compares of one dispatch",
+                    wp.display(),
+                    lp.display(),
+                    e.join("; ")
+                ),
+            ));
+        }
+    };
+    let pairs: Vec<(&Json, &Json)> = win
+        .iter()
+        .flat_map(|w| {
+            lin.iter()
+                .filter(|l| leg_cpu(l) == leg_cpu(w))
+                .map(|l| (*w, *l))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return Err(format!(
+            "{prov}; no same-CPU-model pair of a Windows and a Linux x64 GitHub run (Windows: {}; Linux x64: {})",
+            models(&win),
+            models(&lin)
+        ));
+    }
+    let mut why = Vec::new();
+    let mut commits = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for leg in pairs.iter().flat_map(|(w, l)| [*w, *l]) {
+        let key = (leg.get("platform").and_then(Json::str), leg_name(leg));
+        if seen.insert(key) {
+            why.extend(leg_why(c, leg, builds, &mut commits));
+        }
+    }
+    if commits.len() > 1 {
+        why.push(format!("the legs name {} commits, not one", commits.len()));
+    }
+    let valid = why.is_empty();
+    let mut parts = Vec::new();
+    let (mut all_above, mut any_below) = (true, false);
+    for &b in builds {
+        for &id in ids {
+            let Some(&(_, item, _)) = PATHB_ITEMS.iter().find(|(i, _, _)| *i == id) else {
+                continue;
+            };
+            let mut ivs = Vec::new();
+            let mut texts = Vec::new();
+            let mut whole = true;
+            for (w, l) in &pairs {
+                let pair = format!("{}/{}", leg_name(w), leg_name(l));
+                match (leg_interval(w, b, item), leg_interval(l, b, item)) {
+                    (Ok(wi), Ok(li)) => {
+                        let (lo, hi) = (wi.0 / li.1, wi.1 / li.0);
+                        texts.push(format!("{pair} [{lo:.3}, {hi:.3}]"));
+                        ivs.push((wi, li));
+                    }
+                    (wi, li) => {
+                        whole = false;
+                        let e = |x: Result<(f64, f64), String>| x.err().unwrap_or_default();
+                        texts.push(format!(
+                            "{pair}: {}",
+                            [e(wi), e(li)]
+                                .into_iter()
+                                .filter(|x| !x.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                }
+            }
+            let side = if whole { cross_side(&ivs) } else { None };
+            all_above &= side == Some(true);
+            any_below |= side == Some(false);
+            let word = match side {
+                Some(true) => "AGREE above",
+                Some(false) => "AGREE below",
+                None => "NO AGREEMENT",
+            };
+            parts.push(format!("{b} item {item}: {}: {word}", texts.join(", ")));
+        }
+    }
+    let form = if !valid {
+        HostForm::NoAgreement
+    } else if any_below {
+        HostForm::AgreeBelow
+    } else if all_above {
+        HostForm::AgreeAbove
+    } else {
+        HostForm::NoAgreement
+    };
+    let names = pairs
+        .iter()
+        .map(|(w, l)| {
+            format!(
+                "{}/{} ({})",
+                leg_name(w),
+                leg_name(l),
+                leg_cpu(w).unwrap_or("?")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok((
+        form,
+        format!(
+            "Windows / Linux x64 on same-CPU-model GitHub runner pairs (V15-D16: the same hardware class of 10-quality.md:84; the interval >= {WINDOWS_MIN} needed, 09:66; not a gate host, 10:157; {} and {}): pairs {names}; {}{}; {prov}",
+            wp.display(),
+            lp.display(),
+            parts.join("; "),
+            if valid {
+                String::new()
+            } else {
+                format!("; not a valid reading of this tree: {}", why.join("; "))
+            }
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -3585,6 +4144,7 @@ mod tests {
             gate: None,
             linux_gate: None,
             pathb: None,
+            linux_pathb: None,
             mem: None,
             exec: None,
             fastdiff: None,
@@ -3636,9 +4196,11 @@ mod tests {
 
     /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (1), (6)): the windows Path B compare that
     /// `.github/scripts/exit-inputs.mjs pathb` writes (fixture pathb-win.json, made by its
-    /// test) is a valid win32-x64 reading. Item 1 has no QuickJS run on Windows (no interval:
-    /// NO AGREEMENT); items 2 and 6 read AGREE above; the made-up TS cells read AGREE below, so
-    /// items 3, 10 and D11 read FAIL-SIDE. On Linux x64 the same compare is NO AGREEMENT.
+    /// test) is a valid win32-x64 reading. With no --linux-pathb, its `legs` block gives NO
+    /// AGREEMENT (option B); with the block cut (pathb-run-nolegs.json, the older form), item 1
+    /// has the QuickJS runs of V15-D17 (AGREE above); items 2 and 6 read AGREE above; the
+    /// made-up TS cells read AGREE below, so items 3, 10 and D11 read FAIL-SIDE. On Linux x64
+    /// the same compare is NO AGREEMENT.
     #[test]
     fn windows_reads_the_exit_inputs_path_b() {
         use HostForm::{AgreeAbove, AgreeBelow, NoAgreement};
@@ -3648,11 +4210,19 @@ mod tests {
             ..opts(&r, WINDOWS_X64)
         };
         let rep = run(&o).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(NoAgreement), "{}", rep.cells[i].evidence);
+        }
+        let o = Options {
+            pathb: Some(input(&r, "pathb-run-nolegs.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
         let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
         assert_eq!(
             forms,
             [
-                Some(NoAgreement),
+                Some(AgreeAbove),
                 Some(AgreeAbove),
                 Some(AgreeBelow),
                 Some(AgreeAbove),
@@ -3671,7 +4241,7 @@ mod tests {
         }
         assert!(
             rep.cells[0].evidence.contains(
-                "jit item 1 (threshold 1.33): box 1 no interval, box 2 no interval: NO AGREEMENT"
+                "jit item 1 (threshold 1.33): box 1 1.400 [1.370-1.430] above, box 2 1.410 [1.380-1.440] above: AGREE above"
             ),
             "{}",
             rep.cells[0].evidence
@@ -3790,8 +4360,9 @@ mod tests {
 
     /// M9-P1 EXIT-INPUTS (plan v14 §4.1 (1)): the per-platform MEMREAD and JetStream inputs of
     /// the exit-inputs job. Linux arm64 has no d8 (jsvu has no linux-arm64 V8 build,
-    /// third_party/shells.toml), so its MEMREAD run has no d8 rows and item 4 is OPEN there; with
-    /// the d8 rows it passes. The JetStream run names its node platform and arch per host.
+    /// third_party/shells.toml): since V15-D18 the d8 half is N/A by design there, so a run with
+    /// or without d8 rows passes on the node cap. The JetStream run names its node platform and
+    /// arch per host.
     #[test]
     fn per_platform_mem_and_jetstream_inputs() {
         let r = repo("per-platform");
@@ -3818,13 +4389,8 @@ mod tests {
         let c = mem("inputs/mem-arm.json");
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         let c = mem("inputs/mem-arm-no-d8.json");
-        assert_eq!(c.status, Status::Open);
-        assert!(
-            c.evidence
-                .contains("no d8-jitless row with a peak RSS for richards"),
-            "{}",
-            c.evidence
-        );
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("the d8 --jitless half: N/A by design"));
         for (host, platform, arch) in [
             (LINUX_A64, "linux", "arm64"),
             (WINDOWS_X64, "win32", "x64"),
@@ -3847,6 +4413,535 @@ mod tests {
                 ..opts(&r, host)
             };
             assert_eq!(run(&o).unwrap().cells[6].status, Status::Fail, "{host}");
+        }
+    }
+    /// The win-x64 same-CPU-model fixtures (plan v15 V15-D16; made by
+    /// `.github/scripts/exit-inputs.test.mjs`): the windows compare pathb-win.json and a Linux
+    /// x64 GitHub compare.
+    fn win_cross(r: &Repo, linux: &str) -> Options {
+        Options {
+            pathb: Some(input(r, "pathb-win.json")),
+            linux_pathb: Some(input(r, linux)),
+            ..opts(r, WINDOWS_X64)
+        }
+    }
+
+    /// V15-D16: each Windows leg pairs only with the Linux x64 legs of its CPU model (w2 and w3
+    /// are EPYC 7763; w1 and w4 are Intel, with no Linux leg). The Linux values are a little
+    /// above the Windows ones: every cross-host low end is >= 0.9, so every speed cell reads
+    /// AGREE above, while the Path B form of the same windows compare reads TS AGREE below. With
+    /// Linux values about 1.3x the Windows ones, every high end is < 0.9: FAIL-SIDE.
+    #[test]
+    fn windows_same_cpu_model_pairs_read_the_09_66_form() {
+        use HostForm::{AgreeAbove, AgreeBelow, NoAgreement};
+        let r = repo("pathb-cross");
+        let rep = run(&win_cross(&r, "pathb-gha-linux.json")).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(AgreeAbove), "{}", rep.cells[i].evidence);
+            assert_eq!(rep.cells[i].status, Status::Open);
+        }
+        let ev = &rep.cells[2].evidence;
+        assert!(
+            ev.starts_with("MARGINAL (no gate host): AGREE above: Windows / Linux x64 on same-CPU-model GitHub runner pairs (V15-D16"),
+            "{ev}"
+        );
+        let m = "AMD EPYC 7763 64-Core Processor";
+        assert!(
+            ev.contains(&format!(
+                "pairs w2/l1 ({m}), w2/l2 ({m}), w3/l1 ({m}), w3/l2 ({m});"
+            )),
+            "{ev}"
+        );
+        assert!(
+            ev.contains("jit item 3: w2/l1 [0.920, 0.991], w2/l2 [0.920, 0.991], w3/l1 [0.929, 1.000], w3/l2 [0.929, 1.000]: AGREE above"),
+            "{ev}"
+        );
+        assert!(!ev.contains("Intel"), "{ev}");
+        assert!(!rep.missing.iter().any(|m| m.starts_with("--linux-pathb")));
+        let rep = run(&win_cross(&r, "pathb-gha-linux-fast.json")).unwrap();
+        for i in SPEED {
+            assert_eq!(rep.forms[i], Some(AgreeBelow), "{}", rep.cells[i].evidence);
+        }
+        // A leg of a pair that is not a valid run: NO AGREEMENT, never a verdict.
+        let lin = fixture("pathb-gha-linux.json").replace(SHA, &r.head);
+        let busy = lin.replace("\"pass\": true", "\"pass\": false");
+        write(&r.root, "inputs/lin-busy.json", &busy);
+        let dirty = lin.replace("\"commit_ok\": true", "\"commit_ok\": false");
+        write(&r.root, "inputs/lin-dirty.json", &dirty);
+        let short = lin.replace("\"rounds\": 31", "\"rounds\": 30");
+        write(&r.root, "inputs/lin-short.json", &short);
+        let stale = fixture("pathb-gha-linux.json").replace(SHA, &"f".repeat(40));
+        write(&r.root, "inputs/lin-stale.json", &stale);
+        for (f, want) in [
+            (
+                "lin-busy.json",
+                ": the load guard before the run did not pass",
+            ),
+            (
+                "lin-dirty.json",
+                ": the run is not of the leg commit, or its binary is dirty",
+            ),
+            ("lin-short.json", ": fewer than 31 paired rounds"),
+            ("lin-stale.json", "leg l1 is stale"),
+        ] {
+            let o = Options {
+                linux_pathb: Some(r.root.join("inputs").join(f)),
+                ..win_cross(&r, "pathb-gha-linux.json")
+            };
+            let rep = run(&o).unwrap();
+            for i in SPEED {
+                assert_eq!(
+                    rep.forms[i],
+                    Some(NoAgreement),
+                    "{f}: {}",
+                    rep.cells[i].evidence
+                );
+                assert!(
+                    rep.cells[i]
+                        .evidence
+                        .contains("not a valid reading of this tree")
+                        && rep.cells[i].evidence.contains(want),
+                    "{f}: {}",
+                    rep.cells[i].evidence
+                );
+            }
+        }
+    }
+
+    /// V15-D16, K19: with no same-CPU-model pair (the Linux legs are EPYC 9V74), or with no
+    /// --linux-pathb and an older compare (no `legs`), the cell keeps the Path B form of the
+    /// windows compare and names the CPU models. Option B (EI2-R3-LINUX-PATHB-REQUIRED): with no
+    /// --linux-pathb and a compare with `legs` (an exit-inputs dispatch) the cell reads NO
+    /// AGREEMENT. A --linux-pathb on another host is a usage error.
+    #[test]
+    fn windows_with_no_same_model_pair_keeps_the_path_b_form() {
+        use HostForm::{AgreeAbove, AgreeBelow};
+        let r = repo("pathb-cross-none");
+        let want = [
+            Some(AgreeAbove),
+            Some(AgreeAbove),
+            Some(AgreeBelow),
+            Some(AgreeAbove),
+            Some(AgreeBelow),
+            Some(AgreeBelow),
+        ];
+        let rep = run(&win_cross(&r, "pathb-gha-linux-other.json")).unwrap();
+        let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
+        assert_eq!(forms, want, "{}", rep.table);
+        for i in SPEED {
+            assert!(
+                rep.cells[i].evidence.contains("no same-CPU-model pair of a Windows and a Linux x64 GitHub run (Windows: AMD EPYC 7763 64-Core Processor, Intel Xeon Platinum 8370C; Linux x64: AMD EPYC 9V74 80-Core Processor), so the cell keeps the Path B form (V15-D16): Path B "),
+                "{}",
+                rep.cells[i].evidence
+            );
+        }
+        let o = Options {
+            pathb: Some(input(&r, "pathb-win.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("the windows compare has a legs block (an exit-inputs dispatch); the Linux x64 compare is missing (pass --linux-pathb"),
+                "{ev}"
+            );
+            assert!(!ev.contains("keeps the Path B form"), "{ev}");
+        }
+        assert!(rep.missing.iter().any(|m| m.starts_with("--linux-pathb")));
+        let o = Options {
+            pathb: Some(input(&r, "pathb-run-nolegs.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
+        assert_eq!(forms, want);
+        assert!(rep.cells[0].evidence.contains("no --linux-pathb input"));
+        assert!(rep.missing.iter().any(|m| m.starts_with("--linux-pathb")));
+        let mut args: Vec<String> = [
+            "--host",
+            LINUX_X64,
+            "--out",
+            "x.md",
+            "--linux-pathb",
+            "l.json",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(
+            parse_args(&args, r.root.clone())
+                .unwrap_err()
+                .contains("--linux-pathb is for --host x86_64-pc-windows-msvc only")
+        );
+        args[1] = WINDOWS_X64.into();
+        assert!(parse_args(&args, r.root.clone()).is_ok());
+    }
+
+    /// EI2 Codex r1 F1: a leg of the dispatch that was not read makes the same-model pairs not
+    /// known. One Linux leg not read (l1 alone would give AGREE above), or both (no pair at all,
+    /// which would fall back to the Path B form): the cell reads NO AGREEMENT and names the leg.
+    #[test]
+    fn windows_cross_form_with_a_leg_not_read_reads_no_agreement() {
+        let r = repo("pathb-cross-unread");
+        let rep = run(&win_cross(&r, "pathb-gha-linux-unread.json")).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("a leg of the dispatch was not read (l2: no run-jit.json), so the same-model pairs are not known"),
+                "{ev}"
+            );
+        }
+        let none = format!(
+            "{{\"schema\": \"{PATHB_SCHEMA}\", \"pair\": null, \"runners\": [{}], \"legs\": []}}",
+            ["l1", "l2"]
+                .map(|l| format!("{{\"leg\": \"{l}\", \"cpu\": null, \"platform\": null, \"error\": \"no run-jit.json\"}}"))
+                .join(", ")
+        );
+        write(&r.root, "inputs/lin-none.json", &none);
+        let o = Options {
+            linux_pathb: Some(r.root.join("inputs/lin-none.json")),
+            ..win_cross(&r, "pathb-gha-linux.json")
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("not read (l1: no run-jit.json; l2: no run-jit.json)"),
+                "{ev}"
+            );
+            assert!(!ev.contains("keeps the Path B form"), "{ev}");
+        }
+    }
+
+    /// EI2 Codex r2 F1: a matrix leg that the reader did not give (no runners row, so no read
+    /// error) or gave twice makes the same-model pairs not known: NO AGREEMENT, not the AGREE
+    /// above of the legs that are present, and not the Path B fallback.
+    #[test]
+    fn windows_cross_form_with_a_leg_omitted_reads_no_agreement() {
+        let r = repo("pathb-cross-omitted");
+        let unread = fixture("pathb-gha-linux-unread.json").replace(SHA, &r.head);
+        let l2 = ",\n  {\n   \"leg\": \"l2\",\n   \"cpu\": null,\n   \"platform\": null,\n   \"error\": \"no run-jit.json\"\n  }";
+        assert!(unread.contains(l2));
+        write(&r.root, "inputs/lin-omitted.json", &unread.replace(l2, ""));
+        let lin = fixture("pathb-gha-linux.json").replace(SHA, &r.head);
+        assert!(lin.contains("\"leg\": \"l2\""));
+        let twice = lin.replace("\"leg\": \"l2\"", "\"leg\": \"l1\"");
+        write(&r.root, "inputs/lin-twice.json", &twice);
+        for (f, want) in [
+            ("lin-omitted.json", "(linux-x64: 1 legs, 1 names, 2 needed)"),
+            ("lin-twice.json", "(linux-x64: 2 legs, 1 names, 2 needed)"),
+        ] {
+            let o = Options {
+                linux_pathb: Some(r.root.join("inputs").join(f)),
+                ..win_cross(&r, "pathb-gha-linux.json")
+            };
+            let rep = run(&o).unwrap();
+            for i in SPEED {
+                let ev = &rep.cells[i].evidence;
+                assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{f}: {ev}");
+                assert!(
+                    ev.contains("the compares do not hold each pathb leg of the matrix once")
+                        && ev.contains(want),
+                    "{f}: {ev}"
+                );
+                assert!(!ev.contains("keeps the Path B form"), "{f}: {ev}");
+            }
+        }
+    }
+
+    /// EI2 Codex r1 F2: the TS speed of the cross-host form is 1 / the gross ep9 time (10:157),
+    /// not the ratio to node --jitless. In pathb-gha-linux-ts.json the Linux legs have the TS
+    /// ratios of the Windows legs, but 3/4 of their gross time: item 3 (and items 10, D11, which
+    /// hold it) read AGREE below; items 1, 2, 6 stay AGREE above.
+    #[test]
+    fn windows_cross_form_reads_the_ts_speed_from_the_gross_time() {
+        use HostForm::{AgreeAbove, AgreeBelow};
+        let r = repo("pathb-cross-ts");
+        let rep = run(&win_cross(&r, "pathb-gha-linux-ts.json")).unwrap();
+        let forms: Vec<Option<HostForm>> = SPEED.iter().map(|&i| rep.forms[i]).collect();
+        let want = [
+            AgreeAbove, AgreeAbove, AgreeBelow, AgreeAbove, AgreeBelow, AgreeBelow,
+        ];
+        assert_eq!(forms, want.map(Some), "{}", rep.table);
+        let ev = &rep.cells[2].evidence;
+        assert!(
+            ev.contains("jit item 3: w2/l1 [0.725, 0.775], w2/l2 [0.725, 0.775], w3/l1 [0.732, 0.783], w3/l2 [0.732, 0.783]: AGREE below"),
+            "{ev}"
+        );
+    }
+
+    /// EI2 Codex r1 F4: "unknown" is the host.mjs `cpuModel` sentinel of a failed detection. A
+    /// Windows and a Linux leg that both say it are no same-model pair: the cell reads NO
+    /// AGREEMENT and names each such leg ("no CPU model").
+    #[test]
+    fn windows_cross_form_never_pairs_the_unknown_cpu_sentinel() {
+        let r = repo("pathb-cross-unknown");
+        let m = "AMD EPYC 7763 64-Core Processor";
+        for (f, src) in [
+            ("win-unknown.json", "pathb-win.json"),
+            ("lin-unknown.json", "pathb-gha-linux.json"),
+        ] {
+            let text = fixture(src).replace(SHA, &r.head).replace(m, "unknown");
+            write(&r.root, &format!("inputs/{f}"), &text);
+        }
+        let o = Options {
+            pathb: Some(r.root.join("inputs/win-unknown.json")),
+            linux_pathb: Some(r.root.join("inputs/lin-unknown.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("not read (w2: no CPU model; w3: no CPU model; l1: no CPU model; l2: no CPU model)"),
+                "{ev}"
+            );
+            assert!(!ev.contains("pairs w2/l1"), "{ev}");
+        }
+    }
+
+    /// The part rule of the same-CPU-model form: every low end >= 0.9 is above, every high end
+    /// < 0.9 is below, a mix (or no pair) is neither.
+    #[test]
+    fn cross_side_reads_every_pair() {
+        let p = |w: (f64, f64), l: (f64, f64)| (w, l);
+        assert_eq!(cross_side(&[]), None);
+        assert_eq!(cross_side(&[p((0.93, 0.97), (0.98, 1.02))]), Some(true));
+        assert_eq!(cross_side(&[p((0.90, 1.00), (0.98, 1.00))]), Some(true));
+        assert_eq!(cross_side(&[p((0.70, 0.80), (0.98, 1.02))]), Some(false));
+        // One pair above and one below: NO AGREEMENT.
+        assert_eq!(
+            cross_side(&[p((0.93, 0.97), (0.98, 1.02)), p((0.70, 0.80), (0.98, 1.02))]),
+            None
+        );
+        // One pair straddles 0.9.
+        assert_eq!(cross_side(&[p((0.85, 0.97), (0.98, 1.02))]), None);
+    }
+    /// V15-D18: the linux-a64 MEMREAD run of the exit-inputs job (fixture mem-linux-arm64.json:
+    /// no d8 rows, jsvu has no linux-arm64 V8) passes on the node cap, and its text says the d8
+    /// half is N/A by design. The node cap still gates there; on another host no d8 row is OPEN.
+    #[test]
+    fn item4_linux_a64_reads_the_node_cap_only() {
+        let r = repo("mem-la64");
+        let o = |f: PathBuf, host: &str| Options {
+            mem: Some(f),
+            ..opts(&r, host)
+        };
+        let c = &run(&o(input(&r, "mem-linux-arm64.json"), LINUX_A64))
+            .unwrap()
+            .cells[3];
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(
+            c.evidence.contains("vs node-jitless (cap 1.2): largest")
+                && !c.evidence.contains("vs d8-jitless")
+                && c.evidence.contains("; the d8 --jitless half: N/A by design (no linux-arm64 V8 in jsvu, DL:5351; V15-D18)"),
+            "{}",
+            c.evidence
+        );
+        let base = fixture("mem-linux-arm64.json").replace(SHA, &r.head);
+        let over = base.replacen(
+            "{ \"workload\": \"richards\", \"engine\": \"node-jitless\", \"n\": 5, \"median_bytes\": 50000000,",
+            "{ \"workload\": \"richards\", \"engine\": \"node-jitless\", \"n\": 5, \"median_bytes\": 30000000,",
+            1,
+        );
+        assert_ne!(over, base);
+        write(&r.root, "inputs/mem-la64-over.json", &over);
+        let c = &run(&o(r.root.join("inputs/mem-la64-over.json"), LINUX_A64))
+            .unwrap()
+            .cells[3];
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(
+            c.evidence.contains("x node-jitless (cap 1.2)"),
+            "{}",
+            c.evidence
+        );
+        let mac = base.replace(
+            "\"platform\": \"linux-arm64\"",
+            "\"platform\": \"darwin-arm64\"",
+        );
+        write(&r.root, "inputs/mem-mac-no-d8.json", &mac);
+        let c = &run(&o(r.root.join("inputs/mem-mac-no-d8.json"), HOST))
+            .unwrap()
+            .cells[3];
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(
+            c.evidence
+                .contains("no d8-jitless row with a peak RSS for richards"),
+            "{}",
+            c.evidence
+        );
+    }
+
+    /// The run id and slot fixtures (EI2-R1, EI2-R3-LEG-SLOT; made by
+    /// `.github/scripts/exit-inputs.test.mjs`): the windows compare pathb-run-win.json and a
+    /// Linux x64 compare `linux`, on x86_64-pc-windows-msvc. Each speed cell's form and text.
+    fn run_cross(r: &Repo, linux: &str) -> Vec<(Option<HostForm>, String)> {
+        let o = Options {
+            pathb: Some(input(r, "pathb-run-win.json")),
+            linux_pathb: Some(input(r, linux)),
+            ..opts(r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        SPEED
+            .iter()
+            .map(|&i| (rep.forms[i], rep.cells[i].evidence.clone()))
+            .collect()
+    }
+
+    /// EI2-R1, EI2-R3-LEG-SLOT: the legs of one GitHub run (1001), each pathb slot once: the
+    /// cross form reads as before (AGREE above) and its text names the run.
+    #[test]
+    fn windows_cross_form_reads_one_run_and_each_slot_once() {
+        let r = repo("pathb-run-one");
+        for (form, ev) in run_cross(&r, "pathb-run-linux.json") {
+            assert_eq!(form, Some(HostForm::AgreeAbove), "{ev}");
+            assert!(
+                ev.ends_with(
+                    "; each pathb slot once (host.toml ids); one GitHub run 1001 (attempt 1)"
+                ),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R1: the windows legs are of run 1001 and the Linux x64 legs of run 1002 (2
+    /// dispatches): NO AGREEMENT, and the text names both run ids. With no same-model pair (the
+    /// Linux legs of another CPU model), the cell does not fall back to the Path B form.
+    #[test]
+    fn windows_cross_form_with_two_run_ids_reads_no_agreement() {
+        let r = repo("pathb-run-two");
+        let want = "the legs are not of one exit-inputs dispatch with each pathb slot once (the legs are of 2 GitHub runs, not one (run 1001: w2, w1, w3, w4; run 1002: l1, l2)), so the same-model pairs are not known";
+        for (form, ev) in run_cross(&r, "pathb-run-linux-2.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(ev.contains(want), "{ev}");
+        }
+        let m = "AMD EPYC 7763 64-Core Processor";
+        let other = fixture("pathb-run-linux-2.json")
+            .replace(SHA, &r.head)
+            .replace(m, "AMD EPYC 9V74 80-Core Processor");
+        write(&r.root, "inputs/run-2-other.json", &other);
+        let o = Options {
+            pathb: Some(input(&r, "pathb-run-win.json")),
+            linux_pathb: Some(r.root.join("inputs/run-2-other.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains(want) && !ev.contains("keeps the Path B form"),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R1: some legs name a run id and some do not (l2 of pathb-run-linux-mixed.json; or a
+    /// windows compare of the older reader, with no ids, and a Linux x64 compare with ids): NO
+    /// AGREEMENT, and the text names the legs with no run id.
+    #[test]
+    fn windows_cross_form_with_a_mixed_run_id_reads_no_agreement() {
+        let r = repo("pathb-run-mixed");
+        for (form, ev) in run_cross(&r, "pathb-run-linux-mixed.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("(some legs name a GitHub run id and some do not (no run id: l2))"),
+                "{ev}"
+            );
+        }
+        let o = Options {
+            pathb: Some(input(&r, "pathb-win.json")),
+            linux_pathb: Some(input(&r, "pathb-run-linux.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("win32-x64 leg w2: no host.toml id")
+                    && ev.contains(
+                        "some legs name a GitHub run id and some do not (no run id: w2, w1, w3, w4)"
+                    ),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R3-LEG-SLOT: l1 and l2 both have the host.toml id gha-pathb-l1 (one artifact under 2
+    /// dir names, or a doubled slot): the leg names differ, but the slot gha-pathb-l2 is missing
+    /// and gha-pathb-l1 is given twice: NO AGREEMENT, and the text names the ids.
+    #[test]
+    fn windows_cross_form_with_a_doubled_slot_reads_no_agreement() {
+        let r = repo("pathb-run-doubled");
+        for (form, ev) in run_cross(&r, "pathb-run-linux-doubled.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("(linux-x64: no leg has the id gha-pathb-l2; linux-x64: the id gha-pathb-l1 is given 2 times (legs l1, l2))"),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R3-LEG-SLOT: l2 has the host.toml id gha-pathb-l3: the slot gha-pathb-l2 is missing
+    /// and gha-pathb-l3 is not a slot of the matrix: NO AGREEMENT, and the text names both.
+    #[test]
+    fn windows_cross_form_with_a_missing_slot_reads_no_agreement() {
+        let r = repo("pathb-run-missing");
+        for (form, ev) in run_cross(&r, "pathb-run-linux-missing.json") {
+            assert_eq!(form, Some(HostForm::NoAgreement), "{ev}");
+            assert!(
+                ev.contains("(linux-x64: no leg has the id gha-pathb-l2; linux-x64 leg l2: the id \"gha-pathb-l3\" is not a pathb slot of the matrix)"),
+                "{ev}"
+            );
+        }
+    }
+
+    /// EI2-R1: no leg names a run id (an older input: the fixtures of the older reader, or the
+    /// legs of a dispatch before the run id field, which name their slot ids): the cross form
+    /// reads as before, and the text has a note only.
+    #[test]
+    fn windows_cross_form_with_no_run_id_reads_as_before_with_a_note() {
+        let r = repo("pathb-run-older");
+        let note =
+            "note: no leg names a GitHub run id (an older input), so one dispatch is not checked";
+        let rep = run(&win_cross(&r, "pathb-gha-linux.json")).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::AgreeAbove), "{ev}");
+            assert!(
+                ev.ends_with(&format!("; note: no leg names its host.toml id (an older input), so the slots are not checked; {note}")),
+                "{ev}"
+            );
+        }
+        let cut = "\n   \"run_id\": \"1001\",\n   \"run_attempt\": \"1\",";
+        for f in ["pathb-run-win.json", "pathb-run-linux.json"] {
+            let text = fixture(f).replace(SHA, &r.head);
+            assert!(text.contains(cut), "{f}");
+            write(
+                &r.root,
+                &format!("inputs/older-{f}"),
+                &text.replace(cut, ""),
+            );
+        }
+        let o = Options {
+            pathb: Some(r.root.join("inputs/older-pathb-run-win.json")),
+            linux_pathb: Some(r.root.join("inputs/older-pathb-run-linux.json")),
+            ..opts(&r, WINDOWS_X64)
+        };
+        let rep = run(&o).unwrap();
+        for i in SPEED {
+            let ev = &rep.cells[i].evidence;
+            assert_eq!(rep.forms[i], Some(HostForm::AgreeAbove), "{ev}");
+            assert!(
+                ev.ends_with(&format!("; each pathb slot once (host.toml ids); {note}")),
+                "{ev}"
+            );
         }
     }
 }

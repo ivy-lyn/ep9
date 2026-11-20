@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ep9
+Subject: [PATCH] Take only ASCII hex digits in a \u escape
+
+A RegExpUnicodeEscapeSequence has only HexDigits (ECMA-262 22.2.1,
+12.9.3). The parser read the digits of \u{...}, of \uXXXX and of the
+trail surrogate escape with from_str_radix, which also takes a leading
++ sign. So /\u+0ff/ matched U+00FF, /\u{+1F600}/u was U+1F600 and
+/(?<a\u+041>x)/ was the group name aA. In node, /\u+0ff/ is the
+identity escape u, then +, then 0ff (Annex B), /[\u+fff-z]/ is a valid
+class, and /\u{+1F600}/u and /(?<a\u+041>x)/ are SyntaxErrors.
+
+The parser now checks that the digits are ASCII hex digits before each
+from_str_radix call. The group-name paths use the same function.
+
+In Unicode mode, u or v, such a \u is a SyntaxError. The flag string "v"
+sets only unicode_sets, not unicode, so the identity escape check also
+reads unicode_sets: with "v" and the hex check alone, /[\u+fff-z]/ was the
+class u, +, f-z (node: a SyntaxError).
+
+Also: when a lead surrogate escape is not followed by a trail surrogate
+escape, the parser restored the input to after the second \u, so the
+next escape lost its \u: /\uD83D\u0041/ matched U+D83D then "0041"
+(node: U+D83D then A), and /\uD83D\uzzzz/u was valid (node: a
+SyntaxError). The input now goes back to the second \u.
+
+Test: tests/unicode_escape_hex.rs.
+---
+ src/parse.rs                |  25 +++++++-
+ tests/unicode_escape_hex.rs | 113 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 135 insertions(+), 3 deletions(-)
+ create mode 100644 tests/unicode_escape_hex.rs
+
+diff --git a/src/parse.rs b/src/parse.rs
+index 7caf679..5e5e100 100644
+--- a/src/parse.rs
++++ b/src/parse.rs
+@@ -290,6 +290,12 @@ where
+     })
+ }
+ 
++/// Whether `s` is only ASCII hex digits (HexDigit, ECMA-262 12.9.3). Check it before
++/// `from_str_radix`: that function also takes a leading `+` sign, which is not a HexDigit.
++fn is_hex_digits(s: &str) -> bool {
++    s.bytes().all(|b| b.is_ascii_hexdigit())
++}
++
+ fn make_cat(nodes: ir::NodeList) -> ir::Node {
+     match nodes.len() {
+         0 => ir::Node::Empty,
+@@ -1558,8 +1564,8 @@ where
+             'u' => {
+                 if let Some(c) = self.try_escape_unicode_sequence() {
+                     Ok(c)
+-                } else if !self.flags.unicode {
+-                    // CharacterEscape :: IdentityEscape :: SourceCharacterIdentityEscape
++                } else if !self.flags.unicode && !self.flags.unicode_sets {
++                    // CharacterEscape :: IdentityEscape, [~UnicodeMode] only: no u and no v
+                     Ok(c)
+                 } else {
+                     error("Invalid unicode escape")
+@@ -1784,6 +1790,10 @@ where
+                 }
+             }
+ 
++            if !is_hex_digits(&s) {
++                self.input = orig_input;
++                return None;
++            }
+             match u32::from_str_radix(&s, 16) {
+                 Ok(u) => {
+                     if u > 0x10_FFFF {
+@@ -1810,16 +1820,22 @@ where
+                     return None;
+                 }
+             }
++            if !is_hex_digits(&s) {
++                self.input = orig_input;
++                return None;
++            }
+             match u16::from_str_radix(&s, 16) {
+                 Ok(u) => {
+                     if (0xD800..=0xDBFF).contains(&u) {
+                         // Found a high surrogate. Try to parse a low surrogate next
+                         // to see if we can rebuild the original `char`
+ 
++                        // If the trail is not a low surrogate escape, the input goes back
++                        // to its `\u`: the next escape starts there.
++                        orig_input = self.input.clone();
+                         if !self.try_consume_str("\\u") {
+                             return Some(u as u32);
+                         }
+-                        orig_input = self.input.clone();
+ 
+                         // A poor man's try block to handle the backtracking
+                         // in a single place instead of every time we want to return.
+@@ -1832,6 +1848,9 @@ where
+                                 s.push(c);
+                             }
+ 
++                            if !is_hex_digits(&s) {
++                                return None;
++                            }
+                             let uu = u16::from_str_radix(&s, 16).ok()?;
+                             let ch = char::decode_utf16([u, uu]).next()?.ok()?;
+                             Some(u32::from(ch))
+diff --git a/tests/unicode_escape_hex.rs b/tests/unicode_escape_hex.rs
+new file mode 100644
+index 0000000..cf2539d
+--- /dev/null
++++ b/tests/unicode_escape_hex.rs
+@@ -0,0 +1,113 @@
++//! `\u` escapes take only ASCII hex digits (HexDigit, ECMA-262 12.9.3). Rust's
++//! `from_str_radix` also takes a leading `+` sign, so `\u+0ff` was U+00FF, `\u{+1F600}` was
++//! U+1F600 and `(?<a\u+041>x)` was the group name `aA`. Without `u` and `v`, a `\u` that is
++//! not a RegExpUnicodeEscapeSequence is the identity escape `u` (Annex B); with `u` or `v`,
++//! and in a group name in every mode, it is a SyntaxError. Also: when a lead surrogate escape
++//! is not followed by a trail surrogate escape, the next escape starts at its `\u` (the parser
++//! lost that `\u`). Expected results: node v26.13.1.
++#![cfg(feature = "utf16")]
++
++use regress::Regex;
++
++/// Whether `pattern` with `flags` matches somewhere in the UTF-16 text `text`.
++fn matches(pattern: &str, flags: &str, text: &[u16]) -> bool {
++    let re = Regex::with_flags(pattern, flags).unwrap();
++    if flags.contains('u') {
++        re.find_from_utf16(text, 0).next().is_some()
++    } else {
++        re.find_from_ucs2(text, 0).next().is_some()
++    }
++}
++
++fn units(s: &str) -> Vec<u16> {
++    s.encode_utf16().collect()
++}
++
++/// The lone lead surrogate U+D83D, then `rest`.
++fn lead(rest: &str) -> Vec<u16> {
++    let mut v = vec![0xD83D];
++    v.extend(rest.encode_utf16());
++    v
++}
++
++fn is_syntax_error(pattern: &str, flags: &str) -> bool {
++    Regex::with_flags(pattern, flags).is_err()
++}
++
++#[test]
++fn plus_sign_without_u_is_identity_u_then_plus() {
++    // /\u+0ff/ is `u+` then `0ff`.
++    assert!(matches(r"^\u+0ff$", "", &units("uu0ff")));
++    assert!(matches(r"^\u+0ff$", "", &units("u0ff")));
++    assert!(!matches(r"\u+0ff", "", &units("\u{ff}")));
++    assert!(!matches(r"\u+0ff", "", &units("+0ff")));
++    // In a class: `u`, `+`, `0`, `4`, `1`.
++    assert!(matches(r"[\u+041]", "", &units("+")));
++    assert!(matches(r"[\u+041]", "", &units("u")));
++    assert!(!matches(r"[\u+041]", "", &units("A")));
++    // Valid escapes do not change.
++    assert!(matches(r"^\u0041$", "", &units("A")));
++    assert!(matches(r"^\u{1F600}$", "u", &units("\u{1F600}")));
++    assert!(matches(r"^\uD83D\uDE00$", "u", &units("\u{1F600}")));
++}
++
++#[test]
++fn plus_sign_with_u_is_a_syntax_error() {
++    assert!(is_syntax_error(r"\u+0ff", "u"));
++    assert!(is_syntax_error(r"[\u+1F6]", "u"));
++    assert!(is_syntax_error(r"\u{+1F600}", "u"));
++    assert!(is_syntax_error(r"[\u{+1F600}]", "u"));
++}
++
++#[test]
++fn plus_sign_in_a_trail_surrogate_escape() {
++    // Without `u`: the lead surrogate, then `\u` is the identity escape `u`: `u+` then
++    // `DE00`, and in a class U+D83D, `u`, `+`, `D`, `E`, `0`.
++    assert!(matches(r"^\uD83D\u+DE00$", "", &lead("uuDE00")));
++    assert!(!matches(r"\uD83D\u+DE00", "", &lead("DE00")));
++    assert!(matches(r"[\uD83D\u+DE00]", "", &units("u")));
++    assert!(matches(r"[\uD83D\u+DE00]", "", &units("+")));
++    assert!(matches(r"[\uD83D\u+DE00]", "", &units("E")));
++    assert!(is_syntax_error(r"\uD83D\u+DE00", "u"));
++    assert!(is_syntax_error(r"[\uD83D\u+DE00]", "u"));
++}
++
++#[test]
++fn a_lead_surrogate_keeps_the_next_escape() {
++    // \u0041 after a lead surrogate is not a trail: it is the next escape, `A`.
++    assert!(matches(r"^\uD83D\u0041$", "", &lead("A")));
++    assert!(!matches(r"\uD83D\u0041", "", &lead("0041")));
++    assert!(matches(r"[\uD83D\u0041]", "", &units("A")));
++    assert!(!matches(r"[\uD83D\u0041]", "", &units("0")));
++    assert!(matches(r"^\uD83D\uzzzz$", "", &lead("uzzzz")));
++    assert!(is_syntax_error(r"\uD83D\uzzzz", "u"));
++}
++
++#[test]
++fn plus_sign_in_a_group_name_is_a_syntax_error() {
++    for flags in ["", "u"] {
++        assert!(is_syntax_error(r"(?<a\u+041>x)", flags), "/{flags}");
++        assert!(is_syntax_error(r"(?<\u+041>x)", flags), "/{flags}");
++        assert!(is_syntax_error(r"(?<a\u{+41}>x)", flags), "/{flags}");
++    }
++    assert!(matches(r"(?<a\u0041>x)\k<aA>", "", &units("xx")));
++}
++
++#[test]
++fn plus_sign_with_the_flag_strings_u_and_v_is_a_syntax_error() {
++    // `Regex::with_flags(_, "v")` sets only `unicode_sets`, not `unicode`. `v` is Unicode mode
++    // too, so a `\u` that is not a RegExpUnicodeEscapeSequence is a SyntaxError (node: the same).
++    for flags in ["u", "v"] {
++        assert!(is_syntax_error(r"[\u+fff-z]", flags), "/{flags}");
++        assert!(is_syntax_error(r"\u+0ff", flags), "/{flags}");
++        assert!(is_syntax_error(r"\u{+1F600}", flags), "/{flags}");
++        assert!(is_syntax_error(r"\uD83D\u+DE00", flags), "/{flags}");
++        assert!(is_syntax_error(r"[\uD83D\u+DE00]", flags), "/{flags}");
++    }
++    // Without `u` and `v`: the class `u`, `+`, `f-z`.
++    assert!(matches(r"[\u+fff-z]", "", &units("+")));
++    assert!(!matches(r"[\u+fff-z]", "", &units("a")));
++    // Valid escapes with the flag string `v` do not change.
++    let re = Regex::with_flags(r"^\uD83D\uDE00\u{41}$", "v").unwrap();
++    assert!(re.find_from_utf16(&units("\u{1F600}A"), 0).next().is_some());
++}

@@ -1,0 +1,949 @@
+{
+ "schema": "ep9-research/x86-ts-time-month10/v1",
+ "report": "docs/research/21-m2-x86-ts-time.md section 9",
+ "date": "2026-11-21",
+ "tree_range": "m9-p5 86e39c6530371bac073162c70b9461f06328831c to the m10-p4 head 12203b0ca00661cb372479507194ce0b92199404",
+ "trees": {
+  "source": "git log 86e39c65..12203b0c; DL M10-P3-WPRE-1 (2856a698 = the m10-p2 tag code); DL M10-P3-CLOSE-1 (tag m10-p3 = 29ba45f6)",
+  "86e39c65": "the m9-p5 tag (the month-9 Path B tree)",
+  "2856a698": "the m10-p2 tag code; the mid Path B tree",
+  "f09c2daa": "the m10-p3 code (LEVER-13 merged)",
+  "29ba45f6": "the m10-p3 tag; f09c2daa + DL text",
+  "12203b0c": "the m10-p4 head; 29ba45f6 + DL text"
+ },
+ "not_here": "the month-end Path B on the m10-p5 tag (the month-10 report)",
+ "short_forms": {
+  "source": "R21 short forms and section 9",
+  "DL": "docs/decisions-log.md section 20; DL M10-P0-WPRE-1 and -2 are in section 20.7",
+  "B/A": "lever build wall / base build wall, paired per round; below 1.0 = the lever build is faster",
+  "PGO ratio": "t(plain) / t(PGO); above 1.0 = PGO is faster",
+  "ratio": "node --jitless time / ep9 time, paired per round (R21 short forms)",
+  "box": "one Cloudflare box, AMD EPYC 9684X (Zen 4), unless a group names another host"
+ },
+ "x86_topdown_read": {
+  "source": "DL M10-P0-WPRE-1; DL M10-PRE-ALIGN-FORM; DL M10-P1-WPRE-5",
+  "date": "2026-11-19",
+  "tree": "86e39c65 (the month-9 Path B binaries + jit-al, a jit build with 64 B function alignment)",
+  "boxes": 1,
+  "box_min": 22,
+  "rounds": 31,
+  "workload": "octane-typescript",
+  "instructions_g": {
+   "ep9_jit": 57.24,
+   "node_jitless": 57.26
+  },
+  "ipc": {
+   "ep9_jit": 2.462,
+   "node_jitless": 2.688
+  },
+  "branch_misses_per_1k_instr": {
+   "ep9_jit": 1.522,
+   "node_jitless": 1.253
+  },
+  "l1i_misses_per_1k_instr": {
+   "ep9_jit": 0.284,
+   "node_jitless": 0.092
+  },
+  "l1i_ratio": {
+   "value": 3.1,
+   "source": "derived: 0.284 / 0.092"
+  },
+  "wall_vs_node_jitless": {
+   "jit": {
+    "median": 0.901,
+    "low": 0.893,
+    "high": 0.91
+   },
+   "jitless": {
+    "median": 0.89,
+    "low": 0.885,
+    "high": 0.9
+   }
+  },
+  "topdown_level1_pct_jit_vs_node": {
+   "retiring": [
+    36.3,
+    40.2
+   ],
+   "backend_bound": [
+    23.2,
+    19.4
+   ],
+   "frontend_bound": [
+    21.9,
+    24.2
+   ],
+   "bad_speculation": [
+    4.4,
+    4.9
+   ],
+   "level2": "not in the microVM"
+  },
+  "perf_record_jit_pct_of_cycles": {
+   "ep9h_handlers": 74.1,
+   "GetNamedProperty": 25.97,
+   "GetNamedProperty_cold": 5.01,
+   "SetNamedProperty": 5.22,
+   "SetNamedProperty_cold": 1.83,
+   "Ldar": 4.06,
+   "Star": 3.68,
+   "CallProperty1": 3.58,
+   "Wide_cold": 2.99,
+   "gc_trace_and_sweep_about": 5.4
+  },
+  "perf_record_jitless_pct_of_cycles": {
+   "CallProperty0": 3.26,
+   "Ldar": 4.18
+  },
+  "hot_list_line_pct": 3,
+  "jit_al_over_jit": {
+   "wall": {
+    "median": 0.988,
+    "low": 0.977,
+    "high": 0.997
+   },
+   "cycles": 0.987,
+   "instructions": 0.999,
+   "l1i_misses": 1.115,
+   "handlers_on_64b_line": {
+    "jit_al": 568,
+    "jit": 119,
+    "total": 568
+   }
+  },
+  "verdict": "done; the gap is cycles per instruction; the X86-ALIGN condition is met (one box)"
+ },
+ "pgo_probe": {
+  "source": "DL M10-P0-WPRE-2",
+  "date": "2026-11-19",
+  "tree": "86e39c65",
+  "boxes": 1,
+  "box_min": 41,
+  "rounds": 31,
+  "training": {
+   "test262_tests_run": 15574,
+   "test262_rc0": 13732,
+   "jetstream_non_m2_rows_run": 11,
+   "jetstream_scored": 3,
+   "jetstream_errors": 8,
+   "profile_warnings": 0,
+   "gate_workloads": 0
+  },
+  "plain_over_pgo": {
+   "jit": {
+    "item1_octane7": {
+     "median": 0.98,
+     "low": 0.977,
+     "high": 0.99
+    },
+    "item2_v8v7": {
+     "median": 0.971,
+     "low": 0.966,
+     "high": 0.978
+    },
+    "item6_splay": {
+     "median": 0.981,
+     "low": 0.956,
+     "high": 0.986
+    },
+    "ts": {
+     "median": 0.986,
+     "low": 0.972,
+     "high": 1.0
+    },
+    "ts_instructions_pct_with_pgo": 2.6,
+    "navier_stokes": 0.949
+   },
+   "jitless": {
+    "item1_octane7": {
+     "median": 1.0,
+     "low": 0.989,
+     "high": 1.005
+    },
+    "item2_v8v7": 0.988,
+    "item6_splay": 0.962,
+    "ts": {
+     "median": 1.012,
+     "low": 1.0,
+     "high": 1.031
+    },
+    "richards": 1.03
+   }
+  },
+  "line": "+3% x86 TS on both builds",
+  "line_pct": 3,
+  "r21_estimate": {
+   "row": "W8",
+   "time_pct": [
+    3,
+    10
+   ]
+  },
+  "verdict": "NOT TAKEN; the line failed on both builds"
+ },
+ "named_miss_read": {
+  "source": "DL M10-PRE-NAMED-MISS-READ",
+  "date": "2026-11-19",
+  "tree": "86e39c65",
+  "host": "Mac aarch64, an ic-stats build; no box",
+  "named_misses_m": 41.4,
+  "megamorphic_stub_hit_cold_body_pct": 95.47,
+  "more_poly_cases_cut_pct_about": 0,
+  "unit": "visits, not time",
+  "r21_estimate": {
+   "row": "W5",
+   "time_pct": [
+    0,
+    1.5
+   ]
+  },
+  "verdict": "the cause is read; it became LEVER-12 Q1"
+ },
+ "wide_read": {
+  "source": "DL M10-PRE-WIDE-READ; DL M10-P3-WPRE-3",
+  "date": "2026-11-19",
+  "tree": "86e39c65",
+  "compile": 0,
+  "prefixed_static_pct": 4.62,
+  "prefixed_executed_pct_est": 2,
+  "overflow_operand_pct": {
+   "feedback_slot": 85.9,
+   "jump_offset": 12.3,
+   "register": 0
+  },
+  "branch_island_removes_m_runs_est": [
+   5.5,
+   6.7
+  ],
+  "r21_estimate": {
+   "row": "W6",
+   "time_pct": [
+    0,
+    0.7
+   ]
+  },
+  "verdict": "below every line (DL M10-P3-WPRE-3); no lever"
+ },
+ "dead_ldar_probe": {
+  "source": "DL M10-P0-DEADLDAR; benches 44434768985, 44434783070",
+  "date": "2026-11-19",
+  "tree": "probe 2de98538, base 8165a60e",
+  "ts_ir_change_pct": {
+   "x64_jit": -0.671,
+   "x64_jitless": -0.676,
+   "a64_jit": -0.636,
+   "a64_jitless": -0.642
+  },
+  "kill_line_x64_ts_ir_pct": -1.0,
+  "r21_estimate": {
+   "row": "W2",
+   "x64_ts_ir_pct": [
+    -1.8,
+    -2.6
+   ],
+   "time_pct": [
+    0.6,
+    1.8
+   ],
+   "static_dead_ldar_pct": 69.87
+  },
+  "verdict": "NOT MET; not merged; the branch is kept; G8 0"
+ },
+ "lever12_named_miss": {
+  "source": "DL M10-P0-LEVER12; DL M10-P1-B1; TS sets 44449971938, 44479447478, 44524650807",
+  "date": "2026-11-19",
+  "tree": "probe 639acc1b; merged as B1 b16ae288 (M10-P1)",
+  "ts_ir_change_pct": {
+   "probe_44449971938": {
+    "x64_jit": -2.192,
+    "x64_jitless": -2.265,
+    "a64_jit": -1.912,
+    "a64_jitless": -1.991
+   },
+   "after_codex_fixes_44479447478": {
+    "x64_jit": -2.096,
+    "x64_jitless": -2.168
+   },
+   "b0_to_b1_44524650807": {
+    "x64_jit": -2.098,
+    "x64_jitless": -2.167
+   }
+  },
+  "combined_box_b1_over_b0": {
+   "rounds_read": 27,
+   "rounds_planned": 31,
+   "ts_wall": {
+    "jit": {
+     "median": 1.0,
+     "low": 0.982,
+     "high": 1.014
+    },
+    "jitless": {
+     "median": 0.995,
+     "low": 0.969,
+     "high": 1.029
+    }
+   },
+   "ts_instructions": {
+    "jit": 0.98,
+    "jitless": 0.979
+   },
+   "splay_wall_jit": {
+    "median": 1.015,
+    "low": 1.006,
+    "high": 1.029
+   }
+  },
+  "r21_estimate": {
+   "row": "W5",
+   "time_pct": [
+    0,
+    1.5
+   ]
+  },
+  "g8": 0,
+  "verdict": "kill line met; merged; no x86 TS time gain on the box"
+ },
+ "x86_align_form_c": {
+  "source": "DL M10-P1-X86ALIGN",
+  "date": "2026-11-19",
+  "tree": "B2 2fd411f2 against B1 b16ae288",
+  "rounds_read": 27,
+  "rounds_planned": 31,
+  "b2_over_b1": {
+   "ts_wall": {
+    "jitless": {
+     "median": 0.987,
+     "low": 0.943,
+     "high": 1.006
+    },
+    "jit": {
+     "median": 0.995,
+     "low": 0.966,
+     "high": 1.008
+    }
+   },
+   "ts_cycles_jitless": 0.976,
+   "t0_branchy_jitless": 0.917
+  },
+  "r21_estimate": {
+   "row": "W4",
+   "time_pct_jitless": [
+    1.7,
+    2.5
+   ],
+   "time_pct_jit": [
+    0,
+    1.5
+   ]
+  },
+  "g8": 0,
+  "verdict": "X86T FAIL; not merged; the branch is kept for the M2-exit G8 batch (the +1 is not spent)"
+ },
+ "reg_slot_encode_study": {
+  "source": "DL M10-P1-REGSLOT",
+  "date": "2026-11-19",
+  "tree": "75b412c4 and 20f953fa",
+  "compile": 0,
+  "form": "N",
+  "est_upper_bound_ts_ir_pct": {
+   "x64": [
+    -3.4,
+    -5.5
+   ],
+   "a64": [
+    -1.9,
+    -3.2
+   ]
+  },
+  "g8_at_merge": 2,
+  "r21_estimate": {
+   "row": "W9",
+   "x64_ts_ir_pct": [
+    -3.4,
+    -5.1
+   ],
+   "handlers_counted": 4,
+   "where": "R21 section 0, section 4, section 6.1 W9, section 6.3"
+  },
+  "verdict": "GO for a probe"
+ },
+ "lever12_named_store_mega": {
+  "source": "DL M10-P2-LEVER12; DL M10-P2-CLOSE-2; DL M10-P1-WPRE-5; TS sets 44641725575, 44678132590",
+  "date": "2026-11-20",
+  "tree": "merged in M10-P2; the merge head 2856a698",
+  "queue_row": "Q1b",
+  "est_x64_ts_ir_pct": [
+   -0.55,
+   -0.73
+  ],
+  "ts_ir_change_pct_merge_head": {
+   "x64_jit": -0.553,
+   "x64_jitless": -0.574,
+   "a64_jit": -0.472,
+   "a64_jitless": -0.496
+  },
+  "x64_ts_ir_at_2856a698": {
+   "x64_jit": 55028232423,
+   "x64_jitless": 54417069863
+  },
+  "x86_box": "none",
+  "g8": 0,
+  "verdict": "kill line met; merged"
+ },
+ "star_la2": {
+  "source": "DL M10-P2-STARLA2 (BENCH 44640863723); DL M10-P3-STARLA2; DL M10-P3-CLOSE-5; DL M10-P4-WPRE-5",
+  "r21_estimate": {
+   "row": "W3",
+   "time_pct": [
+    0,
+    3
+   ]
+  },
+  "m10_p2": {
+   "date": "2026-11-20",
+   "tree": "c7f185c8, base 48c0cbcb",
+   "ir_cap_pct": 1.0,
+   "linux_arm64_ir_pct_above_cap": {
+    "t0_branchy": [
+     1.546,
+     1.556
+    ],
+    "richards": [
+     1.536,
+     1.592
+    ],
+    "t0_prop": [
+     1.276,
+     1.294
+    ]
+   },
+   "mac_a64_ts_jit_wall": {
+    "median": 0.981,
+    "low": 0.971,
+    "high": 0.991
+   },
+   "verdict": "no X86T box (the Ir cap); not merged"
+  },
+  "m10_p3": {
+   "date": "2026-11-20",
+   "tree": "fb55c6e4 against B3 049ed54d",
+   "sites": 6,
+   "producers": [
+    9,
+    11
+   ],
+   "rounds": 31,
+   "b_over_a_wall": {
+    "ts_jit": {
+     "median": 0.994,
+     "low": 0.983,
+     "high": 1.007
+    },
+    "ts_jitless": {
+     "median": 0.968,
+     "low": 0.958,
+     "high": 0.977
+    },
+    "t0_branchy_jit": {
+     "median": 1.054,
+     "low": 1.025,
+     "high": 1.067
+    },
+    "t0_branchy_jitless": {
+     "median": 1.065,
+     "low": 1.032,
+     "high": 1.091
+    }
+   },
+   "b_over_a_instructions_ts_jitless_and_t0_branchy_jitless": 1.0,
+   "verdict": "X86T FAIL; not merged; the gain and the loss are IPC effects"
+  }
+ },
+ "mid_path_b": {
+  "source": "DL M10-P2-CLOSE-3; DL M10-P3-WPRE-1; DL M10-P3-WPRE-2",
+  "date": "2026-11-20",
+  "tree": "2856a698",
+  "boxes": 2,
+  "box_min_each": 58,
+  "rounds": 31,
+  "ts": {
+   "jit": [
+    {
+     "median": 0.925,
+     "low": 0.91,
+     "high": 0.934
+    },
+    {
+     "median": 0.926,
+     "low": 0.908,
+     "high": 0.937
+    }
+   ],
+   "jitless": [
+    {
+     "median": 0.922,
+     "low": 0.906,
+     "high": 0.926
+    },
+    {
+     "median": 0.919,
+     "low": 0.906,
+     "high": 0.932
+    }
+   ]
+  },
+  "ts_month9": {
+   "jit": [
+    0.902,
+    0.914
+   ],
+   "jitless": [
+    0.888,
+    0.893
+   ],
+   "source": "R21 section 1"
+  },
+  "item1": {
+   "jit": [
+    1.767,
+    1.762
+   ],
+   "jitless": [
+    1.795,
+    1.777
+   ]
+  },
+  "item2": {
+   "jit": [
+    1.113,
+    1.117
+   ],
+   "jitless": [
+    1.111,
+    1.109
+   ]
+  },
+  "item6_splay": {
+   "jit": [
+    1.105,
+    1.103
+   ],
+   "jitless": [
+    1.089,
+    1.105
+   ],
+   "drop": "on the node --jitless side"
+  },
+  "raytrace_jit": [
+   0.947,
+   0.961
+  ],
+  "node_jitless_time_move": {
+   "splay": [
+    0.868,
+    0.871
+   ],
+   "other_rows": [
+    0.92,
+    0.95
+   ],
+   "splay_about": 0.87,
+   "kernel": [
+    "6.18.56",
+    "6.18.64"
+   ],
+   "source": "DL M10-P3-WPRE-2"
+  },
+  "move": {
+   "jit": [
+    1.025,
+    1.013
+   ],
+   "jitless": [
+    1.038,
+    1.029
+   ],
+   "source": "derived: mid median / month-9 median per box (0.925 / 0.902, 0.926 / 0.914, 0.922 / 0.888, 0.919 / 0.893)"
+  },
+  "r21_middle_6_3": {
+   "jit": 1.046,
+   "jitless": 1.06
+  },
+  "need_left_low_end": {
+   "jit": [
+    1.099,
+    1.101
+   ],
+   "jitless": 1.104,
+   "source": "derived: 1 / low end (0.910, 0.908; 0.906, 0.906)"
+  },
+  "jit_over_jitless_ts_ratio": {
+   "values": [
+    1.003,
+    1.008
+   ],
+   "pct_above_jitless_rounded": [
+    0.3,
+    0.8
+   ],
+   "source": "derived: 0.925 / 0.922, 0.926 / 0.919"
+  }
+ },
+ "win_read": {
+  "source": "DL M10-P3-WINREAD; DL M10-P4-WPRE-1; exit-inputs dispatch 44678207050",
+  "date": "2026-11-20",
+  "tree": "2856a698",
+  "pairs": [
+   "w3/l2",
+   "w4/l2"
+  ],
+  "cpu": "AMD EPYC 7763",
+  "jitless_item3_low_end": {
+   "w3/l2": 0.915,
+   "w4/l2": 0.927
+  },
+  "jit_low_end_min": 0.957,
+  "windows_ts_s": {
+   "w3": {
+    "jit": 8.555,
+    "jitless": 8.612
+   },
+   "w4": {
+    "jit": 8.529,
+    "jitless": 8.481
+   },
+   "intervals": "overlap on both legs"
+  },
+  "linux_leg_jit_slower_than_jitless_pct": {
+   "l2": 3.7,
+   "l1": 2.5
+  },
+  "r21_estimate": {
+   "row": "W7",
+   "time_pct": [
+    2,
+    4
+   ]
+  },
+  "verdict": "Q3 WIN64-JIT closes NO TARGET"
+ },
+ "switch_row": {
+  "source": "DL M10-P3-SWITCH",
+  "fired": false,
+  "exit_month": 11,
+  "v15_d53_line_x": 1.04,
+  "v15_d53_trigger_met": true,
+  "fallback_exit_month": 12
+ },
+ "lever13_call_fill": {
+  "source": "DL M10-P3-LEVER13; DL M10-P3-CLOSE-2; DL M10-P3-WPRE-3; TS set 44769749909",
+  "date": "2026-11-20 to 2026-11-21",
+  "tree": "merged in M10-P3; the merge head f09c2daa",
+  "queue_row": "Q9",
+  "est_x64_ts_ir_pct": [
+   -0.6,
+   -1.1
+  ],
+  "x64_ts_ir_jit": [
+   55029015931,
+   54693906707
+  ],
+  "ts_ir_change_pct": {
+   "x64_jit": -0.609,
+   "x64_jitless": -0.614,
+   "a64_jit": 0.002,
+   "a64_jitless": 0.001
+  },
+  "x86_time": "not read (no lever box was left)",
+  "g8": 0,
+  "verdict": "kill line met; merged"
+ },
+ "reg_slot_probe_lever14": {
+  "source": "DL M10-P4-LEVER14; DL M10-P4-WPRE-2; DL M10-P4-WPRE-3; TS set 44803698999; 19 rows 44803693224",
+  "date": "2026-11-21",
+  "tree": "probe 06ac3354 (P4 24259cf2), base 29ba45f6; a branch only",
+  "x64_ts_ir": {
+   "jit": [
+    54692567666,
+    50359216553
+   ],
+   "jitless": [
+    54082192731,
+    49748465559
+   ]
+  },
+  "ts_ir_change_pct": {
+   "x64_jit": -7.923,
+   "x64_jitless": -8.013,
+   "a64_jit": -5.201,
+   "a64_jitless": -5.279
+  },
+  "rows_19_x64_jit_pct": {
+   "splay": -3.515,
+   "t0_loop": -13.976,
+   "rows_lower": 19
+  },
+  "attribution_x64_ts_pct": {
+   "four_study_handlers": -5.2,
+   "other_t0_handlers": -1.6,
+   "slow_path_from_operand": -0.38,
+   "rows_not_listed": -0.75
+  },
+  "saved_ir_per_dispatch_x64": {
+   "Star": 3,
+   "Ldar": 2,
+   "GetNamedProperty": 3,
+   "Mov": 6
+  },
+  "kill_line_part1_x64_ts_ir_pct": -2.5,
+  "part1": "MET",
+  "kill_line_part2": {
+   "ts_wall_median_max": 0.99,
+   "interval_high_below": 1.0,
+   "rounds": 31,
+   "when": "the first month-11 lever box"
+  },
+  "x86_time": "not read",
+  "r21_estimate": {
+   "row": "W9",
+   "x64_ts_ir_pct": [
+    -3.4,
+    -5.1
+   ]
+  },
+  "study_estimate": {
+   "x64_ts_ir_pct": [
+    -3.4,
+    -5.5
+   ]
+  },
+  "g8": {
+   "month10": 0,
+   "at_month11_merge": 2
+  },
+  "verdict": "part 1 met; not merged in month 10"
+ },
+ "ir_to_time_factor_m10": {
+  "source": "derived: the Ir rows of run 44303131944 (findings.json ts_ir; bench log 44303131944 134797714483:1505 reads 56,749,561,000, the integer) and TS set 44678132590 (DL M10-P2-CLOSE-2); the 2-box means of the month-9 Path B (R21 section 1) and the mid Path B (DL M10-P2-CLOSE-3)",
+  "x64_ts_ir": {
+   "86e39c65": {
+    "x64_jit": 56749561000,
+    "x64_jitless": 56175245578
+   },
+   "2856a698": {
+    "x64_jit": 55028232423,
+    "x64_jitless": 54417069863
+   }
+  },
+  "x64_ts_ir_change_pct": {
+   "jit": -3.033,
+   "jitless": -3.13
+  },
+  "ts_ratio_2box_mean": {
+   "month9": {
+    "jit": 0.908,
+    "jitless": 0.8905
+   },
+   "mid": {
+    "jit": 0.9255,
+    "jitless": 0.9205
+   }
+  },
+  "ts_time_change_pct": {
+   "jit": 1.927,
+   "jitless": 3.369
+  },
+  "time_per_1pct_ir": {
+   "jit": 0.64,
+   "jitless": 1.08
+  },
+  "month9_time_per_1pct_ir": {
+   "jit": 0.46,
+   "jitless": 0.31,
+   "source": "R21 section 2.2"
+  },
+  "lever12_box": {
+   "ts_wall": {
+    "jit": 1.0,
+    "jitless": 0.995
+   },
+   "ts_instructions": {
+    "jit": 0.98,
+    "jitless": 0.979
+   },
+   "source": "DL M10-P1-B1"
+  },
+  "range_est_per_lever_kind": [
+   0,
+   1.0
+  ]
+ },
+ "r21_6_1_estimates": {
+  "source": "R21 section 6.1 (the 2026-11-19 reading; time in % of x86 TS time unless named)",
+  "W1": "steering (a read)",
+  "W2": {
+   "time_pct": [
+    0.6,
+    1.8
+   ],
+   "x64_ts_ir_pct": [
+    -1.8,
+    -2.6
+   ]
+  },
+  "W3": {
+   "x86_time_pct": [
+    0,
+    3
+   ]
+  },
+  "W4": {
+   "jitless_time_pct": [
+    1.7,
+    2.5
+   ],
+   "jit_time_pct": [
+    0,
+    1.5
+   ]
+  },
+  "W5": {
+   "time_pct": [
+    0,
+    1.5
+   ]
+  },
+  "W6": {
+   "time_pct": [
+    0,
+    0.7
+   ]
+  },
+  "W7": {
+   "win_x64_jit_time_pct": [
+    2,
+    4
+   ]
+  },
+  "W8": {
+   "time_pct": [
+    3,
+    10
+   ]
+  },
+  "W9": {
+   "ts_ir_pct_upper_bound": [
+    -3.4,
+    -5.1
+   ]
+  },
+  "W10": {
+   "time_pct": [
+    0.1,
+    0.2
+   ],
+   "ts_ir_pct_about": -0.4
+  }
+ },
+ "lever_sum": {
+  "source": "derived: the merged rows (DL M10-P0-BASE; R21 section 6.1 W10; DL M10-P1-B1; DL M10-P2-CLOSE-2; DL M10-P3-CLOSE-2) and the base rows of TS set 44803698999 on 29ba45f6 (DL M10-P4-LEVER14)",
+  "merged_rows_x64_ts_ir_pct": {
+   "W10_PREALLOC": {
+    "jit": -0.217,
+    "jitless": -0.219
+   },
+   "W10_BESTFIT": {
+    "jit": -0.178,
+    "jitless": -0.179
+   },
+   "W5_NAMED_MISS": {
+    "jit": -2.098,
+    "jitless": -2.167
+   },
+   "Q1b_NAMED_STORE_MEGA": {
+    "jit": -0.553,
+    "jitless": -0.574
+   },
+   "Q9_CALL_FILL": {
+    "jit": -0.609,
+    "jitless": -0.614
+   }
+  },
+  "other_base_merges_x64_ts_ir_pct": {
+   "m10_p0_merge_head_44499111404": -0.01,
+   "hash_seed_2_head_44583524513": {
+    "jit": -0.0,
+    "jitless": -0.001
+   },
+   "source": "DL M10-P1-B1; DL M10-P1-CLOSE-2"
+  },
+  "x64_ts_ir_at_29ba45f6": {
+   "x64_jit": 54692567666,
+   "x64_jitless": 54082192731
+  },
+  "rest_for_month11_x_about": 1.1,
+  "g8_month10": {
+   "spent": 0,
+   "budget": 2,
+   "source": "DL M10-P4-G8"
+  },
+  "abi_version": {
+   "main_line": 6,
+   "probe_branch": 7,
+   "source": "DL M10-P4-WPRE-3; DL M10-P4-G8"
+  },
+  "product_of_merged_rows_pct": {
+   "jit": -3.614,
+   "jitless": -3.71
+  },
+  "direct_86e39c65_to_29ba45f6_pct": {
+   "jit": -3.625,
+   "jitless": -3.726
+  },
+  "rest_points": {
+   "jit": -0.011,
+   "jitless": -0.016
+  },
+  "product_rounded_pct": {
+   "jit": -3.61,
+   "jitless": -3.71
+  },
+  "measured_mid_move_x": {
+   "jit": [
+    1.013,
+    1.025
+   ],
+   "jitless": [
+    1.029,
+    1.038
+   ]
+  }
+ },
+ "next_lever_estimates": {
+  "source": "derived; the factors from R21 section 2.2 and ir_to_time_factor_m10",
+  "reg_slot_x86_ts_time_pct_month9_factors": {
+   "jit": [
+    2.46,
+    3.64
+   ],
+   "jitless": [
+    2.48,
+    3.69
+   ],
+   "rounded": [
+    2.5,
+    3.7
+   ]
+  },
+  "reg_slot_x86_ts_time_pct_month10_jit_factor": {
+   "value": 5.07,
+   "factor": 0.64,
+   "about": 5
+  },
+  "jit_range_in_diagram_pct": [
+   2.5,
+   5.1
+  ]
+ }
+}
