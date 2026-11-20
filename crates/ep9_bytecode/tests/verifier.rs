@@ -286,16 +286,16 @@ fn register_rules() {
     // f1 has r0..r2, a0..a1 and <this>.
     let reg = |v: i8| v as u8;
     verify(with_code(&[O::Ldar as u8, reg(2), RET])).unwrap();
-    verify(with_code(&[O::Ldar as u8, reg(-1), RET])).unwrap(); // <this>
-    verify(with_code(&[O::Ldar as u8, reg(-3), RET])).unwrap(); // a1
-    assert_eq!(
-        err(with_code(&[O::Ldar as u8, reg(3), RET])),
-        VerifyErrorKind::Register(0)
-    );
-    assert_eq!(
-        err(with_code(&[O::Ldar as u8, reg(-4), RET])),
-        VerifyErrorKind::Register(0)
-    );
+    verify(with_code(&[O::Ldar as u8, reg(-9), RET])).unwrap(); // <this> (ABI 7)
+    verify(with_code(&[O::Ldar as u8, reg(-11), RET])).unwrap(); // a1
+    // r3 and a2 (-12) are outside; -1, -3 and -4 are header slots (ABI 7).
+    for v in [3, -12, -1, -3, -4] {
+        assert_eq!(
+            err(with_code(&[O::Ldar as u8, reg(v), RET])),
+            VerifyErrorKind::Register(0),
+            "Ldar {v}"
+        );
+    }
     assert_eq!(
         err(with_code(&[O::Star as u8, reg(9), RET])),
         VerifyErrorKind::Register(0)
@@ -1129,4 +1129,97 @@ fn jump_offsets_are_unsigned_as_the_interpreter_reads_them() {
     code.push(RET);
     assert_eq!(target(&code, 0), Some(0x8000_0000));
     assert_eq!(err(with_code(&code)), VerifyErrorKind::Jump(0));
+}
+
+// ---- REG-SLOT (form N, ABI 7): the frame header slots -1 ..= -8 ---------------------------
+
+/// f1 of [`base`] with `code` and `registers` locals.
+fn with_registers(registers: u32, code: &[u8]) -> CompiledUnit {
+    let mut u = with_code(code);
+    u.functions[1].register_count = registers;
+    u
+}
+
+/// A register operand in the frame header (-8 ..= -1: the caller's `fp`, the return `pc` and
+/// the other header words, H14) is refused at every scale, as an input (`Reg`), an output
+/// (`RegOut`) and both (`RegInOut`). A `Star -7` would write the return `pc` of the frame. The
+/// slots next to the header (`<this>` -9, `a0` -10, `a1` -11) pass at every scale.
+#[test]
+fn header_slot_operands_are_refused_at_every_scale() {
+    let (ldar, star, mov, step) = (
+        O::Ldar as u8,
+        O::Star as u8,
+        O::Mov as u8,
+        O::ForInStep as u8,
+    );
+    let (wide, xwide) = (O::Wide as u8, O::ExtraWide as u8);
+    // A local that needs the scale (r300 at S2, r70000 at S4), so the minimal-scale rule passes
+    // and the register rule alone judges the other operand of a `Mov`.
+    let [p0, p1] = 300u16.to_le_bytes();
+    let [q0, q1, q2, q3] = 70_000u32.to_le_bytes();
+    let forms = |v: i32| {
+        let b = v as i8 as u8;
+        let [w0, w1] = (v as i16).to_le_bytes();
+        let [x0, x1, x2, x3] = v.to_le_bytes();
+        // (locals, code, the operand index of `v`)
+        [
+            (3, vec![ldar, b, RET], 0),
+            (3, vec![star, b, RET], 0),
+            (3, vec![mov, b, 0, RET], 0),
+            (3, vec![mov, 0, b, RET], 1),
+            (3, vec![step, b, RET], 0),
+            (301, vec![wide, mov, w0, w1, p0, p1, RET], 0),
+            (301, vec![wide, mov, p0, p1, w0, w1, RET], 1),
+            (
+                70_001,
+                vec![xwide, mov, x0, x1, x2, x3, q0, q1, q2, q3, RET],
+                0,
+            ),
+            (
+                70_001,
+                vec![xwide, mov, q0, q1, q2, q3, x0, x1, x2, x3, RET],
+                1,
+            ),
+        ]
+    };
+    for v in -8..=-1 {
+        assert!(Register::is_header_slot_operand(v));
+        for (n, code, k) in forms(v) {
+            assert_eq!(
+                err(with_registers(n, &code)),
+                VerifyErrorKind::Register(k),
+                "operand {v}: {code:02x?}"
+            );
+        }
+        // The one-operand forms at S2 and S4: the operand fits 1 byte, so the minimal-scale
+        // rule refuses them before the register rule.
+        let [w0, w1] = (v as i16).to_le_bytes();
+        let [x0, x1, x2, x3] = v.to_le_bytes();
+        for op in [ldar, star, step] {
+            for code in [
+                vec![wide, op, w0, w1, RET],
+                vec![xwide, op, x0, x1, x2, x3, RET],
+            ] {
+                assert_eq!(
+                    err(with_code(&code)),
+                    VerifyErrorKind::NonMinimalScale,
+                    "operand {v}: {code:02x?}"
+                );
+            }
+        }
+    }
+    for v in [-9, -10, -11] {
+        for (n, code, _) in forms(v) {
+            verify(with_registers(n, &code))
+                .unwrap_or_else(|e| panic!("operand {v}: {code:02x?}: {e:?}"));
+        }
+    }
+    // a2 (-12) is outside f1 (2 parameters) at every scale.
+    for (n, code, k) in forms(-12) {
+        assert_eq!(
+            err(with_registers(n, &code)),
+            VerifyErrorKind::Register(k),
+            "operand -12: {code:02x?}"
+        );
+    }
 }

@@ -29,7 +29,7 @@ fn layout_9_versions() {
         ),
         (4, 1, 2, 1, 1)
     );
-    assert_eq!(ep9_bytecode::ABI_VERSION, 6);
+    assert_eq!(ep9_bytecode::ABI_VERSION, 7);
     assert_eq!(ep9_value::encoding::VERSION, 1);
     assert_eq!(ep9_facts::FACT_SCHEMA_VERSION, 2);
 }

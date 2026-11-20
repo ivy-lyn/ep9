@@ -30,7 +30,7 @@ fn fingerprint() -> String {
     h.update(&common::tiny_unit().to_bytes());
     h.update(b"\n");
     h.update(runtime_table_text().as_bytes());
-    sha256::to_hex(&h.finish())
+    sha256::to_hex(&register_encoding(h).finish())
 }
 
 #[test]
@@ -296,4 +296,112 @@ fn the_top_slot_kind_byte_is_no_kind() {
     }
     // The control: the same bytes with the kind byte unchanged load.
     assert!(CompiledUnit::from_bytes(&bytes).is_ok());
+}
+
+// ---- REG-SLOT (form N, from ABI 7): the register encoding in the fingerprint ---------------
+
+/// The fingerprint input after the runtime table (from ABI 7): the bytes of
+/// [`register_encoding_unit`]. `opcodes.txt` prints operand kinds, not their bytes, and the tiny
+/// unit has no register operand, so without this unit a change of the register operand bytes
+/// (ABI 7: the slot offset from `fp`) kept the fingerprint, and no ABI bump was asked for.
+fn register_encoding(h: sha256::Sha256) -> sha256::Sha256 {
+    with_register_unit(h, &register_encoding_unit().to_bytes())
+}
+
+fn with_register_unit(mut h: sha256::Sha256, unit: &[u8]) -> sha256::Sha256 {
+    h.update(b"\n");
+    h.update(unit);
+    h
+}
+
+/// A script whose f1 (120 parameters, 1 local) reads and writes the receiver and parameters
+/// at the 1-byte scale and reads a119 at the `Wide` scale:
+/// `Ldar <this>; Star r0; Ldar a0; Star a1; Ldar.Wide a119; Mov a1, r0; Return`.
+fn register_encoding_unit() -> VerifiedUnit {
+    let src = "function f() {}";
+    let mut u = UnitBuilder::new(src, common::script_options(true));
+    let mut f = FunctionBuilder::new(FunctionMeta {
+        kind: FunctionKind::Normal,
+        flags: FunctionFlags::default(),
+        name: Some(UnitString::new("f")),
+        parent: Some(FunctionId(0)),
+        outer_scope: None,
+        source_start: 0,
+        source_end: src.len() as u32,
+        parameter_count: 120,
+        length: 120,
+    });
+    let r0 = f.new_register();
+    let (this, a0, a1, a119) = (
+        f.receiver(),
+        f.parameter(0),
+        f.parameter(1),
+        f.parameter(119),
+    );
+    f.ldar(this).star(r0);
+    f.ldar(a0).star(a1);
+    f.ldar(a119).mov(a1, r0).return_();
+    let fcode = f.finish().unwrap();
+    let mut b = FunctionBuilder::new(FunctionMeta::entry(
+        CodeKind::Script,
+        false,
+        src.len() as u32,
+    ));
+    let k = b.function_constant(FunctionId(1));
+    let s = b.feedback_slot(FeedbackSlotKind::CreateClosure);
+    b.create_closure(k, s, 0).return_();
+    u.set_function(FunctionId(0), b.finish().unwrap());
+    u.set_function(FunctionId(1), fcode);
+    u.finish().unwrap()
+}
+
+/// REG-SLOT (form N): the fingerprint holds the register operand bytes, so a change of the
+/// register encoding without an ABI_VERSION bump fails `abi_version_matches_history`. The
+/// change here is the ABI 6 name form of the same code (`<this>` -1, `a<k>` -2 - k).
+#[test]
+fn a_register_encoding_change_without_an_abi_bump_fails() {
+    use Opcode as O;
+    let unit = register_encoding_unit();
+    let (ldar, star, mov, wide, ret) = (
+        O::Ldar as u8,
+        O::Star as u8,
+        O::Mov as u8,
+        O::Wide as u8,
+        O::Return as u8,
+    );
+    // ABI 7, the slot form: <this> -9, a0 -10, a1 -11, a119 -129 (Wide: 0xff7f).
+    let slot = [
+        ldar, 0xf7, star, 0, ldar, 0xf6, star, 0xf5, wide, ldar, 0x7f, 0xff, mov, 0xf5, 0, ret,
+    ];
+    assert_eq!(unit.functions[1].bytecode, slot);
+    // ABI 6, the name form: <this> -1, a0 -2, a1 -3, a119 -121 (1 byte: 0x87).
+    let name = [
+        ldar, 0xff, star, 0, ldar, 0xfe, star, 0xfd, ldar, 0x87, mov, 0xfd, 0, ret,
+    ];
+    let mut old = unit.clone().into_inner();
+    old.functions[1].bytecode = name.to_vec();
+    old.functions[1].positions.clear();
+    // The head of the fingerprint input, as `fingerprint` builds it.
+    let head = || {
+        let mut h = sha256::Sha256::new();
+        h.update(opcode_table_text().as_bytes());
+        h.update(b"\n");
+        h.update(&common::tiny_unit().to_bytes());
+        h.update(b"\n");
+        h.update(runtime_table_text().as_bytes());
+        h
+    };
+    let fp = fingerprint();
+    assert_eq!(sha256::to_hex(&register_encoding(head()).finish()), fp);
+    let old_fp = sha256::to_hex(&with_register_unit(head(), &old.to_bytes()).finish());
+    assert_ne!(old_fp, fp);
+    // The rules of abi-history.txt (the same rules as slot-kind-history.txt): the other
+    // encoding under the same ABI_VERSION is refused; with a bump it is a new line.
+    let history = format!("# history\n{ABI_VERSION} {fp}\n");
+    let e = slot_history_state(&history, ABI_VERSION, &old_fp).unwrap_err();
+    assert!(e.contains("ABI_VERSION is still"), "{e}");
+    assert_eq!(
+        slot_history_state(&history, ABI_VERSION + 1, &old_fp),
+        Ok(false)
+    );
 }

@@ -1581,10 +1581,10 @@ mod tests {
     fn register_mapping_follows_the_frame_layout() {
         assert_eq!(R::from_operand(0).0, 0);
         assert_eq!(R::from_operand(5).0, 5);
-        // The receiver is fp - 9, parameter a<k> is fp - 10 - k (H14).
-        assert_eq!(R::from_operand(-1).0, crate::frame::slot::RECEIVER);
-        assert_eq!(R::from_operand(-2).0, crate::frame::slot::PARAM0);
-        assert_eq!(R::from_operand(-2 - 7).0, crate::frame::slot::PARAM0 - 7);
+        // The receiver (operand -9) is fp - 9, a<k> (operand -10 - k) is fp - 10 - k (H14).
+        assert_eq!(R::from_operand(-9).0, crate::frame::slot::RECEIVER);
+        assert_eq!(R::from_operand(-10).0, crate::frame::slot::PARAM0);
+        assert_eq!(R::from_operand(-10 - 7).0, crate::frame::slot::PARAM0 - 7);
     }
 
     /// The decoder maps of every target (inputs and outputs), the x86-64 select form and the
@@ -1607,13 +1607,13 @@ mod tests {
             assert_eq!(R::from_operand_sign(v), R::from_operand(v), "operand {v}");
             assert_eq!(R::from_operand_branch(v), R::from_operand(v), "operand {v}");
         }
-        // The receiver operand (-1) at the 3 scales: fp - 9 (H14).
+        // The 0xff bytes read -1 at the 3 scales (the identity; the verifier refuses -1).
         let b = [0xffu8, 0xff, 0xff, 0xff];
         // SAFETY: `b` has 4 readable bytes.
         unsafe {
-            assert_eq!(<kind::Reg as Operand>::read::<S1>(b.as_ptr()).0, -9);
-            assert_eq!(<kind::RegOut as Operand>::read::<S2>(b.as_ptr()).0, -9);
-            assert_eq!(<kind::RegPair as Operand>::read::<S4>(b.as_ptr()).0, -9);
+            assert_eq!(<kind::Reg as Operand>::read::<S1>(b.as_ptr()).0, -1);
+            assert_eq!(<kind::RegOut as Operand>::read::<S2>(b.as_ptr()).0, -1);
+            assert_eq!(<kind::RegPair as Operand>::read::<S4>(b.as_ptr()).0, -1);
         }
     }
 
@@ -1644,5 +1644,46 @@ mod tests {
         assert_eq!(<kind::Flag8 as Operand>::size::<S4>(), 1);
         assert_eq!(<kind::Reg as Operand>::size::<S4>(), 4);
         assert_eq!(<kind::Runtime as Operand>::size::<S1>(), 2);
+    }
+}
+
+#[cfg(test)]
+mod slot_form_tests {
+    use super::*;
+    use crate::frame::slot;
+    use ep9_bytecode::Register;
+
+    /// REG-SLOT (form N, ABI 7): the slot operand that `ep9_bytecode` writes for a register
+    /// name is the frame slot of that name, through every decoder (inputs and outputs) and at
+    /// the 3 scales, so a name and its slot agree with no map in T0.
+    #[test]
+    fn the_slot_operand_of_each_name_is_its_frame_slot() {
+        let mut names = vec![(Register::RECEIVER, slot::RECEIVER)];
+        names.extend((0..300).map(|k| (Register::parameter(k), slot::PARAM0 - k as isize)));
+        names.extend((0..300).map(|i| (Register::local(i), i as isize)));
+        for (r, want) in names {
+            let v = r.to_slot_operand();
+            assert_eq!(R::from_operand(v).0, want, "{r}");
+            assert_eq!(R::of_operand(v).0, want, "{r}");
+            assert_eq!(R::of_out_operand(v).0, want, "{r}");
+            let b = v.to_le_bytes();
+            // SAFETY: `b` has 4 readable bytes.
+            unsafe {
+                if let Ok(s) = i8::try_from(v) {
+                    let b1 = [s as u8];
+                    assert_eq!(<kind::Reg as Operand>::read::<S1>(b1.as_ptr()).0, want);
+                    assert_eq!(<kind::RegOut as Operand>::read::<S1>(b1.as_ptr()).0, want);
+                }
+                if i16::try_from(v).is_ok() {
+                    assert_eq!(<kind::RegInOut as Operand>::read::<S2>(b.as_ptr()).0, want);
+                    assert_eq!(<kind::RegOut as Operand>::read::<S2>(b.as_ptr()).0, want);
+                }
+                assert_eq!(<kind::Reg as Operand>::read::<S4>(b.as_ptr()).0, want);
+                assert_eq!(<kind::RegOut as Operand>::read::<S4>(b.as_ptr()).0, want);
+            }
+        }
+        // a118 is the last parameter at the 1-byte scale; a119 needs Wide (H02 F4).
+        assert!(i8::try_from(Register::parameter(118).to_slot_operand()).is_ok());
+        assert!(i8::try_from(Register::parameter(119).to_slot_operand()).is_err());
     }
 }
