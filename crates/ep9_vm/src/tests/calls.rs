@@ -2870,13 +2870,16 @@ fn the_gc_root_range_after_a_fast_call_with_the_round_up() {
 
 /// LEVER-13 (Codex focus 4, H14-Q4): the RangeError comes at the same depth. `rec(n)` (1
 /// parameter, 5 registers: frames of 15 slots) stores `depth = n` and calls `rec(n + 1)`; the
-/// script catches the RangeError and returns `depth`. Over 16 VM stack sizes in a row (one
-/// frame size), the depth grows by exactly 1, at one size: there the last frame ends at the
-/// stack end (on x86-64 the round-up store goes to the guard slot). Every dispatch expansion,
-/// with and without GC stress, gives the same depths.
+/// script (a 14-slot frame at the stack base) catches the error and returns its name and
+/// `depth`. Over 16 VM stack sizes in a row (one frame size), the error is a RangeError and
+/// the depth is `(slots - 14) / 15 - 1`: it grows by 1 at 1034 slots, where the last frame
+/// ends at the stack end (on x86-64 the round-up store goes to the guard slot). Every dispatch
+/// expansion, with and without GC stress, gives the same depths.
 #[test]
 fn the_overflow_depth_steps_once_per_frame_size_of_stack() {
     const FRAME: usize = 1 + 1 + crate::frame::HEADER + 5;
+    // The script frame: no arguments, the receiver, the header and 5 registers.
+    const SCRIPT: usize = 1 + crate::frame::HEADER + 5;
     fn make() -> VerifiedUnit {
         let mut f = Asm::new(meta("rec", 1, 0, 0, 0));
         f.b.new_register();
@@ -2907,10 +2910,18 @@ fn the_overflow_depth_steps_once_per_frame_size_of_stack() {
         s.b.call_undefined_receiver1(s.f, s.a.get(0), s.call);
         s.b.bind(end);
         s.b.jump(done);
+        // catch (e) { return e.name + depth } (in the free `a` registers: no new register).
         s.b.bind(handler);
+        s.b.star(s.a.get(1));
+        s.get_named(s.a.get(1), "name");
+        s.b.star(s.a.get(2));
+        s.lda_global("depth");
+        s.b.add(s.a.get(2), s.bin).return_();
+        // No throw: the depth only, which the parse below refuses.
         s.b.bind(done);
         s.lda_global("depth");
         s.b.return_();
+        assert_eq!(s.b.register_count(), 5);
         unit("", vec![s.finish(), f.finish()])
     }
     let mut first: Option<(String, Vec<u32>)> = None;
@@ -2931,17 +2942,18 @@ fn the_overflow_depth_steps_once_per_frame_size_of_stack() {
                             .map_err(|e| e.message);
                         iso.collect_garbage();
                         iso.verify_heap().unwrap();
-                        r.unwrap().parse::<u32>().unwrap()
+                        r.unwrap()
+                            .strip_prefix("RangeError")
+                            .expect("a RangeError")
+                            .parse::<u32>()
+                            .unwrap()
                     })
                 })
                 .collect();
-            let steps: Vec<u32> = depths.windows(2).map(|w| w[1] - w[0]).collect();
-            assert_eq!(steps.iter().sum::<u32>(), 1, "{label}: {depths:?}");
-            assert_eq!(
-                steps.iter().filter(|&&x| x == 1).count(),
-                1,
-                "{label}: {depths:?}"
-            );
+            let want: Vec<u32> = (1024..=1024 + FRAME)
+                .map(|n| ((n - SCRIPT) / FRAME - 1) as u32)
+                .collect();
+            assert_eq!(depths, want, "{label}");
             match &first {
                 None => first = Some((label, depths)),
                 Some((l0, d0)) => assert_eq!(&depths, d0, "{label} differs from {l0}"),
