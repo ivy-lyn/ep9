@@ -145,6 +145,21 @@ use ep9_bytecode::Opcode;
 /// reached the debug stack floor at turn 10,469 of 10,600. Release builds inline them (the
 /// same code as the inline form).
 ///
+/// Optimized builds with debug assertions (M10-P3 STAR-LA2 step 3; the Spike C test build:
+/// `opt-level = 2` for the engine crates, spikes/spike-c/Cargo.toml): there the handlers have
+/// tail calls. An out-of-line function that takes `&mut St` makes the `St` of the producer
+/// handler a stack value whose address escapes, and LLVM then gives no tail call: the handler
+/// calls the next handler and keeps its frame (aarch64: `LdaZero` 32 -> 64 bytes and `blr` +
+/// `ret` in place of `br`; `LdaConstant` 80 -> 160). A loop of 100,000 turns then overflows a
+/// 512 KiB thread (spike-c `harness::tests::cold_string_arms_keep_the_native_stack_flat`). So
+/// the out-of-line part is [`star_at`], which takes the values (`cx`, `fp`, `acc`, `next`) and
+/// gives the new `next`, and [`star_next`] and [`star_done`] are `#[inline]` in debug builds:
+/// - `opt-level = 0`: no inlining but `#[inline(always)]`, so the producer calls `star_next`
+///   or `star_done` out of line with `&mut St`, as in the step 0 form (the frame of the base;
+///   no tail calls at `opt-level = 0` in any case).
+/// - an optimized build: LLVM inlines `star_next` and `star_done`, the `St` stays in
+///   registers, the producer calls `star_at` with values and keeps its tail call.
+///
 /// The debug native-stack check (M10-P3 STAR-LA2, Codex sl2-r1 F1): a debug threaded handler
 /// runs `dsl::debug_native_stack_check` before it decodes or writes anything (the floor is
 /// `DEBUG_SLACK` below `native_limit`). A fused Star writes its register in the producer, so
@@ -156,28 +171,45 @@ use ep9_bytecode::Opcode;
 /// here, far less than `DEBUG_SLACK`.
 #[inline(always)]
 fn star_lookahead<const ONE_PC: bool>(st: &mut St<'_>) {
+    st.next = star_at::<ONE_PC>(st.cx, st.fp, st.acc, st.next);
+}
+
+/// The lookahead of [`star_lookahead`] on the values that it needs: `fp` the live frame, `acc`
+/// the accumulator that the producer wrote, `next` the start of the next instruction (`St`
+/// contract). Gives the pc that the producer dispatches to. Out of line in debug builds, with
+/// no `&mut St` (see [`star_lookahead`]); inline in release builds.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+fn star_at<const ONE_PC: bool>(
+    cx: &crate::interp::Cx,
+    fp: *mut u64,
+    acc: u64,
+    next: *const u8,
+) -> *const u8 {
     #[cfg(test)]
     if star_count::OFF.with(|c| c.get()) {
-        return;
+        return next;
     }
-    st.next = lookahead_pc::<ONE_PC>(st.next);
-    // SAFETY: `st.next` is the start of the next instruction of verified code (`St` contract):
+    let mut next = lookahead_pc::<ONE_PC>(next);
+    // SAFETY: `next` is the start of the next instruction of verified code (`St` contract):
     // its opcode byte is readable.
-    if unsafe { *st.next } == Opcode::Star as u8 && star_room(st.cx) {
+    if unsafe { *next } == Opcode::Star as u8 && star_room(cx) {
         // SAFETY: verified code: a one-byte-scale `Star` is followed by its `RegOut` operand,
         // a register of the live frame `fp`, and the instruction after it (a verified function
         // never runs off its end).
-        let (len, (dst,)) = unsafe { dsl::decode!(dsl::S1, st.next; dst: RegOut) };
-        let v = st.acc;
-        st.set_reg(dst, v);
+        let (len, (dst,)) = unsafe { dsl::decode!(dsl::S1, next; dst: RegOut) };
+        // SAFETY: `dst` is a register of the live frame `fp` (the verifier): the store of
+        // `St::set_reg`, as in the Star handler.
+        unsafe { *fp.offset(dst.0) = acc };
         // SAFETY: as above: the next instruction starts `len` bytes after the Star.
-        st.next = unsafe { st.next.add(len) };
+        next = unsafe { next.add(len) };
         #[cfg(test)]
         star_count::FUSED.with(|c| c.set(c.get() + 1));
     }
     if ONE_PC {
-        st.next = dsl::dispatch_pc(st.next);
+        next = dsl::dispatch_pc(next);
     }
+    next
 }
 
 /// True if the lookahead may fuse the Star here ([`star_lookahead`], sl2-r1 F1). Debug builds:
@@ -223,8 +255,8 @@ fn lookahead_pc<const ONE_PC: bool>(next: *const u8) -> *const u8 {
 }
 
 /// `Flow::Next` after the Star lookahead ([`star_lookahead`]): the success exit of a producer
-/// whose fast body gives a `Flow`. Out of line in debug builds (see [`star_lookahead`]).
-#[cfg_attr(debug_assertions, inline(never))]
+/// whose fast body gives a `Flow`. `#[inline]` in debug builds (see [`star_lookahead`]).
+#[cfg_attr(debug_assertions, inline)]
 #[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) fn star_next<const ONE_PC: bool>(st: &mut St<'_>) -> crate::interp::Flow {
     star_lookahead::<ONE_PC>(st);
@@ -232,8 +264,8 @@ pub(crate) fn star_next<const ONE_PC: bool>(st: &mut St<'_>) -> crate::interp::F
 }
 
 /// `Done::Next` after the Star lookahead ([`star_lookahead`]): the exit of a producer whose
-/// fast body gives a `Done`. Out of line in debug builds (see [`star_lookahead`]).
-#[cfg_attr(debug_assertions, inline(never))]
+/// fast body gives a `Done`. `#[inline]` in debug builds (see [`star_lookahead`]).
+#[cfg_attr(debug_assertions, inline)]
 #[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) fn star_done<const ONE_PC: bool>(st: &mut St<'_>) -> crate::interp::Done {
     star_lookahead::<ONE_PC>(st);
