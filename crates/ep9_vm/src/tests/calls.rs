@@ -850,7 +850,7 @@ fn the_fast_frame_write_equals_push_frame() {
                     "{case}"
                 );
                 assert_eq!(pa.is_some(), room >= size, "{case}");
-                assert_eq!(a, b, "{case}");
+                assert_fill_eq(&a, &b, pa, regs, &case);
             }
         }
     }
@@ -2196,6 +2196,768 @@ fn a_host_method_call_saves_the_caller_offset_as_the_general_path() {
                 "{label}: {offs:?}"
             );
             assert_eq!((on.3, off.3), (3, 0), "{label}");
+        }
+    }
+}
+
+// ---- the x86-64 register fill of a call frame (M10-P3 LEVER-13, CALL-FILL) ----------------
+//
+// On x86-64 (not `spike-native`), `call::write_call_header` writes the registers of a new frame
+// 2 slots per pass, so for an odd register count it writes undefined to the slot at the frame
+// top too (`VmStack::GUARD` is 1 there, else 0). The frame tests read `VmStack::GUARD`, not the
+// target, so they check the round-up wherever the fill has it; the bytecode tests run the T0
+// call fast path where the target has it (x86-64) and the frame push of the other paths.
+
+/// The buffer compare of the fast-frame tests: `fast` (the writes of the fast path) is `push`
+/// (the writes of `call::push_frame`) slot for slot, but for the slot at the frame top: with
+/// the round-up (`VmStack::GUARD` 1) and an odd `regs`, `fast` has undefined there, else that
+/// slot is not written. `fp` is the frame in `push` (`None`: no frame; the buffers are equal).
+fn assert_fill_eq(push: &[u64], fast: &[u64], fp: Option<*mut u64>, regs: u32, case: &str) {
+    use crate::frame::{UNDEFINED, VmStack};
+    // Not a constant for the compare (it is 0 on most targets).
+    let guard = std::hint::black_box(VmStack::GUARD);
+    assert!(guard <= 1, "the fill writes at most 1 slot past the top");
+    let mut want = push.to_vec();
+    if let Some(fp) = fp {
+        let top = (fp.addr() - push.as_ptr().addr()) / 8 + regs as usize;
+        if guard == 1 && regs % 2 == 1 {
+            want[top] = UNDEFINED;
+        }
+    }
+    assert_eq!(fast, &want[..], "{case}");
+}
+
+/// Writes the frame of `fi` with `argc` arguments at slot 4 of two `len`-slot buffers full of
+/// a mark, with the limit `room` slots above the base: by `call::push_frame` (the first buffer)
+/// and by the steps of the fast path (the second), as `the_fast_frame_write_equals_push_frame`
+/// does. Returns each buffer and its frame.
+fn write_both(
+    fi: &crate::unit::FunctionInfo,
+    argc: u32,
+    list: bool,
+    early: bool,
+    room: usize,
+    len: usize,
+) -> (Vec<u64>, Option<*mut u64>, Vec<u64>, Option<*mut u64>) {
+    use crate::call::{
+        call_frame_fp, fill_missing_args, push_frame, write_call_args, write_call_header,
+    };
+    use crate::frame::{UNDEFINED, int32_bits};
+    const MARK: u64 = 0x7FF8_0000_DEAD_BEEF;
+    let (callee, this, context) = (int32_bits(1), int32_bits(2), int32_bits(3));
+    let caller_fp = core::ptr::without_provenance_mut::<u64>(0x1000);
+    let return_pc = core::ptr::without_provenance::<u8>(0x2000);
+    let arg = |i: u32| int32_bits(100 + i as i32);
+    let (mut a, mut b) = (vec![MARK; len], vec![MARK; len]);
+    assert!(room + 4 < len, "room for the round-up slot");
+    // SAFETY: base + room + 1 lies inside each buffer (checked above).
+    let pa = unsafe {
+        let base = a.as_mut_ptr().add(4);
+        push_frame(
+            base,
+            base.add(room),
+            fi,
+            callee,
+            this,
+            argc,
+            arg,
+            caller_fp,
+            return_pc,
+            context,
+            UNDEFINED,
+        )
+    };
+    // SAFETY: as above; `fp` is `call_frame_fp` of the same base and limit.
+    let pb = unsafe {
+        let base = b.as_mut_ptr().add(4);
+        call_frame_fp(base, base.add(room), fi, argc).inspect(|&fp| {
+            fill_missing_args(base, fp, argc);
+            let args = || {
+                if list {
+                    write_call_args::<true>(fp, this, argc, arg)
+                } else {
+                    write_call_args::<false>(fp, this, argc, arg)
+                }
+            };
+            if early {
+                args();
+            }
+            write_call_header(fp, fi, callee, argc, caller_fp, return_pc, || context);
+            if !early {
+                args();
+            }
+        })
+    };
+    (a, pa, b, pb)
+}
+
+/// LEVER-13: frames with 0, 1, 7, 8, 9 and 17 registers (even and odd counts, below, at and
+/// above 8) from the fast path equal the frames of `call::push_frame`, for 0 to 3 arguments
+/// and 0 or 2 parameters, the list and fixed-count argument stores, before and after the
+/// header, and a limit one slot too low, at the frame top, and 1 and 3 slots above it.
+#[test]
+fn fast_frames_of_0_1_7_8_9_and_17_registers_equal_push_frame() {
+    use crate::frame::HEADER;
+    use crate::unit::FunctionInfo;
+    for regs in [0u32, 1, 7, 8, 9, 17] {
+        for params in [0u32, 2] {
+            let mut fi = FunctionInfo::host(never_called, "f", 0, false);
+            fi.parameter_count = params;
+            fi.register_count = regs;
+            for argc in 0..=3u32 {
+                for (list, early) in [(true, false), (true, true), (false, false), (false, true)] {
+                    if !list && argc > 2 {
+                        continue;
+                    }
+                    let size = argc.max(params) as usize + 1 + HEADER + regs as usize;
+                    for room in [size - 1, size, size + 1, size + 3] {
+                        let (a, pa, b, pb) = write_both(&fi, argc, list, early, room, 64);
+                        let case = format!(
+                            "regs {regs} params {params} argc {argc} room {room} list {list} \
+                             early {early}"
+                        );
+                        assert_eq!(
+                            pa.map(|p| p.addr() - a.as_ptr().addr()),
+                            pb.map(|p| p.addr() - b.as_ptr().addr()),
+                            "{case}"
+                        );
+                        assert_eq!(pa.is_some(), room >= size, "{case}");
+                        assert_fill_eq(&a, &b, pa, regs, &case);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// LEVER-13: a frame that ends at the end of a real `VmStack` (the stack limit of an isolate,
+/// `isolate.rs` `stack_limit: rt.stack().end()`). `end()` stays `base + slots`; the fast path
+/// and `call::push_frame` take the frame and refuse one slot more alike; with the round-up the
+/// store past the top lands in the guard slot past `end()` (allocated, no frame owns it), else
+/// that slot is not written.
+#[test]
+fn a_fast_frame_that_ends_at_the_stack_end_puts_the_round_up_in_the_guard_slot() {
+    use crate::call::{
+        call_frame_fp, fill_missing_args, push_frame, write_call_args, write_call_header,
+    };
+    use crate::frame::{HEADER, UNDEFINED, VmStack, int32_bits};
+    use crate::unit::FunctionInfo;
+    const SLOTS: usize = 64;
+    let (callee, this, context) = (int32_bits(1), int32_bits(2), int32_bits(3));
+    let caller_fp = core::ptr::without_provenance_mut::<u64>(0x1000);
+    let return_pc = core::ptr::without_provenance::<u8>(0x2000);
+    let arg = |i: u32| int32_bits(100 + i as i32);
+    for regs in [0u32, 1, 7, 8, 9, 17] {
+        for argc in 0..=2u32 {
+            let mut fi = FunctionInfo::host(never_called, "f", 0, false);
+            fi.parameter_count = 1;
+            fi.register_count = regs;
+            let case = format!("regs {regs} argc {argc}");
+            let size = argc.max(1) as usize + 1 + HEADER + regs as usize;
+            let (pushed, fast) = (VmStack::new(SLOTS), VmStack::new(SLOTS));
+            for s in [&pushed, &fast] {
+                assert_eq!(s.end().addr() - s.base().addr(), SLOTS * 8, "{case}");
+            }
+            // One slot too big: both refuse, and nothing is written.
+            // SAFETY: the base lies inside the stack; the limit is its end.
+            unsafe {
+                let base = pushed.end().sub(size - 1);
+                let p = push_frame(
+                    base,
+                    pushed.end(),
+                    &fi,
+                    callee,
+                    this,
+                    argc,
+                    arg,
+                    caller_fp,
+                    return_pc,
+                    context,
+                    UNDEFINED,
+                );
+                assert!(p.is_none(), "{case}");
+                let base = fast.end().sub(size - 1);
+                assert!(
+                    call_frame_fp(base, fast.end(), &fi, argc).is_none(),
+                    "{case}"
+                );
+            }
+            // SAFETY: the frame `[base, end)` lies inside the stack; the limit is its end.
+            let (pa, pb) = unsafe {
+                let base = pushed.end().sub(size);
+                let pa = push_frame(
+                    base,
+                    pushed.end(),
+                    &fi,
+                    callee,
+                    this,
+                    argc,
+                    arg,
+                    caller_fp,
+                    return_pc,
+                    context,
+                    UNDEFINED,
+                )
+                .expect(&case);
+                let base = fast.end().sub(size);
+                let pb = call_frame_fp(base, fast.end(), &fi, argc).expect(&case);
+                fill_missing_args(base, pb, argc);
+                write_call_args::<false>(pb, this, argc, arg);
+                write_call_header(pb, &fi, callee, argc, caller_fp, return_pc, || context);
+                (pa, pb)
+            };
+            assert_eq!(pa.wrapping_add(regs as usize), pushed.end(), "{case}");
+            assert_eq!(pb.wrapping_add(regs as usize), fast.end(), "{case}");
+            // SAFETY: `[base, end)` is the stack memory (zeroed, then written).
+            let (a, b) = unsafe {
+                (
+                    core::slice::from_raw_parts(pushed.base(), SLOTS).to_vec(),
+                    core::slice::from_raw_parts(fast.base(), SLOTS).to_vec(),
+                )
+            };
+            assert_eq!(a, b, "{case}: the slots below the end");
+            if std::hint::black_box(VmStack::GUARD) > 0 {
+                // SAFETY: `VmStack::new` allocates `GUARD` slots past `end()`.
+                let (ga, gb) = unsafe { (*pushed.end(), *fast.end()) };
+                assert_eq!(ga, 0, "{case}: push_frame writes no guard slot");
+                let want = if regs % 2 == 1 { UNDEFINED } else { 0 };
+                assert_eq!(gb, want, "{case}: the guard slot");
+            }
+        }
+    }
+}
+
+/// `function name(a, b) { "use strict"; .. }` with exactly `regs` registers: returns -1 if
+/// every register reads undefined at entry, else the index of the first one that does not.
+/// Strict, so a primitive receiver (`emit_shape` gives "R") does not send the call cold
+/// (`call::try_bind_this`): every call form reaches the fast frame write.
+fn undefined_reader(name: &str, regs: u32) -> FunctionCode {
+    let mut m = meta(name, 2, 0, 0, 0);
+    m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
+    let mut b = ep9_bytecode::FunctionBuilder::new(m);
+    let r: Vec<Register> = (0..regs).map(|_| b.new_register()).collect();
+    assert_eq!(b.register_count(), regs);
+    let bad: Vec<ep9_bytecode::Label> = r.iter().map(|_| b.new_label()).collect();
+    for (&reg, &l) in r.iter().zip(&bad) {
+        b.ldar(reg).jump_if_not_undefined(l);
+    }
+    b.lda_smi(-1).return_();
+    for (i, &l) in bad.iter().enumerate() {
+        b.bind(l);
+        b.lda_smi(i as i32).return_();
+    }
+    b.finish().unwrap()
+}
+
+/// `function dirty() { r0 = .. = r23 = 42 }`: leaves non-undefined Values in the 24 slots
+/// above its frame base, where the next frame of the same call site lies.
+fn dirty() -> FunctionCode {
+    let mut b = ep9_bytecode::FunctionBuilder::new(meta("dirty", 0, 0, 0, 0));
+    let r: Vec<Register> = (0..24).map(|_| b.new_register()).collect();
+    b.lda_smi(42);
+    for reg in r {
+        b.star(reg);
+    }
+    b.lda_undefined().return_();
+    b.finish().unwrap()
+}
+
+/// The register counts of the `undefined_reader` functions `u<n>`.
+const READER_REGS: [u32; 6] = [0, 1, 7, 8, 9, 17];
+
+/// The script part that defines `dirty` (function 1) and `u0` .. `u17` (functions 2..=7).
+fn define_readers(s: &mut Asm) {
+    let names = ["dirty"].into_iter().chain(READER_REGS.map(reader_name));
+    for (i, name) in names.enumerate() {
+        let k = s.b.function_constant(FunctionId(i as u32 + 1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(name);
+    }
+}
+
+fn reader_name(regs: u32) -> &'static str {
+    match regs {
+        0 => "u0",
+        1 => "u1",
+        7 => "u7",
+        8 => "u8",
+        9 => "u9",
+        _ => "u17",
+    }
+}
+
+/// Functions 1..=7 of the units below: `dirty` and the readers.
+fn reader_fns() -> Vec<FunctionCode> {
+    let mut fns = vec![dirty()];
+    fns.extend(READER_REGS.map(|n| undefined_reader(reader_name(n), n)));
+    fns
+}
+
+/// `dirty()` from the script, with the frame at the base of the next call.
+fn call_dirty(s: &mut Asm) {
+    s.lda_global("dirty");
+    s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+}
+
+/// `peek(k)`: the slot `k` above the top of the caller frame (the base of the frame that the
+/// caller pushed last): 1 if it holds undefined, 0 if it holds 42 (from `dirty`), else -1. It
+/// reads the slot first, before any other step of the host call.
+fn peek<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    use crate::frame::{UNDEFINED, int32_bits, native_ptr, slot};
+    use crate::runtime::frame_top;
+    let stack = cx.inner().rt().stack();
+    assert!(
+        stack.scratch_top().is_null(),
+        "no scratch top at the host entry"
+    );
+    let k = args.get(0).as_int32().expect("peek(k): an int32 k") as usize;
+    // SAFETY: the host frame is live; its caller slot was written at its push.
+    let caller = unsafe { native_ptr::<u64>(*stack.fp().offset(slot::CALLER_FP)) };
+    let at = frame_top(caller).wrapping_add(k);
+    assert!(
+        at.addr() < stack.end().addr(),
+        "slot {k} lies inside the stack"
+    );
+    // SAFETY: `at` lies in the stack, below `end()` (checked above).
+    let bits = unsafe { *at };
+    Ok(Local::int32(if bits == UNDEFINED {
+        1
+    } else if bits == int32_bits(42) {
+        0
+    } else {
+        -1
+    }))
+}
+
+/// LEVER-13 (Codex focus 1): every register of a new frame reads undefined, for 0, 1, 7, 8, 9
+/// and 17 registers, in each of the 9 call forms (0 to 3 arguments, 2 parameters: missing and
+/// extra arguments), each time after `dirty` left 42 in the slots of the new frame; under
+/// every dispatch expansion, with and without GC stress. After each call, `peek` reads the
+/// slot at the top of the callee frame: undefined (1) shows that the call wrote the frame by
+/// `fill_registers` with the round-up (`VmStack::GUARD` 1, an odd count), 42 (0) that it did
+/// not write there. Each reader is called 8 times first, so the threshold-8 cold call
+/// (`count_call`) is used up before the shapes.
+#[test]
+fn every_register_of_a_new_frame_reads_undefined_after_a_dirty_frame() {
+    const SHAPES: [Shape; 9] = [
+        Shape::CallProperty0,
+        Shape::CallProperty1,
+        Shape::CallProperty2,
+        Shape::CallProperty,
+        Shape::CallAnyReceiver,
+        Shape::CallUndefinedReceiver0,
+        Shape::CallUndefinedReceiver1,
+        Shape::CallUndefinedReceiver2,
+        Shape::CallUndefinedReceiver,
+    ];
+    fn argc(shape: Shape) -> u32 {
+        match shape {
+            Shape::CallProperty0 | Shape::CallUndefinedReceiver0 => 0,
+            Shape::CallProperty1 | Shape::CallUndefinedReceiver1 => 1,
+            Shape::CallProperty2 | Shape::CallUndefinedReceiver2 => 2,
+            _ => 3,
+        }
+    }
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let l = s.b.new_register_list(4);
+        let (p, save) = (s.b.new_register(), s.b.new_register());
+        define_readers(&mut s);
+        s.lda_global("peek");
+        s.b.star(p);
+        for regs in READER_REGS {
+            for _ in 0..8 {
+                s.lda_global(reader_name(regs));
+                s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+            }
+            for shape in SHAPES {
+                // The slot at the callee frame top, from the base of the callee frame. It
+                // lies in the 24 slots that `dirty` wrote, above the frame of `peek`.
+                let k = argc(shape).max(2) + 1 + crate::frame::HEADER as u32 + regs;
+                for _ in 0..2 {
+                    call_dirty(&mut s);
+                    emit_shape(&mut s, shape, reader_name(regs), l);
+                    s.b.star(save);
+                    s.b.lda_smi(k as i32).star(s.a.get(0));
+                    s.b.call_undefined_receiver1(p, s.a.get(0), s.call);
+                    s.print_acc();
+                    s.b.ldar(save);
+                    s.print_acc();
+                }
+            }
+        }
+        s.b.lda_undefined().return_();
+        let mut fns = vec![s.finish()];
+        fns.extend(reader_fns());
+        unit("", fns)
+    }
+    let want: Vec<&str> = READER_REGS
+        .iter()
+        .flat_map(|&regs| {
+            let top = if std::hint::black_box(crate::frame::VmStack::GUARD) == 1 && regs % 2 == 1 {
+                "1"
+            } else {
+                "0"
+            };
+            std::iter::repeat_n([top, "-1"], SHAPES.len() * 2).flatten()
+        })
+        .collect();
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let (r, output) = super::on_big_stack(move || {
+                let mut iso = isolate(super::config(d, stress));
+                iso.register_host_function("peek", 1, peek);
+                take_output();
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "fill.js").map(|v| cx.display(v))
+                });
+                let output = take_output();
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+                (r.map_err(|e| e.message), output)
+            });
+            assert_eq!(r.as_deref(), Ok("undefined"), "{label}");
+            assert_eq!(output, want, "{label}");
+        }
+    }
+}
+
+/// LEVER-13 (Codex focus 2): a throw out of fast-called frames with odd register counts, and
+/// a generator that makes fast calls and is resumed above a dirty frame: the catch, the
+/// resumed registers and every new frame after them read right. `thrower` (5 registers) calls
+/// `u7`, then throws "boom"; `middle` (5 registers) calls `thrower` with no handler, so the
+/// throw unwinds 2 frames. `gen` (9 registers): `x = u7(); yield x + 10; return x + u7();`.
+#[test]
+fn a_throw_and_a_generator_resume_after_fast_calls_with_the_round_up() {
+    fn odd(name: &str) -> Asm {
+        let mut f = Asm::new(meta(name, 0, 0, 0, 0));
+        f.b.new_register();
+        assert_eq!(f.b.register_count(), 5);
+        f
+    }
+    fn make() -> VerifiedUnit {
+        // function thrower() { u7(); throw "boom"; }
+        let mut t = odd("thrower");
+        t.lda_global("u7");
+        t.b.star(t.f).call_undefined_receiver0(t.f, t.call);
+        t.lda_str("boom");
+        t.b.throw();
+        // function middle() { return thrower(); }
+        let mut m = odd("middle");
+        m.lda_global("thrower");
+        m.b.star(m.f)
+            .call_undefined_receiver0(m.f, m.call)
+            .return_();
+        // function* gen() { const x = u7(); yield x + 10; return x + u7(); } (the Gen form of
+        // tests/generator.rs, with no resume-mode switch: the script calls only `next`).
+        let mut gm = meta("gen", 0, 0, 0, 0);
+        gm.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::GENERATOR;
+        let mut g = Asm::new(gm);
+        let (gr, x) = (g.b.new_register(), g.b.new_register());
+        let tl = g.b.new_register_list(2);
+        g.b.new_register();
+        let save = RegisterList::new(0, g.b.register_count());
+        assert_eq!(save.len(), 9);
+        let (table, resumes) = g.b.jump_table(2);
+        let this = g.b.receiver();
+        g.b.lda_new_target().star(gr);
+        g.b.switch_on_generator_state(gr, table);
+        g.b.lda_current_function().star(tl.get(0));
+        g.b.ldar(this).star(tl.get(1));
+        g.b.call_runtime(RuntimeId::CreateGeneratorObject, tl, 2);
+        g.b.star(gr);
+        g.b.suspend_generator(gr, save, save.len(), 0);
+        g.b.bind(resumes[0]);
+        g.b.resume_generator(gr, save, save.len());
+        g.lda_global("u7");
+        g.b.star(g.f).call_undefined_receiver0(g.f, g.call).star(x);
+        g.b.add_smi(10, g.bin);
+        g.b.star(tl.get(0)).lda_false().star(tl.get(1));
+        g.b.call_runtime(RuntimeId::CreateIterResultObject, tl, 2);
+        g.b.suspend_generator(gr, save, save.len(), 1);
+        g.b.bind(resumes[1]);
+        g.b.resume_generator(gr, save, save.len());
+        g.lda_global("u7");
+        g.b.star(g.f)
+            .call_undefined_receiver0(g.f, g.call)
+            .add(x, g.bin)
+            .return_();
+        // The script.
+        let mut s = Asm::script(0);
+        let (ctx, e, it, res) = (
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+        );
+        define_readers(&mut s);
+        for (id, name) in [(8, "thrower"), (9, "middle"), (10, "gen")] {
+            let k = s.b.function_constant(FunctionId(id));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global(name);
+        }
+        // try { thrower() } catch (e) { print(e) }, then try { middle() } catch (e) { print(e) },
+        // each followed by `print(u7())` at the same base.
+        for callee in ["thrower", "middle"] {
+            for _ in 0..2 {
+                let (start, end, handler, done) = (
+                    s.b.new_label(),
+                    s.b.new_label(),
+                    s.b.new_label(),
+                    s.b.new_label(),
+                );
+                s.b.lda_current_context().star(ctx);
+                s.b.add_handler(start, end, handler, ctx, ep9_bytecode::HandlerKind::Caught);
+                s.b.bind(start);
+                call_dirty(&mut s);
+                s.lda_global(callee);
+                s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+                s.b.bind(end);
+                s.b.jump(done);
+                s.b.bind(handler);
+                s.b.star(e).ldar(e);
+                s.print_acc();
+                s.b.bind(done);
+                call_dirty(&mut s);
+                s.lda_global("u7");
+                s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+                s.print_acc();
+            }
+        }
+        // it = gen(); then `it.next()` twice after `dirty()`: print value and done.
+        s.lda_global("gen");
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call).star(it);
+        for _ in 0..2 {
+            call_dirty(&mut s);
+            s.get_named(it, "next");
+            s.b.star(s.f).call_property0(s.f, it, s.call).star(res);
+            s.get_named(res, "value");
+            s.print_acc();
+            s.get_named(res, "done");
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        let mut fns = vec![s.finish()];
+        fns.extend(reader_fns());
+        fns.extend([t.finish(), m.finish(), g.finish()]);
+        unit("", fns)
+    }
+    let r = run_all(make);
+    ok(&r);
+    assert_eq!(
+        r.output,
+        [
+            "boom", "-1", "boom", "-1", "boom", "-1", "boom", "-1", "9", "false", "-2", "true"
+        ]
+    );
+}
+
+/// `scanRange()`: checks the GC root range (`Runtime::trace`: `[base, max(top, scratch top))`)
+/// from a host frame that a fast-called frame with an odd register count pushed: no scratch
+/// top, the range ends at the host frame top inside `[base, end()]`, the host frame starts at
+/// the caller's top (so the round-up slot of the caller is a host-frame slot that the host
+/// frame push wrote), and every slot in the range holds a valid Value. Returns undefined.
+fn scan_range<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    use crate::frame::{CONSTRUCT_BIT, HEADER, int32_of, native_ptr, slot};
+    use crate::runtime::frame_top;
+    let rt = cx.inner().rt();
+    let stack = rt.stack();
+    let host = stack.fp();
+    assert!(
+        stack.scratch_top().is_null(),
+        "bytecode runs with no scratch top"
+    );
+    // SAFETY: `host` is the live host frame; its header slots were written at its push.
+    let (caller, argc, fi) = unsafe {
+        (
+            native_ptr::<u64>(*host.offset(slot::CALLER_FP)),
+            int32_of(*host.offset(slot::ARGC)) as u32 & !CONSTRUCT_BIT,
+            &*native_ptr::<crate::unit::FunctionInfo>(*host.offset(slot::FUNCTION_INFO)),
+        )
+    };
+    let n = argc.max(fi.parameter_count) as usize;
+    let host_base = host.wrapping_sub(n + 1 + HEADER);
+    assert_eq!(
+        host_base,
+        frame_top(caller),
+        "the host frame starts at the caller's top"
+    );
+    // SAFETY: the caller is a live bytecode frame below the host frame.
+    let caller_regs = unsafe {
+        (*native_ptr::<crate::unit::FunctionInfo>(*caller.offset(slot::FUNCTION_INFO)))
+            .register_count
+    };
+    assert_eq!(caller_regs % 2, 1, "the caller has an odd register count");
+    let (base, end) = (stack.base(), frame_top(host));
+    assert!(
+        end.addr() <= stack.end().addr(),
+        "the range ends inside the stack"
+    );
+    let n = (end.addr() - base.addr()) / 8;
+    for i in 0..n {
+        // SAFETY: `[base, end)` is the live part of the stack.
+        let bits = unsafe { *base.add(i) };
+        assert!(
+            ep9_value::Value::is_valid_bits(bits),
+            "slot {i} of {n}: {bits:#x}"
+        );
+    }
+    Ok(Local::undefined())
+}
+
+/// LEVER-13 (Codex focus 3): the GC root range after fast calls with the round-up. `scanner`
+/// (5 registers) makes an object (a GC point: a collection under stress), calls `u7` (the
+/// round-up past its top), then `scanRange()`; the script calls it twice after `dirty()`.
+/// Every dispatch expansion, with and without GC stress; the heap verifies after the run.
+#[test]
+fn the_gc_root_range_after_a_fast_call_with_the_round_up() {
+    fn make() -> VerifiedUnit {
+        let mut f = Asm::new(meta("scanner", 0, 0, 0, 0));
+        let o = f.b.new_register();
+        assert_eq!(f.b.register_count(), 5);
+        f.b.create_empty_object_literal().star(o);
+        f.lda_global("u7");
+        f.b.star(f.f).call_undefined_receiver0(f.f, f.call);
+        f.lda_global("scanRange");
+        f.b.star(f.f).call_undefined_receiver0(f.f, f.call);
+        f.b.create_empty_object_literal().star(o);
+        f.b.ldar(o).return_();
+        let mut s = Asm::script(0);
+        define_readers(&mut s);
+        let k = s.b.function_constant(FunctionId(8));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("scanner");
+        for _ in 0..2 {
+            call_dirty(&mut s);
+            s.lda_global("scanner");
+            s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+        }
+        s.lda_str("ok");
+        s.b.return_();
+        let mut fns = vec![s.finish()];
+        fns.extend(reader_fns());
+        fns.push(f.finish());
+        unit("", fns)
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let r = super::on_big_stack(move || {
+                let mut iso = isolate(super::config(d, stress));
+                iso.register_host_function("scanRange", 0, scan_range);
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "scan.js").map(|v| cx.display(v))
+                });
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+                r.map_err(|e| e.message)
+            });
+            assert_eq!(r.as_deref(), Ok("ok"), "{label}");
+        }
+    }
+}
+
+/// LEVER-13 (Codex focus 4, H14-Q4): the RangeError comes at the same depth. `rec(n)` (1
+/// parameter, 5 registers: frames of 15 slots) stores `depth = n` and calls `rec(n + 1)`; the
+/// script (a 14-slot frame at the stack base) catches the error and returns its name and
+/// `depth`. Over 16 VM stack sizes in a row (one frame size), the error is a RangeError and
+/// the depth is `(slots - 14) / 15 - 1`: it grows by 1 at 1034 slots, where the last frame
+/// ends at the stack end (on x86-64 the round-up store goes to the guard slot). Every dispatch
+/// expansion, with and without GC stress, gives the same depths.
+#[test]
+fn the_overflow_depth_steps_once_per_frame_size_of_stack() {
+    const FRAME: usize = 1 + 1 + crate::frame::HEADER + 5;
+    // The script frame: no arguments, the receiver, the header and 5 registers.
+    const SCRIPT: usize = 1 + crate::frame::HEADER + 5;
+    fn make() -> VerifiedUnit {
+        let mut f = Asm::new(meta("rec", 1, 0, 0, 0));
+        f.b.new_register();
+        assert_eq!(f.b.register_count(), 5);
+        let n = f.b.parameter(0);
+        f.b.ldar(n);
+        f.sta_global("depth");
+        f.lda_global("rec");
+        f.b.star(f.f).ldar(n).add_smi(1, f.bin).star(f.a.get(0));
+        f.b.call_undefined_receiver1(f.f, f.a.get(0), f.call)
+            .return_();
+        let mut s = Asm::script(0);
+        let ctx = s.b.new_register();
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("rec");
+        let (start, end, handler, done) = (
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+        );
+        s.b.lda_current_context().star(ctx);
+        s.b.add_handler(start, end, handler, ctx, ep9_bytecode::HandlerKind::Caught);
+        s.b.bind(start);
+        s.lda_global("rec");
+        s.b.star(s.f).lda_smi(0).star(s.a.get(0));
+        s.b.call_undefined_receiver1(s.f, s.a.get(0), s.call);
+        s.b.bind(end);
+        s.b.jump(done);
+        // catch (e) { return e.name + depth } (in the free `a` registers: no new register).
+        s.b.bind(handler);
+        s.b.star(s.a.get(1));
+        s.get_named(s.a.get(1), "name");
+        s.b.star(s.a.get(2));
+        s.lda_global("depth");
+        s.b.add(s.a.get(2), s.bin).return_();
+        // No throw: the depth only, which the parse below refuses.
+        s.b.bind(done);
+        s.lda_global("depth");
+        s.b.return_();
+        assert_eq!(s.b.register_count(), 5);
+        unit("", vec![s.finish(), f.finish()])
+    }
+    let mut first: Option<(String, Vec<u32>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let depths: Vec<u32> = (1024..=1024 + FRAME)
+                .map(|slots| {
+                    super::on_big_stack(move || {
+                        let mut iso = isolate(crate::IsolateConfig {
+                            vm_stack_slots: slots,
+                            ..super::config(d, stress)
+                        });
+                        let r = iso
+                            .with_cx_checkpoint(|cx| {
+                                cx.run_script(make(), "depth.js").map(|v| cx.display(v))
+                            })
+                            .map_err(|e| e.message);
+                        iso.collect_garbage();
+                        iso.verify_heap().unwrap();
+                        r.unwrap()
+                            .strip_prefix("RangeError")
+                            .expect("a RangeError")
+                            .parse::<u32>()
+                            .unwrap()
+                    })
+                })
+                .collect();
+            let want: Vec<u32> = (1024..=1024 + FRAME)
+                .map(|n| ((n - SCRIPT) / FRAME - 1) as u32)
+                .collect();
+            assert_eq!(depths, want, "{label}");
+            match &first {
+                None => first = Some((label, depths)),
+                Some((l0, d0)) => assert_eq!(&depths, d0, "{label} differs from {l0}"),
+            }
         }
     }
 }

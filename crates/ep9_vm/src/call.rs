@@ -121,9 +121,9 @@ pub(crate) unsafe fn push_frame(
 /// a new frame. A plain loop, one store per slot: these ranges are short (most T0 functions
 /// have fewer than 10 registers), and the vector loop that LLVM makes of a plain fill costs
 /// more set-up instructions and registers than the T0 call handlers have free (M3-P2 PERF3:
-/// a64 cachegrind t0-call -1.5% against the vector loop; a loop of 2 stores per pass, or one
-/// counted down, costs more). The volatile store only keeps LLVM from making the vector loop
-/// again; it is a plain store.
+/// a64 cachegrind t0-call -1.5% against the vector loop; on a64 a loop of 2 stores per pass, or
+/// one counted down, costs more; on x86-64 that loop costs less: `fill_registers`, M10-P3).
+/// The volatile store only keeps LLVM from making the vector loop again; it is a plain store.
 ///
 /// # Safety
 /// `[from, to)` is writable stack memory.
@@ -1076,7 +1076,7 @@ pub(crate) unsafe fn write_call_header(
         *fp.offset(slot::NEW_TARGET) = UNDEFINED;
         *fp.offset(slot::CONTEXT) = context();
         *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
-        fill_undefined(fp, fp.wrapping_add(fi.register_count as usize));
+        fill_registers(fp, fi.register_count);
     }
 }
 
@@ -2227,4 +2227,71 @@ pub(crate) fn call_host_from_bytecode(
         fi.name
     );
     r
+}
+
+// ---- the x86-64 register fill of a T0 call frame (M10-P3 LEVER-13, CALL-FILL) ----------------
+//
+// On x86-64 (not `spike-native`: the `call_fast` form of `interp/ops.rs`), the registers of a
+// call frame get undefined in a loop of `FILL_STEP` scalar stores per pass (variant A). The
+// count is rounded up to a multiple of `FILL_STEP`, so the last pass of an odd count writes one
+// slot past the frame top, above the new top frame:
+//
+// ```text
+// fp            fp + register_count = top    top + 1 (odd count only)
+// |  r0 .. r(m-1): undefined  |  undefined: no frame owns it, the GC does not scan it  |
+//                             ^ top <= limit <= VmStack::end(); [end, end + GUARD) is allocated
+// ```
+//
+// Bytecode runs with no scratch top (frame.rs; the module doc above), so no Value lies above the
+// top frame there, and the GC scans `[base, top)` only. The next frame push writes that slot
+// again. A frame that ends at the stack limit has the `VmStack::GUARD` slot past the end for the
+// store. The other targets take `fill_undefined`, as before.
+
+/// The scalar stores per pass of the x86-64 register fill of a call frame (see above).
+const FILL_STEP: usize = 2;
+
+impl crate::frame::VmStack {
+    /// Slots past [`VmStack::end`](crate::frame::VmStack::end) that the stack allocates and no
+    /// frame owns: room for the store of [`fill_registers`] past the top of a frame that ends
+    /// at the stack end. 0 where [`fill_registers`] takes [`fill_undefined`].
+    pub(crate) const GUARD: usize =
+        if cfg!(all(not(feature = "spike-native"), target_arch = "x86_64")) {
+            FILL_STEP - 1
+        } else {
+            0
+        };
+}
+
+/// Writes undefined to the `count` registers of the frame at `fp` ([`write_call_header`]). On
+/// x86-64 (not `spike-native`): a loop of `FILL_STEP` scalar stores per pass, so for an odd
+/// `count` the slot `fp + count` above the frame top gets undefined too. Else
+/// [`fill_undefined`]. The stores are volatile, as in [`fill_undefined`], so LLVM does not join
+/// them into vector stores.
+///
+/// # Safety
+/// `[fp, fp + count)` is the register file of a call frame that ends at most at the stack limit
+/// (`call_frame_fp`), above every live frame and scratch Value, and the stack limit is at most
+/// `VmStack::end()`.
+#[inline(always)]
+unsafe fn fill_registers(fp: *mut u64, count: u32) {
+    let top = fp.wrapping_add(count as usize);
+    #[cfg(all(not(feature = "spike-native"), target_arch = "x86_64"))]
+    {
+        let mut p = fp;
+        while p < top {
+            // SAFETY: `p < top <= limit <= end` (caller contract), so `[p, p + FILL_STEP)` lies
+            // below `end + GUARD`, in the stack allocation. A slot past `top` is above the new
+            // top frame, where no live Value is (bytecode runs with no scratch top).
+            unsafe {
+                p.write_volatile(UNDEFINED);
+                p.wrapping_add(1).write_volatile(UNDEFINED);
+            }
+            p = p.wrapping_add(FILL_STEP);
+        }
+    }
+    #[cfg(not(all(not(feature = "spike-native"), target_arch = "x86_64")))]
+    // SAFETY: `[fp, fp + count)` is writable (caller contract).
+    unsafe {
+        fill_undefined(fp, top);
+    }
 }
