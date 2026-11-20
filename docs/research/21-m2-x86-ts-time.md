@@ -4,7 +4,7 @@
 
 | Item | Value |
 |---|---|
-| Date | 2026-11-19 |
+| Date | 2026-11-19 (section 9 addendum: 2026-11-21) |
 | Round | The month-10 plan research (speed part), its design audit, and plan v15 §0 and §10. The plan decisions are rows M10-PLAN-D1 to -D53 in [DL §20.1](../decisions-log.md) (plan id V15-Dn = row M10-PLAN-Dn) |
 | ep9 tree | tag `m9-p5`, 86e39c65 (`86e39c6530371bac073162c70b9461f06328831c`). Every ep9 code and ADR line cite in this report is at this commit |
 | ep9 docs | DL and MR9 line cites are at the month-end docs head 15f2ba11 (`m2m9/month-end`). §20 is appended after these lines, so they do not move |
@@ -300,10 +300,131 @@ Derived: low and high are the products of the rows; the middle is √(low × hig
 
 ---
 
-## 9. Addendum (to come)
+## 9. Addendum: the month-10 reads (2026-11-21)
 
-Before plan v16, the orchestrator adds the month-10 reads to this report (M10-PLAN-D52; plan v15 §13.4 step 7): X86-TOPDOWN-READ, NAMED-MISS-READ, WIDE-READ, PGO-PROBE, REG-SLOT-ENCODE-STUDY and the mid Path B.
+This section adds the month-10 x86 TS reads (M10-PLAN-D52; plan v15 section 13.4 step 7) on the trees from `m9-p5` 86e39c65 to the `m10-p4` head 12203b0c, and the month-end Path B on the `m10-p5` tag is in the month-10 report, not here.
+
+Short forms of this section:
+- Every number of this section is in `month10.json` (see Raw numbers), with its source: a DL row id, a GitHub run id, or "derived" with its inputs. The DL rows are in DL §20. DL M10-P0-WPRE-1 (X86-TOPDOWN-READ) and DL M10-P0-WPRE-2 (PGO-PROBE) are in DL §20.7.
+- Trees: 2856a698 = the `m10-p2` tag code, the tree of the mid Path B. f09c2daa = the `m10-p3` code (LEVER-13 merged). 29ba45f6 (the `m10-p3` tag) and 12203b0c add DL text only.
+- B/A = the wall time of the lever build over the base build, paired per round (below 1.0 = the lever build is faster). PGO-PROBE reads t(plain) / t(PGO) (above 1.0 = PGO is faster).
+- "Box" = one Cloudflare box, AMD EPYC 9684X (Zen 4), the same type as in §1, unless a row names another host.
+
+### 9.1 Verdict
+
+```
+ 1 char = 1% of x86 TS time (ratio to node --jitless)
+
+ R21 middle (§6.3)          jit              |████▋               ×1.046
+                            jitless          |██████              ×1.060
+
+ measured move, month 9     jit, box 1       |██▌                 ×1.025
+ -> the mid Path B          jit, box 2       |█▎                  ×1.013
+ (86e39c65 -> 2856a698)     jitless, box 1   |███▊                ×1.038
+                            jitless, box 2   |██▉                 ×1.029
+
+ need left at the mid       jit              |█████████▉          ×1.099-1.101
+ (low end to 1.0)           jitless          |██████████▍         ×1.104
+
+ REG-SLOT-ENCODE probe      jit (not read)   |██▌ .. █████        est. +2.5..+5.1% (§9.5)
+```
+
+1. **The x86 TS gap is cycles per instruction, not instruction count.** On one box at 86e39c65, ep9 jit and node --jitless ran equal instructions on TS (57.24 G and 57.26 G). The IPC was 2.462 against 2.688. The L1i misses were 0.284 against 0.092 per 1k instructions (3.1×, derived: 0.284 / 0.092). The branch misses were 1.522 against 1.253 per 1k (DL M10-P0-WPRE-1).
+2. **Of the 10 rows of §6.1, 2 merged and 6 did not.** W1 is the read itself (done, DL M10-P0-WPRE-1). W5 NAMED-MISS and W10 PREALLOC + BESTFIT merged. W2, W3, W4 and W8 missed their pre-registered lines. W6 is below every line (DL M10-P3-WPRE-3). W7 has no target (DL M10-P4-WPRE-1). W9 became a probe that met its Ir line (DL M10-P4-LEVER14). Two new rows merged: Q1b NAMED-STORE-MEGA and Q9 CALL-FILL (§9.4).
+3. **The mid Path B moved the TS cells ×1.013 to ×1.038.** Each cell moved less than the §6.3 middle (×1.046 jit, ×1.060 jitless) (DL M10-P3-WPRE-1).
+4. **The low ends still need about ×1.10** (derived: 1 / 0.910 to 1 / 0.906 = ×1.099 to ×1.104). The mid Path B does not have LEVER-13.
+5. **The month-10 Ir-to-time factor is about 0.64 (jit) and 1.08 (jitless)** (derived, §9.3). The jitless value is not a pure Ir effect, because the box kernel and the node --jitless times changed too. So the factor stays a range.
+6. **REG-SLOT-ENCODE measured -7.923% (jit) and -8.013% (jitless) of x64 TS Ir.** That is more than the R21 estimate -3.4..-5.1% (upper bound; §0, §6.1 W9, §6.3). R21 counted the decode in 4 handlers only (Star, Ldar, Mov and GetNamedProperty, §4). These 4 handlers gave -5.20%. The other T0 handlers (-1.60%), the slow path `R::from_operand` (-0.38%) and the rows not listed (-0.75%) gave the rest (DL M10-P4-LEVER14). Its x86 time is not read.
+7. **PGO with a training set that holds no gate workload met no line.** With PGO, jit items 1, 2 and 6 and jitless item 6 (splay) read slower. Jitless item 1 and jitless TS did not read wholly above 1.0. The +3% x86 TS line failed on both builds (DL M10-P0-WPRE-2).
+8. **The merged month-10 levers cut x64 TS Ir by 3.62% (jit) and 3.73% (jitless)** (derived, §9.4). Only one merged lever had an x86 box A/B: LEVER-12 NAMED-MISS. Its TS wall did not move on that box (DL M10-P1-B1).
+
+### 9.2 The reads, one row each
+
+| Read | Date | Tree | DL row | Run id or box | Result | R21 estimate it tests | Verdict |
+|---|---|---|---|---|---|---|---|
+| X86-TOPDOWN-READ | 2026-11-19 | 86e39c65 (the month-9 Path B binaries + a jit build with 64 B function alignment, jit-al) | M10-P0-WPRE-1; M10-PRE-ALIGN-FORM; M10-P1-WPRE-5 | 1 box, 22 min, 31 paired TS rounds | Equal instructions, IPC 2.462 against 2.688 (above). Wall against node: jit 0.901 [0.893-0.910], jitless 0.890 [0.885-0.900]. Top-down level 1, jit against node: retiring 36.3 against 40.2%, backend 23.2 against 19.4%, frontend 21.9 against 24.2%, bad speculation 4.4 against 4.9% (level 2 is not in the microVM). perf record, jit: `ep9h__` handlers 74.1% of the cycles; GetNamedProperty 25.97% (+ _cold 5.01%), SetNamedProperty 5.22% (+ _cold 1.83%), Ldar 4.06%, Star 3.68%, CallProperty1 3.58%, Wide_cold 2.99%; GC trace and sweep about 5.4%. Jitless: CallProperty0 3.26%, Ldar 4.18%. jit-al / jit: wall 0.988 [0.977-0.997], cycles 0.987, instructions 0.999, L1i misses 1.115; 568 of 568 handlers on a 64 B line, against 119 | W1 (§6.1); the §3 IPC reading | Done. The X86-ALIGN condition is met (one box) |
+| PGO-PROBE | 2026-11-19 | 86e39c65 | M10-P0-WPRE-2 | 1 box, 41 min, 31 rounds | Training: test262 15,574 tests (13,732 rc 0) and 11 JetStream non-M2 rows (3 scored, 8 errors); 0 profile warnings. t(plain) / t(PGO), jit: item 1 Octane-7 0.980 [0.977-0.990], item 2 v8-v7 0.971 [0.966-0.978], splay 0.981 [0.956-0.986], TS 0.986 [0.972-1.000] (instructions +2.6% with PGO), navier-stokes 0.949. Jitless: item 1 1.000 [0.989-1.005], item 2 0.988, splay 0.962, TS 1.012 [1.000-1.031], richards 1.030 | W8 +3..+10% | NOT TAKEN. The line (+3% x86 TS on both builds) failed on both builds |
+| NAMED-MISS-READ | 2026-11-19 | 86e39c65 | M10-PRE-NAMED-MISS-READ | Mac aarch64, an `ic-stats` build; no box | 95.47% of the 41.4 M named misses are megamorphic stub-cache hits in the cold body. More POLY_CASES cuts about 0%. The read counts visits, not time | W5: "the cause is not read" (§6.3) | The cause is read. It became LEVER-12 Q1 |
+| WIDE-READ | 2026-11-19 | 86e39c65 | M10-PRE-WIDE-READ | 0 compile | 4.62% of the TS instructions are prefixed (static), about 2% executed (est.). The operand that overflows: the feedback slot 85.9%, the jump offset 12.3%, a register never. A branch island removes est. 5.5-6.7 M prefixed runs | W6 +0..+0.7% | Below every line (DL M10-P3-WPRE-3). No lever |
+| DEAD-LDAR probe | 2026-11-19 | probe 2de98538 (base 8165a60e) | M10-P0-DEADLDAR | benches 44434768985, 44434783070 | TS Ir x64 -0.671% (jit) / -0.676% (jitless), a64 -0.636% / -0.642% | W2: TS Ir -1.8..-2.6% from the static 69.87% (§5.1) | Kill line (x64 TS Ir at most -1.0%) NOT MET. Not merged. The dynamic dead share is lower than the static share (§8 K4) |
+| LEVER-12 NAMED-MISS | 2026-11-19 | probe 639acc1b; merged as B1 b16ae288 | M10-P0-LEVER12; M10-P1-B1 | TS sets 44449971938, 44479447478, 44524650807; the combined box (27 of 31 rounds) | TS Ir x64: probe -2.192% / -2.265%, after the Codex fixes -2.096% / -2.168%, B0 to B1 -2.098% / -2.167%; a64 (probe) -1.912% / -1.991%. Box B1/B0: TS wall jit 1.000 [0.982-1.014], jitless 0.995 [0.969-1.029] (both straddle 1.0); TS instructions 0.980 / 0.979; splay jit 1.015 [1.006-1.029] | W5 +0..+1.5% | Kill line met; merged in M10-P1. No x86 TS time gain on the box |
+| X86-ALIGN form C | 2026-11-19 | B2 2fd411f2 against B1 b16ae288 | M10-P1-X86ALIGN | the combined box (27 of 31 rounds, time cap) | B2/B1: jitless TS 0.987 [0.943-1.006], jit TS 0.995 [0.966-1.008] (both straddle 1.0); jitless cycles 0.976 (wholly below 1.0); t0-branchy jitless 0.917 | W4 jitless +1.7..+2.5% | X86T FAIL. Not merged; the branch is kept for the M2-exit G8 batch |
+| REG-SLOT-ENCODE-STUDY | 2026-11-19 | 75b412c4 and 20f953fa | M10-P1-REGSLOT | read only, 0 compile | Form N (a register operand byte = its frame slot offset). Est. x64 TS Ir -3.4..-5.5%, a64 -1.9..-3.2% (upper bound). G8 +2 at a merge | W9 TS Ir -3.4..-5.1% | GO for a probe |
+| LEVER-12 NAMED-STORE-MEGA (Q1b) | 2026-11-20 | merged in M10-P2; the merge head 2856a698 | M10-P2-LEVER12; M10-P2-CLOSE-2 | TS sets 44641725575 (probe), 44678132590 (merge head) | TS Ir at the merge head: x64 -0.553% / -0.574%, a64 -0.472% / -0.496%. x64 TS at 2856a698: 55,028,232,423 Ir (jit), 54,417,069,863 (jitless) | not in §6.1 (a new row from W1; est. x64 TS Ir -0.55..-0.73%, DL M10-P1-WPRE-5) | Kill line met; merged. No x86 box |
+| STAR-LA2, M10-P2 | 2026-11-20 | c7f185c8 (base 48c0cbcb) | M10-P2-STARLA2 | BENCH 44640863723 | linux-arm64 rows above the +1.0% Ir cap of the time path: t0-branchy +1.546% / +1.556%, richards +1.536% / +1.592%, t0-prop +1.276% / +1.294%. Mac a64 TS jit wall 0.981 [0.971-0.991] | W3 x86 +0..+3% | No X86T box (the Ir cap). Not merged |
+| STAR-LA2, M10-P3 | 2026-11-20 | fb55c6e4 (6 sites, 9 of 11 producers) against B3 049ed54d | M10-P3-STARLA2; M10-P3-CLOSE-5; M10-P4-WPRE-5 | the X86T box, 31 rounds, both builds | B/A: jit TS 0.994 [0.983-1.007], jitless TS 0.968 [0.958-0.977]; t0-branchy jit 1.054 [1.025-1.067], jitless 1.065 [1.032-1.091]. TS jitless and t0-branchy jitless at equal instructions (B/A 1.000) | W3 x86 +0..+3% | X86T FAIL (rows wholly above 1.0). Not merged. The gain and the loss are IPC effects |
+| The mid Path B | 2026-11-20 | 2856a698 | M10-P2-CLOSE-3; M10-P3-WPRE-1; M10-P3-WPRE-2 | 2 boxes, 58 min each, 31 rounds, both builds | TS jit 0.925 [0.910-0.934] and 0.926 [0.908-0.937], jitless 0.922 [0.906-0.926] and 0.919 [0.906-0.932] (month 9: 0.902, 0.914, 0.888, 0.893). Item 1 jit 1.767 / 1.762, jitless 1.795 / 1.777. Item 2 jit 1.113 / 1.117, jitless 1.111 / 1.109. Item 6 splay jit 1.105 / 1.103, jitless 1.089 / 1.105 (the drop is on the node --jitless side). Raytrace jit 0.947 / 0.961 | the §6.3 middle ×1.046 / ×1.060 | Moves jit ×1.025 and ×1.013, jitless ×1.038 and ×1.029: below the middle |
+| WIN-READ | 2026-11-20 | 2856a698 | M10-P3-WINREAD; M10-P4-WPRE-1 | exit-inputs dispatch 44678207050 (GitHub runners) | The pairs w3/l2 and w4/l2 (AMD EPYC 7763). Jitless item 3 low ends 0.915 (w3/l2) and 0.927 (w4/l2); every jit low end at 0.957 or more. Windows TS jit against jitless: the intervals overlap (w3 8.555 s against 8.612 s, w4 8.529 s against 8.481 s). On the GitHub Linux leg l2, jit TS is 3.7% slower than jitless (l1 2.5%) | W7 win-x64 jit +2..+4% | Q3 WIN64-JIT closes NO TARGET |
+| The switch row | 2026-11-20 | 2856a698 | M10-P3-SWITCH | the mid Path B | Every linux-x64 TS low end is below 1.0, in both builds. Every linux-x64 TS cell moved less than ×1.04 | §7 (M10-PLAN-D1, -D53) | The switch did not fire; month 11 stays the exit month. The V15-D53 trigger is met: month 12 is the pre-registered fallback |
+| LEVER-13 CALL-FILL (Q9) | 2026-11-20 to -21 | merged in M10-P3; the merge head f09c2daa | M10-P3-LEVER13; M10-P3-CLOSE-2 | TS set 44769749909 | TS Ir x64 jit -0.609% (55,029,015,931 to 54,693,906,707), jitless -0.614%; a64 +0.002% / +0.001% (x86-64 only) | not in §6.1 (a new row from W1; est. x64 TS Ir -0.6..-1.1%, DL M10-P3-WPRE-3) | Kill line met; merged. The x86 time is not read (no lever box was left) |
+| REG-SLOT probe (LEVER-14) | 2026-11-21 | probe 06ac3354 (P4 24259cf2; base 29ba45f6); a branch only | M10-P4-LEVER14; M10-P4-WPRE-2; M10-P4-WPRE-3 | TS set 44803698999; 19 rows 44803693224 | x64 TS Ir jit 54,692,567,666 to 50,359,216,553 = -7.923%, jitless 54,082,192,731 to 49,748,465,559 = -8.013%; a64 -5.201% / -5.279%. Every one of the 19 rows is lower (x64 jit -3.515% splay to -13.976% t0-loop). Attribution: the 4 study handlers -5.20%, the other T0 handlers -1.60%, the slow path `R::from_operand` -0.38%, the rows not listed -0.75%. The saved Ir per dispatch is an exact integer (x64 Star 3, Ldar 2, GetNamedProperty 3, Mov 6) | W9 TS Ir -3.4..-5.1% (R21); -3.4..-5.5% (the study) | Kill line part 1 (x64 TS Ir at most -2.5%) MET. Not merged in month 10. The x86 time is not read |
+
+### 9.3 The Ir-to-time factor in month 10
+
+| | x64 TS Ir change, 86e39c65 to 2856a698 | x86 TS time change (2-box mean of the medians, month 9 to the mid) | Time per 1% Ir | Month 9 (§2.2) |
+|---|---|---|---|---|
+| x86 jit | -3.033% (56,749,561,000 to 55,028,232,423) | +1.927% (0.908 to 0.9255) | **0.64** | 0.46 |
+| x86 jitless | -3.130% (56,175,245,578 to 54,417,069,863) | +3.369% (0.8905 to 0.9205) | **1.08** | 0.31 |
+
+Derived. The time per 1% Ir = the time change / the Ir drop (1.927 / 3.033 = 0.64; 3.369 / 3.130 = 1.08). Inputs:
+- The Ir at 86e39c65: the base rows of run 44303131944 (`findings.json` `ts_ir`). The bench log row (bench log 44303131944 134797714483:1505) reads 56,749,561,000, so this value is the integer, not a rounded value.
+- The Ir at 2856a698: TS set 44678132590 (DL M10-P2-CLOSE-2).
+- The ratios: the month-9 Path B (§1: 0.902 and 0.914 jit, 0.888 and 0.893 jitless) and the mid Path B (DL M10-P2-CLOSE-3).
+
+The jitless factor above 1.0 is not a pure Ir effect:
+- The box kernel changed between the 2 readings, from 6.18.56 to 6.18.64 (DL M10-P3-WPRE-2).
+- On the same boxes, the node --jitless time moved ×0.92-0.95 on most rows and ×0.87 on splay. node, QuickJS and the workload texts did not change (DL M10-P3-WPRE-2). So the box moved too. The ratio removes a box move only if the move is the same for both engines.
+- Each reading is one box pair.
+- An IC fast-body lever read 0 time from -2% instructions on one box: LEVER-12 B1/B0 TS wall 1.000 (jit) and 0.995 (jitless), at TS instructions 0.980 and 0.979 (DL M10-P1-B1).
+
+So the factor stays a range, est. 0 to about 1.0 per lever kind. An Ir number alone does not give the x86 time of a lever. A box A/B in time reads it (the form of the rule 13 time path, M10-PLAN-D7).
+
+### 9.4 The lever list as built
+
+| # | Lever | §6.1 estimate | Month-10 result | Merged | G8 |
+|---|---|---|---|---|---|
+| W1 | X86-TOPDOWN-READ | steering | Done: the gap is cycles per instruction (DL M10-P0-WPRE-1) | a read | 0 |
+| W2 | DEAD-LDAR | +0.6..+1.8% (x64 TS Ir -1.8..-2.6%) | x64 TS Ir -0.671% / -0.676%; the kill line -1.0% is not met (DL M10-P0-DEADLDAR) | no; the branch is kept | 0 (the H24 R4 rewrite is not spent) |
+| W3 | STAR-LA2 | x86 +0..+3% | M10-P2: Ir cap fail; M10-P3: X86T FAIL, jitless TS 0.968 but t0-branchy jitless 1.065 (DL M10-P2-STARLA2, DL M10-P3-STARLA2) | no | 0 |
+| W4 | X86-ALIGN | jitless +1.7..+2.5%; jit 0..+1.5% | 0.988 on the X86-TOPDOWN-READ box (jit); X86T FAIL on the combined box, jitless 0.987 [0.943-1.006] (DL M10-P1-X86ALIGN) | no; the branch is kept | 0 (the +1 is not spent) |
+| W5 | NAMED-MISS (LEVER-12) | +0..+1.5% | x64 TS Ir -2.098% / -2.167% (B0 to B1); box TS wall 1.000 / 0.995, both straddle 1.0 (DL M10-P1-B1) | yes, M10-P1 (B1 b16ae288) | 0 |
+| W6 | WIDE-READ -> WIDE-CUT | +0..+0.7% | Read only; the only G8-0 form (a branch island) is below every line (DL M10-PRE-WIDE-READ, DL M10-P3-WPRE-3) | no | 0 |
+| W7 | WIN64-JIT | win-x64 jit +2..+4% | No target: the Windows jit and jitless TS intervals overlap (DL M10-P4-WPRE-1) | no | 0 |
+| W8 | PGO-PROBE | +3..+10% | TS jit 0.986, jitless 1.012; the +3% line failed (DL M10-P0-WPRE-2) | no (NOT TAKEN) | 0 |
+| W9 | REG-SLOT-ENCODE (LEVER-14) | TS Ir -3.4..-5.1% (upper bound) | Probe: x64 TS Ir -7.923% / -8.013%, kill line part 1 met; x86 time not read (DL M10-P4-LEVER14) | no (a probe branch; a month-11 merge role, DL M10-P4-WPRE-2) | 0 in month 10; +2 at a month-11 merge (DL M10-P4-WPRE-3) |
+| W10 | PREALLOC + BESTFIT | +0.1..+0.2% (about -0.4% TS Ir) | x64 TS Ir -0.217% / -0.219% (PREALLOC), -0.178% / -0.179% (BESTFIT) (DL M10-P0-BASE; §6.1 W10) | yes, the M10-P0 base | 0 |
+| Q1b | NAMED-STORE-MEGA (LEVER-12) | not in §6.1 (est. x64 TS Ir -0.55..-0.73%, DL M10-P1-WPRE-5) | x64 TS Ir -0.553% / -0.574%; no x86 box (DL M10-P2-CLOSE-2) | yes, M10-P2 | 0 |
+| Q9 | CALL-FILL (LEVER-13) | not in §6.1 (est. x64 TS Ir -0.6..-1.1%, DL M10-P3-WPRE-3) | x64 TS Ir -0.609% / -0.614%, a64 +0.002% / +0.001%; no x86 box (DL M10-P3-CLOSE-2) | yes, M10-P3 | 0 |
+
+Month-10 G8: 0 of +2 (DL M10-P4-G8). ABI_VERSION stays 6 on the main line all month; 7 is on the probe branch only (DL M10-P4-WPRE-3, DL M10-P4-G8).
+
+**The sum.**
+- The 5 merged rows (W10 PREALLOC, W10 BESTFIT, W5, Q1b, Q9) give x64 TS Ir -3.614% (jit) and -3.710% (jitless) (derived: the product of (1 + change) over the 5 rows above).
+- The direct read from 86e39c65 to the `m10-p4` code gives -3.625% and -3.726% (derived: 56,749,561,000 to 54,692,567,666 and 56,175,245,578 to 54,082,192,731; the end values are the base rows of TS set 44803698999 on 29ba45f6, DL M10-P4-LEVER14). The rest, -0.011 and -0.016 points (derived), is the other base merges (for example the M10-P0 merge head, x64 TS -0.010%, TS set 44499111404, DL M10-P1-B1; the HASH-SEED-2 head, -0.000% / -0.001%, DL M10-P1-CLOSE-2) and the difference between runs.
+- The measured time move at the mid (2856a698, without LEVER-13): jit ×1.013 and ×1.025, jitless ×1.029 and ×1.038 (§9.2).
+- The rest for month 11 is the low-end need at the mid, about ×1.10 (§9.1 point 4). The month-end Path B adds the LEVER-13 reading to it.
+
+### 9.5 What the reads say for the next levers
+
+These are facts and derived estimates. The plan writer decides.
+- **REG-SLOT-ENCODE: the x86 time is not measured.** Kill line part 2 (one x86 box A/B, 31 paired rounds, both builds, TS wall median at most 0.990 and the interval wholly below 1.000) is on the first month-11 lever box (DL M10-P4-WPRE-2). Est. x86 TS time from -7.923% / -8.013% Ir with the month-9 factors 0.31-0.46: +2.5..+3.7% (derived: 7.923 × 0.31 = 2.46; 8.013 × 0.46 = 3.69). With the month-10 jit factor 0.64: about +5% (derived, est.: 7.923 × 0.64 = 5.07).
+- **STAR-LA2: the gain and the loss came at equal instructions.** Jitless TS 0.968 and t0-branchy jitless 1.065 at B/A instructions 1.000 (DL M10-P4-WPRE-5). They are IPC effects (DL M10-P3-CLOSE-5). So a narrower form needs a cause read first; DL M10-P4-WPRE-5 pre-registers a 0-code cause read.
+- **X86-ALIGN: one box gave a gain, the next box did not.** jit-al / jit 0.988 [0.977-0.997] on the X86-TOPDOWN-READ box (DL M10-PRE-ALIGN-FORM). B2/B1 on the combined box straddled 1.0 in both builds, with 27 of 31 rounds read (DL M10-P1-X86ALIGN). That row keeps the branch for a retry with more rounds.
+- **The switch did not fire, and the V15-D53 trigger is met.** Month 12 is the pre-registered fallback exit month (DL M10-P3-SWITCH).
+- **The X86-TOPDOWN-READ hot list has a lever for each function at 3% or more of the cycles** (DL M10-P1-WPRE-5): GetNamedProperty (W5), SetNamedProperty (Q1b), CallProperty1 and CallProperty0 (Q9), Star (W3) and Ldar (W2). Of these levers, W2 and W3 did not merge.
+- **jit against jitless depends on the host.** On the GitHub Linux legs, jit TS read 2.5% (l1) and 3.7% (l2) slower than jitless (DL M10-P4-WPRE-1). On the mid Path B boxes, the jit TS ratio was 0.3% and 0.8% above the jitless one (derived: 0.925 / 0.922 = 1.003; 0.926 / 0.919 = 1.008; DL M10-P3-WPRE-1). DL M10-P4-WPRE-1 sorts the GitHub Linux-leg gap as a reading-form item, not a lever; the void-leg rule is DL M10-P4-WPRE-6.
+
+### 9.6 Limits
+
+| # | Risk | Effect | What reads it next |
+|---|---|---|---|
+| K8 | One box or one box pair per reading (X86-TOPDOWN-READ, PGO-PROBE, the combined box and the STAR-LA2 box: 1 box each; the mid Path B: 1 pair) | A time effect of 1-2% can change sides between boxes. X86-ALIGN read 0.988 on one box and straddled 1.0 on the next | Each line was set before its reading (rule 86). The X86-ALIGN branch is kept for a retry with more rounds (DL M10-P1-X86ALIGN) |
+| K9 | The box kernel changed between month 9 and the mid Path B (6.18.56 to 6.18.64) | The §9.3 factor holds a box move that the ratio does not fully remove (node --jitless ×0.92-0.95, splay ×0.87) | DL M10-P3-WPRE-2 read the per-engine medians. The month-end Path B reads the cells again |
+| K10 | The mid Path B is not the month-end reading | It has no LEVER-13 (2856a698 is before f09c2daa) | The month-end Path B on the `m10-p5` tag; it is in the month-10 report, not here |
+| K11 | LEVER-13 and REG-SLOT-ENCODE have no x86 time reading | §9.4 counts them in Ir only; with a factor of 0 to about 1.0 their time is open | LEVER-13: the month-end Path B (DL M10-P3-LEVER13). REG-SLOT-ENCODE: kill line part 2 on the first month-11 lever box (DL M10-P4-WPRE-2) |
+| K12 | WIN-READ has one pair kind only (AMD EPYC 7763), and the paired leg l2 has void kernel rows | Jitless item 1 and jit item 2 read NO AGREEMENT on the 09:66 form (DL M10-P3-WINREAD) | The void-leg rule, option A (DL M10-P4-WPRE-6) |
+| K13 | PGO used one training set | Another set with no gate workload can read differently | A set with a gate workload is not allowed (DL M10-P0-WPRE-2; §8 K7) |
 
 ## Raw numbers
 
-[artifacts/x86-ts-time/](artifacts/x86-ts-time/README.md) holds `findings.json`: the numbers of §1-§6 with their sources.
+[artifacts/x86-ts-time/](artifacts/x86-ts-time/README.md) holds `findings.json` (the numbers of §1-§6) and `month10.json` (the numbers of §9), each with its sources.

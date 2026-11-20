@@ -1,6 +1,6 @@
 # x86 TS time round: the measured numbers (2026-11-19)
 
-- These are the numbers behind [R21](../../21-m2-x86-ts-time.md): the need per x86 TS cell, the Ir-to-time factor, the real counters, the alignment A/B, the TS hot paths, the dead `Ldar` count, the upstream cites and the two lever sums.
+- These are the numbers behind [R21](../../21-m2-x86-ts-time.md): the need per x86 TS cell, the Ir-to-time factor, the real counters, the alignment A/B, the TS hot paths, the dead `Ldar` count, the upstream cites and the two lever sums (`findings.json`), and the month-10 reads of R21 section 9 (`month10.json`).
 - They were copied into the repo for the M10-P0 base (plan v15 pre-step step 9a, DL M10-PLAN-D52). Before the copy they existed only on the research host, in the month-10 plan research and in the reading files of the Path B, GW11b and X86-JITLESS-READ runs.
 - `findings.json` was written by a script from the numbers in those files, and each value was checked against its source. A group read from a run has a `source` key. The other groups (the need summary, the Ir change, the penalty, the sums) are derived from those groups; R21 shows the arithmetic.
 
@@ -33,4 +33,22 @@ One object.
 
 ## Not here
 
-The raw box outputs (perf stat lines, per-function cachegrind tables, run JSON) stay on the research host. The numbers that R21 uses are all in `findings.json`.
+The raw box outputs (perf stat lines, per-function cachegrind tables, run JSON) stay on the research host. The numbers that R21 uses are in `findings.json` (§1-§6) and `month10.json` (§9).
+
+## month10.json (2026-11-21)
+
+One object, schema `ep9-research/x86-ts-time-month10/v1`. It holds every number of R21 section 9 (the month-10 reads, trees 86e39c65 to 12203b0c). Each group has a `source` key: a DL row id, a GitHub run id, or `derived` with its inputs. The DL rows are in `docs/decisions-log.md` §20; DL M10-P0-WPRE-1 and -2 are in §20.7. The month-end Path B is not here; it is in the month-10 report.
+
+| Key | What |
+|---|---|
+| `trees`, `short_forms`, `not_here` | the trees of the month and what they hold; the B/A and PGO ratio forms; what this file does not hold |
+| `x86_topdown_read` | the perf counters, top-down level 1, the per-symbol cycle shares and the jit-al / jit A/B on one box at 86e39c65 |
+| `pgo_probe` | the training set, t(plain) / t(PGO) per item and build, the line and the verdict |
+| `named_miss_read`, `wide_read` | the 0-box reads of the named IC misses and of the prefixed instructions |
+| `dead_ldar_probe`, `lever12_named_miss`, `x86_align_form_c`, `star_la2` | the lever reads that did not merge (and LEVER-12 NAMED-MISS, which merged): TS Ir changes, the box A/B cells, the kill lines |
+| `reg_slot_encode_study`, `reg_slot_probe_lever14` | the read-only study and the probe: the estimates, the TS Ir changes, the attribution, kill line part 1 and part 2 |
+| `lever12_named_store_mega`, `lever13_call_fill` | the 2 new rows Q1b and Q9 that merged: their estimates and the merge-head TS Ir |
+| `mid_path_b`, `win_read`, `switch_row` | the mid Path B cells on 2856a698 and their move from month 9, the windows half, the switch row |
+| `ir_to_time_factor_m10` | the x64 TS Ir from 86e39c65 to 2856a698, the 2-box mean ratios and the time per 1% Ir |
+| `r21_6_1_estimates`, `lever_sum` | the R21 section 6.1 estimates; the merged TS Ir per row, their product, the direct read to 29ba45f6, the rest for month 11, G8 and ABI |
+| `next_lever_estimates` | the est. x86 TS time of REG-SLOT-ENCODE with the month-9 and month-10 factors |
