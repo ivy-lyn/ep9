@@ -15,7 +15,7 @@ ics Construct 12
 ics CreateArrayLiteral 12
 ics CreateEmptyArrayLiteral 10
 ics CreateObjectLiteral 11
-ics DefineNamedOwnProperty 6
+ics DefineNamedOwnProperty 2
 ics SetKeyedProperty 2
 ics SetNamedProperty 2
 ics StaContextSlot 2
@@ -29,7 +29,7 @@ sib Construct 12
 sib CreateArrayLiteral 12
 sib CreateEmptyArrayLiteral 10
 sib CreateObjectLiteral 11
-sib DefineNamedOwnProperty 6
+sib DefineNamedOwnProperty 2
 sib SetKeyedProperty 2
 sib SetNamedProperty 2
 sib StaContextSlot 2

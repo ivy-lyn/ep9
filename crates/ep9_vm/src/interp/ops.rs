@@ -1182,7 +1182,7 @@ op!(GetKeyedProperty(st, object: R, s: FSlot) {
 });
 op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<true>(st.rt(), st.info(), o, s.0, name.0, v) {
+    if ic::store_or_mega::<true>(st.cx, st.fp, st.pc, st.next, st.info(), o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {
@@ -1197,7 +1197,7 @@ op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
 // CreateDataPropertyOrThrow: an add needs no epoch (the prototype chain does not matter).
 op!(DefineNamedOwnProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<false>(st.rt(), st.info(), o, s.0, name.0, v) {
+    if ic::store_or_mega::<false>(st.cx, st.fp, st.pc, st.next, st.info(), o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {
