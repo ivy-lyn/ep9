@@ -38,7 +38,7 @@ use crate::interp::dsl::{
     self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
-use crate::interp::{Done, Flow, St};
+use crate::interp::{Done, Flow, St, tails};
 use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
@@ -1067,7 +1067,7 @@ op!(PopContext(st, context: R) {
 });
 op!(LdaCurrentContext(st) {
     st.acc = st.hdr(slot::CONTEXT);
-    Done::Next
+    tails::star_done::<false>(st)
 });
 op!(LdaContextSlot(st, context: R, i: CSlot, depth: Depth) {
     let c = st.reg(context);
