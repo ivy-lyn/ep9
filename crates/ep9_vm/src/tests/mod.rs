@@ -100,6 +100,7 @@ mod string_search;
 // W3-JSON-QUOTE (oxc-perf wave 3): the JSON quote bodies and the JSON text; after the list,
 // so no cited line above moves.
 mod json_quote;
+mod star_fuse; // M10-P3 STAR-LA2: the Star lookahead (`interp/tails.rs`), after the list.
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;

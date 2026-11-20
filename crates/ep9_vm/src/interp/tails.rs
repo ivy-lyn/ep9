@@ -200,10 +200,10 @@ fn star_at<const ONE_PC: bool>(
         // SAFETY: `dst` is a register of the live frame `fp` (the verifier): the store of
         // `St::set_reg`, as in the Star handler.
         unsafe { *fp.offset(dst.0) = acc };
+        #[cfg(test)]
+        star_count::fused(fp, next);
         // SAFETY: as above: the next instruction starts `len` bytes after the Star.
         next = unsafe { next.add(len) };
-        #[cfg(test)]
-        star_count::FUSED.with(|c| c.set(c.get() + 1));
     }
     if ONE_PC {
         next = dsl::dispatch_pc(next);
@@ -275,12 +275,26 @@ pub(crate) fn star_done<const ONE_PC: bool>(st: &mut St<'_>) -> crate::interp::D
 /// turns the lookahead off on this thread, so a test runs the same code with and without it.
 #[cfg(test)]
 pub(crate) mod star_count {
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
+
+    use crate::frame::{native_ptr, slot};
+    use crate::unit::FunctionInfo;
+
     thread_local! {
-        /// The Stars that a producer ran ([`super::star_lookahead`]).
-        pub(crate) static FUSED: Cell<u64> = const { Cell::new(0) };
+        /// The Stars that a producer ran ([`super::star_at`]), in run order: (the function
+        /// id, the byte offset of the Star in its code). `tests::star_fuse` compares them pc
+        /// for pc with the Stars that ran in the Star handler (Codex sl2-r1 F3).
+        pub(crate) static FUSED: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
         /// True: no lookahead (every Star runs in its own handler).
         pub(crate) static OFF: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Records a fused Star at `star` in the live frame `fp` ([`FUSED`]).
+    pub(super) fn fused(fp: *mut u64, star: *const u8) {
+        // SAFETY: header slot 4 of the live frame `fp` holds its FunctionInfo native word.
+        let fi = unsafe { &*native_ptr::<FunctionInfo>(*fp.offset(slot::FUNCTION_INFO)) };
+        let at = (fi.function_id, (star.addr() - fi.code.addr()) as u32);
+        FUSED.with(|f| f.borrow_mut().push(at));
     }
 }
 
