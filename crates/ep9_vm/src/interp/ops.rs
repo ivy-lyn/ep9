@@ -38,7 +38,7 @@ use crate::interp::dsl::{
     self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
 };
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
-use crate::interp::{Done, Flow, St};
+use crate::interp::{Done, Flow, St, tails};
 use crate::runtime::{ErrorKind, Runtime};
 use crate::unit::FunctionInfo;
 use crate::{
@@ -372,7 +372,7 @@ fn ctx_load(st: &mut St<'_>, c: u64, i: CSlot, depth: u32) -> Flow {
     match ctx_walk(c, depth).and_then(|c| object::context_get(c, i.0)) {
         Some(v) => {
             st.acc = v;
-            Flow::Next
+            tails::star_next::<true>(st)
         }
         None => Flow::Cold,
     }
