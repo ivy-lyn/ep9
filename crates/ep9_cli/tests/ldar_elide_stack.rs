@@ -107,6 +107,41 @@ fn stack_traces_are_the_same_in_every_arm() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The committed golden of `gen-basic` (the m10-p5 text; the merge role re-blesses it).
+const GEN_BASIC: &str = include_str!("../../ep9_frontend/src/bytecodegen/golden/gen-basic.txt");
+
+/// Arm 0 through the binary is today's output: `ep9 --print-bytecode` prints the committed
+/// golden text with the switch not set and with `EP9_LDAR_ELIDE=0`. The arm-1 row shows that
+/// the check can tell the arms apart.
+#[test]
+fn arm0_prints_the_golden_bytecode() {
+    let mut parts = GEN_BASIC.splitn(3, '\n');
+    let src = parts
+        .nth(1)
+        .and_then(|l| l.strip_prefix("# | "))
+        .expect("the golden source line");
+    let want = parts.next().expect("the golden body");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("ldar-elide-arm0");
+    std::fs::create_dir_all(&dir).expect("make the test dir");
+    std::fs::write(dir.join("gen.js"), src).expect("write gen.js");
+    for arm in [None, Some("0"), Some("1")] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ep9"));
+        cmd.args(["--print-bytecode", "gen.js"]).current_dir(&dir);
+        match arm {
+            None => cmd.env_remove("EP9_LDAR_ELIDE"),
+            Some(a) => cmd.env("EP9_LDAR_ELIDE", a),
+        };
+        let out = cmd.output().expect("run ep9");
+        assert_eq!(out.status.code(), Some(0), "arm {arm:?}");
+        let got = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            got.strip_suffix('\n') == Some(want),
+            arm != Some("1"),
+            "arm {arm:?}:\n{got}"
+        );
+    }
+}
+
 /// T7: constructors with `this.<name> =` stores at statement starts (the dropped loads).
 const SLACK: &str = r#"function P(x, y) { this.x = x; this.y = y; }
 function Q(p) { this.a = 1; this.b = { c: 2 }; p; this.c = p; }
