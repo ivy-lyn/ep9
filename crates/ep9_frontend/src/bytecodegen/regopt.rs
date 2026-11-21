@@ -1265,8 +1265,13 @@ impl<'b> Replay<'b> {
         }
         if self.carry_stmt.is_some() {
             // Nothing was emitted since the owed `Ldar`, so the accumulator is not
-            // materialized: the anchor changes no value of the code.
-            debug_assert!(!self.mat[ACC], "A2 anchor with a materialized accumulator");
+            // materialized: the anchor changes no value of the code. If it is, the anchor
+            // would load over a live value: an internal error (also in a release build).
+            if self.mat[ACC] {
+                self.carry_stmt = None;
+                self.fail("A2 anchor with a materialized accumulator");
+                return;
+            }
             let src = self.carry_src;
             self.emit_transfer(src, ACC);
         }
