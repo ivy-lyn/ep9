@@ -266,6 +266,28 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                                     Some(regopt.join(", ")),
                                 ));
                             }
+                            // LDAR-ELIDE probe, T1 (release run only): arm 0 against arm 1 and
+                            // arm 2. A difference fails the run; each dead statement load that
+                            // an arm keeps is counted by its reason.
+                            if !cfg!(debug_assertions) {
+                                for arm in [super::regopt::Mode::Arm1, super::regopt::Mode::Arm2] {
+                                    let t1 =
+                                        super::tests::ldar_elision_differences(&src, opts, arm);
+                                    if !t1.differences.is_empty() {
+                                        local.push((
+                                            format!("REGOPT LDAR-ELIDE T1 failure ({arm:?})"),
+                                            Some(t1.differences.join(", ")),
+                                        ));
+                                    }
+                                    for k in t1.kept {
+                                        let why = k.rsplit(": ").next().unwrap_or("").to_owned();
+                                        local.push((
+                                            format!("LDAR-ELIDE kept ({arm:?}): {why}"),
+                                            Some(k),
+                                        ));
+                                    }
+                                }
+                            }
                         }
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             check_determinism(&src, opts)
@@ -304,7 +326,8 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                         rep.units += usize::from(
                             !class.starts_with("NO POSITION")
                                 && !class.starts_with("CONTEXT")
-                                && !class.starts_with("REGOPT"),
+                                && !class.starts_with("REGOPT")
+                                && !class.starts_with("LDAR-ELIDE"),
                         );
                         *rep.classes.entry(class.clone()).or_insert(0) += 1;
                         if let Some(err) = err {

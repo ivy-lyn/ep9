@@ -122,6 +122,10 @@ pub(crate) enum Mode {
     Arm1,
     /// Arm 1, and each dead `Ldar` from a binding is not emitted (A1, arm 2).
     Arm2,
+    /// Test only (T3): arm 1 with one rule broken on purpose (`1..=6`: the mutants a-f of the
+    /// design, section 3.3).
+    #[cfg(test)]
+    Mutant(u8),
 }
 
 impl Mode {
@@ -366,6 +370,11 @@ impl Emitter {
             r.elide = match mode {
                 Mode::Arm1 => 1,
                 Mode::Arm2 => 2,
+                #[cfg(test)]
+                Mode::Mutant(m) => {
+                    r.mutant = m;
+                    1
+                }
                 _ => 0,
             };
             r.run();
@@ -612,6 +621,9 @@ struct Replay<'b> {
     throw_pos: Option<u32>,
     /// A1: the start and end labels of handler ranges (the owed `Ldar` is emitted before one).
     edges: HashSet<Label>,
+    /// Test only (T3): the broken rule of [`Mode::Mutant`], or 0.
+    #[cfg(test)]
+    mutant: u8,
     /// Per key below `base`: the function writes this parameter or the receiver (O4).
     written: Vec<bool>,
     /// Labels that a jump, a jump table or a handler target uses (O6).
@@ -703,6 +715,8 @@ impl<'b> Replay<'b> {
             carry_src: ACC,
             throw_pos: None,
             edges: handlers.iter().flat_map(|h| [h.start, h.end]).collect(),
+            #[cfg(test)]
+            mutant: 0,
             used,
             handler_top,
             inner_at: HashMap::new(),
@@ -745,6 +759,12 @@ impl<'b> Replay<'b> {
                     self.b.bind(l);
                 }
                 Ev::Stmt(o) => {
+                    if self.mutant(3) {
+                        // T3 (c): the statement with a dead load shares the entry of the
+                        // next statement (its own entry is lost).
+                        self.lazy = None;
+                        self.carry_stmt = None;
+                    }
                     self.settle();
                     self.save_binding_copies();
                     self.pending = Some((o, true));
@@ -782,6 +802,20 @@ impl<'b> Replay<'b> {
         }
         // A1, A2: the function end.
         self.settle();
+    }
+
+    /// Test only (T3): mutant `n` is on.
+    #[allow(clippy::unused_self)]
+    fn mutant(&self, n: u8) -> bool {
+        #[cfg(test)]
+        {
+            self.mutant == n
+        }
+        #[cfg(not(test))]
+        {
+            let _ = n;
+            false
+        }
     }
 
     // ---- Keys ----
@@ -905,6 +939,7 @@ impl<'b> Replay<'b> {
     fn position(&mut self, own: bool, throws: bool) {
         if let Some(o) = self.carry_stmt.take() {
             let at = match self.pending {
+                _ if self.mutant(2) => o,
                 Some((p, false)) if own => {
                     self.pending = None;
                     p
@@ -1209,6 +1244,7 @@ impl<'b> Replay<'b> {
     /// register, not another member of the set.
     fn emit_lazy(&mut self) {
         if let Some(b) = self.lazy.take()
+            && !self.mutant(1)
             && !self.mat[ACC]
             && self.mat[b]
             && self.same(b, ACC)
@@ -1222,6 +1258,11 @@ impl<'b> Replay<'b> {
     /// position, emits the anchor `Ldar` with it.
     fn settle(&mut self) {
         self.emit_lazy();
+        if self.mutant(6) {
+            // T3 (f): no anchor.
+            self.carry_stmt = None;
+            return;
+        }
         if self.carry_stmt.is_some() {
             // Nothing was emitted since the owed `Ldar`, so the accumulator is not
             // materialized: the anchor changes no value of the code.
@@ -1237,7 +1278,8 @@ impl<'b> Replay<'b> {
             // A1: the accumulator gets a new value: an owed `Ldar` is dead.
             self.lazy = None;
         }
-        let mut stmt = matches!(self.pending, Some((_, true)));
+        let mut stmt = matches!(self.pending, Some((_, true)))
+            || (self.mutant(4) && self.carry_stmt.is_some());
         // A1: the `Ldar` is owed (arm 1: at a statement start; arm 2: also any binding).
         let owe = dst == ACC
             && match self.elide {
@@ -1261,6 +1303,10 @@ impl<'b> Replay<'b> {
         }
         // O9: the elided transfer drops its expression position.
         self.pending = None;
+        if self.mutant(5) {
+            // T3 (e): the elided path clears the carry.
+            self.carry_stmt = None;
+        }
         if owe && self.same(src, ACC) {
             // The accumulator holds the value of the register: it waits for the `Ldar` too.
             if self.mat[ACC] {
