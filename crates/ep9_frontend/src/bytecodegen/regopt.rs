@@ -620,6 +620,9 @@ struct Replay<'b> {
     /// A1: the register of the owed `Ldar`. It is valid while the accumulator is not
     /// materialized and is in the set of the register ([`Replay::emit_lazy`]).
     lazy: Option<usize>,
+    /// A1 (arm 2): the pending expression position of the owed `Ldar`. The load takes it when
+    /// it is emitted (INV-1); it is dropped with the load.
+    lazy_expr: Option<u32>,
     /// A2: the carried statement position (the statement offset of an owed `Ldar`).
     carry_stmt: Option<u32>,
     /// A2: the register of the `Ldar` that took the carried statement (for the anchor).
@@ -718,6 +721,7 @@ impl<'b> Replay<'b> {
             pending: None,
             elide: 0,
             lazy: None,
+            lazy_expr: None,
             carry_stmt: None,
             carry_src: ACC,
             throw_pos: None,
@@ -1256,6 +1260,13 @@ impl<'b> Replay<'b> {
             && self.mat[b]
             && self.same(b, ACC)
         {
+            if let Some(p) = self.lazy_expr.take() {
+                // The load gets its own expression position, as in arm 0; with a carried
+                // statement position, the entry takes this offset (A3).
+                let next = self.pending.replace((p, false));
+                self.position(true, false);
+                self.pending = next;
+            }
             self.emit_transfer(b, ACC);
             self.mat[ACC] = true;
         }
@@ -1313,7 +1324,12 @@ impl<'b> Replay<'b> {
             self.real_transfer(src, dst);
             return;
         }
-        // O9: the elided transfer drops its expression position.
+        // O9: the elided transfer drops its expression position. An owed `Ldar` keeps it for
+        // the time it is emitted (arm 2: a binding load with no statement position).
+        let expr = match self.pending {
+            Some((p, false)) if owe => Some(p),
+            _ => None,
+        };
         self.pending = None;
         if self.mutant(5) {
             // T3 (e): the elided path clears the carry.
@@ -1326,6 +1342,7 @@ impl<'b> Replay<'b> {
                 self.unmat.push(ACC);
             }
             self.lazy = Some(src);
+            self.lazy_expr = expr;
             self.carry(carried, src);
             return;
         }
@@ -1344,6 +1361,7 @@ impl<'b> Replay<'b> {
         if owe {
             // Set last: `save_value` above may emit, and an emit flushes an owed `Ldar`.
             self.lazy = Some(src);
+            self.lazy_expr = expr;
             self.carry(carried, src);
         }
     }

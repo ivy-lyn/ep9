@@ -2009,6 +2009,13 @@ fn ldar_elision_differential() {
             Sloppy,
             "function v7() { this.a({ b: G.c.d }); this.f.g(this.h.i.j); }",
         ),
+        // Arm 2: an owed binding load with an expression position (the spread) that a throw
+        // inside a handler range emits keeps its position (INV-1; corpus: Temporal tests).
+        (
+            "expression",
+            Sloppy,
+            "function e1(x) { try { f({ ...x }); } catch (e) {} }",
+        ),
     ];
     for &(name, mode, src) in CASES.iter().chain(extra) {
         for arm in [Arm::Arm1, Arm::Arm2] {
