@@ -1693,6 +1693,10 @@ pub(crate) struct T1Report {
     pub(crate) kept: Vec<String>,
     /// Per function: the binding loads that the arm dropped ("load a0"), for guard v2.
     pub(crate) dropped: Vec<Vec<String>>,
+    /// T9: each `S> Ldar` of the arm as "<arm-0 mark of the same instruction> | <next>": the
+    /// mark is "S>" or "-" (the load took a carried statement); next is "dead" (L1) or the
+    /// reason of [`t1_dead_after`].
+    pub(crate) statement_loads: Vec<String>,
 }
 
 /// T1, the stream differential: `src` in arm 0 and in `arm`. The only missing instructions are
@@ -1879,6 +1883,28 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
                 }
             }
             for (k, y) in an.iter().enumerate() {
+                if y.ldar.is_some_and(load)
+                    && fnn
+                        .positions
+                        .iter()
+                        .any(|p| p.bytecode_offset == y.off && p.is_statement)
+                {
+                    let mark = if back[k].is_some_and(|i| stmt0(a0[i].off)) {
+                        "S>"
+                    } else {
+                        "-"
+                    };
+                    let next =
+                        t1_dead_after(fnn, &an, k, &labels, true).map_or_else(|e| e, |_| "dead");
+                    let in_range = fnn
+                        .handlers
+                        .iter()
+                        .any(|h| h.start <= y.off && y.off < h.end);
+                    rep.statement_loads.push(format!(
+                        "{mark} | {next} | {}",
+                        if in_range { "inTry" } else { "noTry" }
+                    ));
+                }
                 let stmt = back[k].is_some_and(|i| stmt0(a0[i].off));
                 match y.ldar {
                     Some(r) if load(r) && stmt => match t1_dead_after(fnn, &an, k, &labels, true) {
@@ -2007,6 +2033,13 @@ fn ldar_elision_on_files() {
             );
             for k in &r.kept {
                 println!("  kept {k}");
+            }
+            let mut t9: std::collections::BTreeMap<&str, usize> = Default::default();
+            for k in &r.statement_loads {
+                *t9.entry(k.as_str()).or_default() += 1;
+            }
+            for (k, n) in t9 {
+                println!("  T9 S> Ldar {n:>6}  {k}");
             }
             failures.extend(
                 r.differences
