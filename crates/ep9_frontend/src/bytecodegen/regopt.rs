@@ -124,7 +124,7 @@ pub(crate) enum Mode {
     Arm2,
     /// Test only (T3): arm 1 with one rule broken on purpose (`1..=6`: the mutants a-f of the
     /// design, section 3.3; `7`: the A3 throw default is not used; `8`: a 2-entry jump table
-    /// gets its labels in the wrong order).
+    /// gets its labels in the wrong order; `9`: the arm-2 elision rule).
     #[cfg(test)]
     Mutant(u8),
 }
@@ -380,7 +380,7 @@ impl Emitter {
                 #[cfg(test)]
                 Mode::Mutant(m) => {
                     r.mutant = m;
-                    1
+                    if m == 9 { 2 } else { 1 }
                 }
                 _ => 0,
             };

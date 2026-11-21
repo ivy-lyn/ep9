@@ -1725,6 +1725,8 @@ pub(crate) struct T1Report {
 /// offset if it had an entry, else the statement offset (INV-2).
 pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) -> T1Report {
     let mut rep = T1Report::default();
+    // The arm-1 rules: a T3 mutant is arm 1 with one rule broken.
+    let arm1 = matches!(arm, Arm::Arm1 | Arm::Mutant(_));
     let (units, named) = match super::compile_modes(src, opts, &[Arm::Arm0, arm]) {
         Ok(t) => t,
         Err(e) => {
@@ -1762,7 +1764,7 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
             // never keeps a load of such a run and drops a later one).
             let first_of_two = x.ldar.is_some_and(load)
                 && a0.get(i + 1).is_some_and(|z| z.op == Opcode::Ldar)
-                && (arm != Arm::Arm1 || stmt0(x.off))
+                && (!arm1 || stmt0(x.off))
                 && t1_dead_after(f0, &a0, i, &labels0, false).is_ok();
             if !first_of_two && an.get(j).is_some_and(|y| y.text == x.text) {
                 map.push(Some(j));
@@ -1771,7 +1773,7 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
             }
             match x.ldar {
                 Some(r) if load(r) => {
-                    if arm == Arm::Arm1 && !stmt0(x.off) {
+                    if arm1 && !stmt0(x.off) {
                         diff(format!(
                             "@{} Ldar {r} with no statement entry is gone",
                             x.off
@@ -1939,6 +1941,16 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
                         }
                         Err(_) => {}
                     },
+                    // Arm 2 owes each `Ldar` from a binding register (A1), also with no
+                    // statement entry.
+                    Some(r)
+                        if arm == Arm::Arm2
+                            && r != ep9_bytecode::Register::RECEIVER
+                            && load(r)
+                            && t1_dead_after(fnn, &an, k, &labels, true).is_ok() =>
+                    {
+                        diff(format!("@{} Ldar {r} is dead and is kept", y.off));
+                    }
                     _ => {}
                 }
             }
@@ -1980,6 +1992,8 @@ fn ldar_elision_differential() {
             "function u24(p) { p; undefined_global_zz; } \
              var g25; function u25() { return this === g25; }",
         ),
+        // A dead load with no statement entry: arm 1 keeps it, arm 2 drops it.
+        ("unmarked", Sloppy, "function f(p) { return (0, p, 1); }"),
     ];
     for &(name, mode, src) in CASES.iter().chain(extra) {
         for arm in [Arm::Arm1, Arm::Arm2] {
@@ -2053,8 +2067,16 @@ fn ldar_elision_mutants_fail() {
         sloppy,
         "jump table differs"
     ));
+    // (i) arm 1 drops a dead load with no statement entry (an arm-2 rule).
+    assert!(t1_fails(
+        9,
+        "function f(p) { return (0, p, 1); }",
+        sloppy,
+        "with no statement entry is gone"
+    ));
     // The correct arm passes on the same sources.
     for src in [
+        "function f(p) { return (0, p, 1); }",
         "function* g(a) { var x = yield a; return x; }",
         "function f(p) { var x; x = p; return x; } function g() { return this; }",
         "function f(p) { p; this.a; }",
