@@ -33,7 +33,8 @@
 //!
 //! LDAR-ELIDE probe (not merged): the mode [`Mode::Arm1`] and [`Mode::Arm2`] change rules O2 and
 //! O9 as below. [`Mode::Arm0`] uses the table above (today's output, byte for byte). The process
-//! reads the mode once from `EP9_LDAR_ELIDE` (not set or `0` = arm 0, `1` = arm 1, `2` = arm 2).
+//! reads the mode once from `EP9_LDAR_ELIDE` (`0` = arm 0, not set or `1` = arm 1, `2` = arm 2;
+//! bench-only: never merged).
 //!
 //! | # | Rule (arm 1 and arm 2) |
 //! |---|---|
@@ -129,11 +130,14 @@ pub(crate) enum Mode {
 }
 
 impl Mode {
-    /// The mode of this process: `EP9_LDAR_ELIDE` (not set, `0` or another value = arm 0,
-    /// `1` = arm 1, `2` = arm 2), read once.
+    /// The mode of this process: `EP9_LDAR_ELIDE` (not set or `1` = arm 1, `2` = arm 2, `0` or
+    /// another value = arm 0), read once.
     pub(crate) fn from_env() -> Self {
         static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
         *MODE.get_or_init(|| match std::env::var("EP9_LDAR_ELIDE").as_deref() {
+            // bench-only: never merged. The Ir bench runs the binary with no environment, so
+            // "not set" gives arm 1 here. An explicit `0` still gives arm 0.
+            Err(std::env::VarError::NotPresent) => Self::Arm1,
             Ok("1") => Self::Arm1,
             Ok("2") => Self::Arm2,
             _ => Self::Arm0,
