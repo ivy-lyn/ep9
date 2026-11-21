@@ -1332,3 +1332,205 @@ fn synthetic_class_bindings_live_in_the_class_context() {
     );
     assert!(class.needs_context);
 }
+
+// ---- LDAR-ELIDE probe: dead statement-position `Ldar` (regopt rules A1-A3) ----
+
+use super::regopt::Mode as Arm;
+
+/// The 15 stack-trace cases of the design (`t3.js`; the offsets of the expected texts below are
+/// offsets in this text).
+const LDAR_T3: &str = r#""use strict";
+function show(tag, f) { try { f(); print(tag, "no throw"); } catch (e) { var s = String(e && e.stack).split("\n"); print(tag, "|", s[0], "|", s[1], "|", s[2]); } }
+function c1() {
+  this.a;
+}
+function c2() {
+  return this.a.b;
+}
+function c3() {
+  this.m(1);
+}
+function c4() {
+  this.a = 1;
+}
+function c5() {
+  var k = 1;
+  this
+    .a;
+}
+function c6() {
+  try { this.a; } finally { k6 = 1; }
+}
+var k6;
+function c7(p) {
+  p.x;
+}
+function c8(p) {
+  p.m();
+}
+class G { get g() { throw new Error("getter"); } c9() { this.g; } c10() { let v = this.g + 1; return v; } c11(p) { p; this.g; } }
+function* c12() { this.a; yield 1; }
+function c13(p) { if (p) { this.q.r = 2; } }
+function c14(p) { for (var i = 0; i < 1; i++) this.a; }
+function c15(p) { p.x = this; this.a; }
+show("c1 this.a; (this undefined)", c1);
+show("c2 return this.a.b", c2);
+show("c3 this.m(1)", c3);
+show("c4 this.a = 1", c4);
+show("c5 this\\n.a", c5);
+show("c6 try this.a", c6);
+show("c7 p.x; (param)", c7);
+show("c8 p.m(); (param)", c8);
+show("c9 this.g getter", () => new G().c9());
+show("c10 let v = this.g + 1", () => new G().c10());
+show("c11 p; this.g;", () => new G().c11(1));
+show("c12 generator this.a", () => c12().next());
+show("c13 this.q.r = 2", () => c13.call({}, 1));
+show("c14 loop this.a", c14);
+show("c15 p.x = this; this.a", () => c15({}));
+"#;
+
+/// One unit per arm, from one scope analysis.
+fn arm_units(src: &str, opts: SourceOpts, arms: &[Arm]) -> Vec<VerifiedUnit> {
+    super::compile_modes(src, opts, arms)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .0
+}
+
+/// The code lines and the position entries of the function named `name`, one per line, with
+/// no byte column and no constant comment ("0 S> GetNamedProperty <this>, k0, s0", then
+/// "| 0 S 201 (4:8)").
+fn arm_listing(unit: &VerifiedUnit, name: &str) -> String {
+    let text = ep9_bytecode::disassemble(unit.unit());
+    let head = format!("name=\"{name}\" ");
+    let body = text
+        .split("\nfunction ")
+        .find(|f| f.lines().next().is_some_and(|l| l.contains(&head)))
+        .unwrap_or_else(|| panic!("no function {name}"));
+    let mut out = Vec::new();
+    let mut section = "";
+    for line in body.lines().skip(1) {
+        let t = line.trim();
+        if !line.starts_with("    ") {
+            section = t.split(' ').next().unwrap_or("");
+            continue;
+        }
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        match section {
+            "code" => {
+                let t = t.rsplit_once(" ; ").map_or(t, |(a, _)| a);
+                let t = t.split_once("  ;").map_or(t, |(a, _)| a);
+                out.push(words(t));
+            }
+            "positions" => out.push(format!("| {}", words(t))),
+            _ => {}
+        }
+    }
+    out.join("\n")
+}
+
+/// S1b: the expected texts of the design (section 3.2), positions too. Arm 2 gives the same
+/// text for these functions (they have no other dead binding load).
+#[test]
+fn ldar_elide_expected_texts() {
+    let strict = SourceOpts::script(Strictness::Strict);
+    let units = arm_units(LDAR_T3, strict, &[Arm::Arm1, Arm::Arm2]);
+    let cases: &[(&str, &str)] = &[
+        (
+            "c1",
+            "0 S> GetNamedProperty <this>, k0, s0\n4 LdaUndefined\n5 Return\n| 0 S 201 (4:8)",
+        ),
+        (
+            "c4",
+            "0 S> LdaSmi [1]\n2 E> SetNamedProperty <this>, k0, s0\n6 LdaUndefined\n7 Return\n\
+             | 0 S 292 (13:3)\n| 2 E 292 (13:3)",
+        ),
+        (
+            "c5",
+            "0 S> LdaSmi [1]\n2 Star r0\n4 S> GetNamedProperty <this>, k0, s0\n8 LdaUndefined\n\
+             9 Return\n| 0 S 328 (16:7)\n| 4 S 347 (18:6)",
+        ),
+        (
+            "c7",
+            "0 S> GetNamedProperty a0, k0, s0\n4 LdaUndefined\n5 Return\n| 0 S 435 (25:3)",
+        ),
+        (
+            "c8",
+            "0 S> GetNamedProperty a0, k0, s0\n4 Star r0\n6 E> CallProperty0 r0, a0, s1\n\
+             10 LdaUndefined\n11 Return\n| 0 S 463 (28:5)\n| 6 E 463 (28:5)",
+        ),
+        (
+            "c11",
+            "0 S> Ldar a0\n2 S> GetNamedProperty <this>, k0, s0\n6 LdaUndefined\n7 Return\n\
+             | 0 S 585 (30:116)\n| 2 S 593 (30:124)",
+        ),
+        (
+            "c15",
+            "0 S> Ldar <this>\n2 E> SetNamedProperty a0, k0, s0\n\
+             6 S> GetNamedProperty <this>, k1, s1\n10 LdaUndefined\n11 Return\n\
+             | 0 S 756 (34:19)\n| 2 E 756 (34:19)\n| 6 S 773 (34:36)",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (arm, unit) in ["arm 1", "arm 2"].iter().zip(&units) {
+        for &(name, want) in cases {
+            let got = arm_listing(unit, name);
+            if got != want {
+                failures.push(format!("{arm} {name}:\n{got}\n-- want --\n{want}"));
+            }
+        }
+        // c6: a throwing instruction inside a handler range keeps the load (O7).
+        let c6 = arm_listing(unit, "c6");
+        if !c6.contains("3 S> Ldar <this>\n5 E> GetNamedProperty <this>, k0, s0") {
+            failures.push(format!("{arm} c6:\n{c6}"));
+        }
+    }
+    let sloppy = SourceOpts::script(Strictness::Sloppy);
+    let extra = "function c16(p) { this.a = p; }\nfunction r1() { return this; }\n\
+                 function x1() { var x; x = this; return x; }\nfunction q1(p, q) { p, this; q; }";
+    let units = arm_units(extra, sloppy, &[Arm::Arm1, Arm::Arm2]);
+    let cases: &[(&str, &str)] = &[
+        (
+            "c16",
+            "0 S> Ldar a0\n2 E> SetNamedProperty <this>, k0, s0\n6 LdaUndefined\n7 Return\n\
+             | 0 S 18 (1:19)\n| 2 E 18 (1:19)",
+        ),
+        (
+            "r1",
+            "0 S> Ldar <this>\n2 Return\n3 LdaUndefined\n4 Return\n| 0 S 48 (2:17)",
+        ),
+        (
+            "x1",
+            "0 S> Ldar <this>\n2 Star r0\n4 S> Ldar r0\n6 Return\n7 LdaUndefined\n8 Return\n\
+             | 0 S 86 (3:24)\n| 4 S 96 (3:34)",
+        ),
+        (
+            "q1",
+            "0 S> Ldar a0\n2 S> LdaUndefined\n3 Return\n| 0 S 128 (4:21)\n| 2 S 137 (4:30)",
+        ),
+    ];
+    for (arm, unit) in ["arm 1", "arm 2"].iter().zip(&units) {
+        for &(name, want) in cases {
+            let got = arm_listing(unit, name);
+            if got != want {
+                failures.push(format!("{arm} {name}:\n{got}\n-- want --\n{want}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// S1b: arm 0 is today's output (the plain mode is the guard reference; arm 0 is the default
+/// with `EP9_LDAR_ELIDE` not set). Every golden case gives the same bytes in arm 0 and through
+/// [`compile_case`].
+#[test]
+fn ldar_elide_arm0_is_todays_output() {
+    if Arm::from_env() != Arm::Arm0 {
+        return;
+    }
+    for &(name, mode, src) in CASES {
+        let a0 = arm_units(src, mode.opts(), &[Arm::Arm0]);
+        let today = compile_case(mode, src).unwrap();
+        assert_eq!(a0[0].to_bytes(), today.to_bytes(), "{name}");
+    }
+}

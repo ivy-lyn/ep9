@@ -939,6 +939,30 @@ pub(crate) fn new_builder(
     regopt::Emitter::new(meta, info.register_count, mode)
 }
 
+/// Test only (LDAR-ELIDE): compile `source` once per mode from one scope analysis, and give the
+/// named-local count of each function.
+#[cfg(test)]
+pub(crate) fn compile_modes(
+    source: &str,
+    opts: SourceOpts,
+    modes: &[regopt::Mode],
+) -> Result<(Vec<VerifiedUnit>, Vec<u32>), CodegenError> {
+    let modes = modes.to_vec();
+    with_front_end(source, opts, move |fe| {
+        let analysis = crate::scope::analyze(fe)?;
+        let named: Vec<u32> = analysis
+            .functions()
+            .iter()
+            .map(|f| f.register_count)
+            .collect();
+        let units: Result<Vec<_>, _> = modes
+            .iter()
+            .map(|&m| generate_with(fe, &analysis, CompileOptions::default(), m))
+            .collect();
+        Ok(units.map(|u| (u, named)))
+    })?
+}
+
 // ---------------------------------------------------------------------------------------------
 // Eval code
 
