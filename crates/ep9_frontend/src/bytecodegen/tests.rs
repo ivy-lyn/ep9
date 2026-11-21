@@ -1942,12 +1942,15 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
                         Err(_) => {}
                     },
                     // Arm 2 owes each `Ldar` from a binding register (A1), also with no
-                    // statement entry.
+                    // statement entry, and drops it when the next instruction writes the
+                    // accumulator (L1). After a `Mov` (L2) it can stay: A1 emits an owed load
+                    // before an emitted `Mov`, and T1 cannot tell that `Mov` from one that the
+                    // replay makes for an operand of the next instruction.
                     Some(r)
                         if arm == Arm::Arm2
                             && r != ep9_bytecode::Register::RECEIVER
                             && load(r)
-                            && t1_dead_after(fnn, &an, k, &labels, true).is_ok() =>
+                            && t1_dead_after(fnn, &an, k, &labels, true) == Ok(k + 1) =>
                     {
                         diff(format!("@{} Ldar {r} is dead and is kept", y.off));
                     }
