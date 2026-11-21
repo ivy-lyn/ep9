@@ -115,6 +115,8 @@ struct Report {
     examples: BTreeMap<String, String>,
     /// (path under third_party, mode, content hash) of every unit that compiled.
     hashes: Vec<(String, String, [u8; 32])>,
+    /// Every T1 failure line (arm, path, mode, differences), for `EP9_CORPUS_T1_LIST`.
+    t1: Vec<String>,
 }
 
 impl Report {
@@ -232,6 +234,7 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                         && (src.contains("phase: parse") || src.contains("phase: early"));
                     let mut local = Vec::new();
                     let mut hashes = Vec::new();
+                    let mut t1_lines = Vec::new();
                     for opts in modes {
                         // G10 on a separate build: throwing instructions have positions.
                         if let Ok(Ok(unit)) = std::panic::catch_unwind(|| {
@@ -274,6 +277,11 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                                     let t1 =
                                         super::tests::ldar_elision_differences(&src, opts, arm);
                                     if !t1.differences.is_empty() {
+                                        t1_lines.push(format!(
+                                            "{arm:?}\t{}\t{opts:?}\t{}",
+                                            short_path(path),
+                                            t1.differences.join(", ")
+                                        ));
                                         local.push((
                                             format!("REGOPT LDAR-ELIDE T1 failure ({arm:?})"),
                                             Some(t1.differences.join(", ")),
@@ -322,6 +330,7 @@ fn run(files: &[(PathBuf, bool, bool)]) -> Report {
                     let mut rep = report.lock().unwrap();
                     rep.files += 1;
                     rep.hashes.append(&mut hashes);
+                    rep.t1.append(&mut t1_lines);
                     for (class, err) in local {
                         rep.units += usize::from(
                             !class.starts_with("NO POSITION")
@@ -369,6 +378,14 @@ fn corpus_verifier_clean_and_deterministic() {
     let files = corpus_files();
     let mut report = run(&files);
     print(&mut report);
+    // Test-only switch: `EP9_CORPUS_T1_LIST=<file>` writes every LDAR-ELIDE T1 failure, one per
+    // line and sorted (the log above prints one example per class).
+    if let Some(out) = std::env::var_os("EP9_CORPUS_T1_LIST") {
+        report.t1.sort();
+        let mut text = report.t1.join("\n");
+        text.push('\n');
+        std::fs::write(&out, text).expect("write EP9_CORPUS_T1_LIST");
+    }
     let bad: usize = report
         .classes
         .iter()
