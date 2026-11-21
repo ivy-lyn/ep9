@@ -123,7 +123,7 @@ pub(crate) enum Mode {
     /// Arm 1, and each dead `Ldar` from a binding is not emitted (A1, arm 2).
     Arm2,
     /// Test only (T3): arm 1 with one rule broken on purpose (`1..=6`: the mutants a-f of the
-    /// design, section 3.3).
+    /// design, section 3.3; `7`: the A3 throw default is not used).
     #[cfg(test)]
     Mutant(u8),
 }
@@ -944,7 +944,7 @@ impl<'b> Replay<'b> {
                     self.pending = None;
                     p
                 }
-                _ if own && throws => self.throw_pos.unwrap_or(o),
+                _ if own && throws && !self.mutant(7) => self.throw_pos.unwrap_or(o),
                 _ => o,
             };
             self.b.set_statement_position(at);

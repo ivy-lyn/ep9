@@ -1953,6 +1953,15 @@ fn ldar_elision_differential() {
             "function w1(p) { var r; r = (p, this); return r; } \
              function w8(p) { var r; try { r = (p, this); } catch (e) {} return r; }",
         ),
+        // A3, the throw default. u24: a load before a throw at the next statement is kept.
+        // u25: the `LdaGlobal` of a declared global has no expression position of its own; it
+        // takes the carried statement with the throw default, the offset of `g25` (INV-1).
+        (
+            "throw default",
+            Sloppy,
+            "function u24(p) { p; undefined_global_zz; } \
+             var g25; function u25() { return this === g25; }",
+        ),
     ];
     for &(name, mode, src) in CASES.iter().chain(extra) {
         for arm in [Arm::Arm1, Arm::Arm2] {
@@ -2009,12 +2018,22 @@ fn ldar_elision_mutants_fail() {
         sloppy,
         "INV-2"
     ));
+    // (g) the throw default of A3 is not used: a throwing instruction with no expression
+    // position of its own takes the carried statement offset; the `LdaGlobal` of `g25` reports
+    // the offset of `return` (INV-1).
+    assert!(t1_fails(
+        7,
+        "var g25; function u25() { return this === g25; }",
+        sloppy,
+        "INV-1"
+    ));
     // The correct arm passes on the same sources.
     for src in [
         "function f(p) { var x; x = p; return x; } function g() { return this; }",
         "function f(p) { p; this.a; }",
         "function f() { this.a; }",
         "function f(p, q) { p, this; q; }",
+        "var g25; function u25() { return this === g25; }",
     ] {
         let r = ldar_elision_differences(src, sloppy, Arm::Arm1);
         assert!(r.differences.is_empty(), "{src}: {:?}", r.differences);
