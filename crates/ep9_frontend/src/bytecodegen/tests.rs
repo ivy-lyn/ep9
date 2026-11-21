@@ -1637,7 +1637,9 @@ fn t1_covering(f: &ep9_bytecode::Function, off: u32) -> Option<u32> {
 /// Why the load at `code[k]` is not dead (rule L1, with L2: `Mov` instructions may come first),
 /// or `Ok(n)`: `code[n]` writes the accumulator and does not read it. With `o7`, a throwing
 /// `code[n]` inside a handler range is a reason too (rule A1 emits the owed load there; the
-/// load is still dead: a handler gets the exception in the accumulator).
+/// load is still dead: a handler gets the exception in the accumulator). A label or a statement
+/// entry is a reason on every instruction of the scan with `o7`, and only on `code[k + 1]`
+/// without it.
 fn t1_dead_after(
     f: &ep9_bytecode::Function,
     code: &[T1Insn],
@@ -1665,10 +1667,15 @@ fn t1_dead_after(
         if x.op != Opcode::Mov && !write_only {
             return Err("live");
         }
-        if labels.contains(&x.off) {
+        // A label or a statement entry on the next instruction settles an owed load (A1, A2).
+        // After a `Mov` run (L2) a deferred transfer replaced the load, so without `o7` the
+        // test is liveness only: the load is dead even when the write is at a label or a
+        // statement entry.
+        let first = n == k + 1 || o7;
+        if first && labels.contains(&x.off) {
             return Err("label");
         }
-        if stmt_at(x.off) {
+        if first && stmt_at(x.off) {
             return Err("statement");
         }
         if x.op == Opcode::Mov {
@@ -1937,6 +1944,14 @@ fn ldar_elision_differential() {
              function x1() { var x; x = this; return x; } function q1(p, q) { p, this; q; } \
              function t1(p) { try { p; } catch (e) {} } function t2(p) { try { p; } finally {} } \
              function t3(p, q) { p; try { q.x; } catch (e) { this.a; } }",
+        ),
+        // A deferred transfer replaces the owed load, then a `Mov`; the next write is at a
+        // statement entry (w1) or at a handler-range end (w8). The dropped load is dead.
+        (
+            "replaced",
+            Sloppy,
+            "function w1(p) { var r; r = (p, this); return r; } \
+             function w8(p) { var r; try { r = (p, this); } catch (e) {} return r; }",
         ),
     ];
     for &(name, mode, src) in CASES.iter().chain(extra) {
