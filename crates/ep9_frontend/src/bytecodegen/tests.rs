@@ -1645,11 +1645,12 @@ fn t1_covering(f: &ep9_bytecode::Function, off: u32) -> Option<u32> {
 }
 
 /// Why the load at `code[k]` is not dead (rule L1, with L2: `Mov` instructions may come first),
-/// or `Ok(n)`: `code[n]` writes the accumulator and does not read it. With `o7`, a throwing
-/// `code[n]` inside a handler range is a reason too (rule A1 emits the owed load there; the
-/// load is still dead: a handler gets the exception in the accumulator). A label or a statement
-/// entry is a reason on every instruction of the scan with `o7`, and only on `code[k + 1]`
-/// without it.
+/// or `Ok(n)`: `code[n]` writes the accumulator and does not read it. With `o7` (a load that
+/// the arm kept), a throwing `code[n]` inside a handler range is a reason too (rule A1 emits the
+/// owed load there; the load is still dead: a handler gets the exception in the accumulator),
+/// and so is a `Mov` run before the write (rule A1 emits the owed load before an emitted `Mov`). A label or a
+/// statement entry is a reason on every instruction of the scan with `o7`, and only on
+/// `code[k + 1]` without it.
 fn t1_dead_after(
     f: &ep9_bytecode::Function,
     code: &[T1Insn],
@@ -1696,6 +1697,10 @@ fn t1_dead_after(
         if o7 && info.flags.contains(OpcodeFlags::THROWS) && in_range {
             return Err("handler range");
         }
+        if o7 && n > k + 1 {
+            // L2: dead, but A1 emits the owed load before the emitted `Mov`.
+            return Err("mov");
+        }
         return Ok(n);
     }
 }
@@ -1706,7 +1711,7 @@ pub(crate) struct T1Report {
     /// Broken invariants (INV-1, INV-2, INV-4); empty when the arm is correct.
     pub(crate) differences: Vec<String>,
     /// Dead statement-position loads that the arm keeps, with the reason ("handler range",
-    /// "statement", "label").
+    /// "statement", "label", "mov").
     pub(crate) kept: Vec<String>,
     /// Per function: the binding loads that the arm dropped ("load a0"), for guard v2.
     pub(crate) dropped: Vec<Vec<String>>,
@@ -1936,7 +1941,7 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
                 match y.ldar {
                     Some(r) if load(r) && stmt => match t1_dead_after(fnn, &an, k, &labels, true) {
                         Ok(_) => diff(format!("@{} S> Ldar {r} is dead and is kept", y.off)),
-                        Err(why @ ("handler range" | "statement" | "label")) => {
+                        Err(why @ ("handler range" | "statement" | "label" | "mov")) => {
                             rep.kept.push(format!("f{fi} @{} Ldar {r}: {why}", y.off));
                         }
                         Err(_) => {}
@@ -1997,6 +2002,13 @@ fn ldar_elision_differential() {
         ),
         // A dead load with no statement entry: arm 1 keeps it, arm 2 drops it.
         ("unmarked", Sloppy, "function f(p) { return (0, p, 1); }"),
+        // A dead statement load before an emitted `Mov` (L2): A1 emits the owed load before
+        // the `Mov`, so it is kept with the reason "mov" (corpus: babel, chai, lebab).
+        (
+            "mov",
+            Sloppy,
+            "function v7() { this.a({ b: G.c.d }); this.f.g(this.h.i.j); }",
+        ),
     ];
     for &(name, mode, src) in CASES.iter().chain(extra) {
         for arm in [Arm::Arm1, Arm::Arm2] {
