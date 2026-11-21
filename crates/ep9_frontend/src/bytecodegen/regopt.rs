@@ -1303,12 +1303,17 @@ impl<'b> Replay<'b> {
         }
         let mut stmt = matches!(self.pending, Some((_, true)))
             || (self.mutant(4) && self.carry_stmt.is_some());
-        // A1: the `Ldar` is owed (arm 1: at a statement start; arm 2: also any binding).
+        // A1: the `Ldar` is owed (arm 1: at a statement start; arm 2: also any binding). Arm 2
+        // does not owe a binding `Ldar` with an expression position: it is emitted in place, so
+        // the next instruction keeps its source offset (INV-1).
         let owe = dst == ACC
             && match self.elide {
                 0 => false,
                 1 => stmt && (src == RECEIVER || self.binding(src)),
-                _ => self.binding(src) || (stmt && src == RECEIVER),
+                _ => {
+                    (self.binding(src) && !matches!(self.pending, Some((_, false))))
+                        || (stmt && src == RECEIVER)
+                }
             };
         // A2: the statement position of an owed `Ldar` leaves `pending`. It is carried from the
         // end of this transfer (an O5 save below comes before the statement, as today).
@@ -1325,7 +1330,8 @@ impl<'b> Replay<'b> {
             return;
         }
         // O9: the elided transfer drops its expression position. An owed `Ldar` keeps it for
-        // the time it is emitted (arm 2: a binding load with no statement position).
+        // the time it is emitted (A1 above owes no binding load with an expression position,
+        // so this is a guard only).
         let expr = match self.pending {
             Some((p, false)) if owe => Some(p),
             _ => None,

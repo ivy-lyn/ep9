@@ -1760,6 +1760,15 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
                 .iter()
                 .any(|p| p.bytecode_offset == off && p.is_statement)
         };
+        // Arm 2 emits a binding `Ldar` that has an expression entry in place (A1 does not owe
+        // it), so T1 does not align it as a dropped load.
+        let expr0 = |off: u32| {
+            arm == Arm::Arm2
+                && f0
+                    .positions
+                    .iter()
+                    .any(|p| p.bytecode_offset == off && !p.is_statement)
+        };
         // Alignment: map[i] = the index in `an` of `a0[i]`, None for a dropped load.
         let mut map: Vec<Option<usize>> = Vec::with_capacity(a0.len());
         let mut j = 0;
@@ -1770,6 +1779,7 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
             let first_of_two = x.ldar.is_some_and(load)
                 && a0.get(i + 1).is_some_and(|z| z.op == Opcode::Ldar)
                 && (!arm1 || stmt0(x.off))
+                && !expr0(x.off)
                 && t1_dead_after(f0, &a0, i, &labels0, false).is_ok();
             if !first_of_two && an.get(j).is_some_and(|y| y.text == x.text) {
                 map.push(Some(j));
@@ -1946,7 +1956,17 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
                         }
                         Err(_) => {}
                     },
-                    // Arm 2 owes each `Ldar` from a binding register (A1), also with no
+                    // Arm 2 does not owe a binding `Ldar` that has an expression entry: it is
+                    // emitted in place, as in arm 0, so that the next instruction keeps its
+                    // source offset (INV-1).
+                    Some(r)
+                        if load(r)
+                            && back[k].is_some_and(|i| expr0(a0[i].off))
+                            && t1_dead_after(fnn, &an, k, &labels, true) == Ok(k + 1) =>
+                    {
+                        rep.kept.push(format!("f{fi} @{} Ldar {r}: expr", y.off));
+                    }
+                    // Arm 2 owes each other `Ldar` from a binding register (A1), also with no
                     // statement entry, and drops it when the next instruction writes the
                     // accumulator (L1). After a `Mov` (L2) it can stay: A1 emits an owed load
                     // before an emitted `Mov`, and T1 cannot tell that `Mov` from one that the
@@ -2015,6 +2035,14 @@ fn ldar_elision_differential() {
             "expression",
             Sloppy,
             "function e1(x) { try { f({ ...x }); } catch (e) {} }",
+        ),
+        // Arm 2: a dead binding load with an expression position, followed by an instruction
+        // that has no entry of its own (`LdaSmi`, `Star`). The load stays, or the next
+        // instruction gets an earlier source offset (INV-1; Codex r2).
+        (
+            "expression dead",
+            Sloppy,
+            "function e2(x) { return (0, { ...(x, 1) }) } function e3(x) { this, { ...(x, 1) }; } function e4(x, y) { return (0, { ...(x, y) }) }",
         ),
     ];
     for &(name, mode, src) in CASES.iter().chain(extra) {
