@@ -92,7 +92,7 @@
   "lever_ledger_m10": {
     "source": "C §2.3, §2.4; VL C4, D5, E7; VE F9",
     "rows": [
-      {"lever": "PREALLOC + BESTFIT", "ir_pct": [-0.22, -0.18], "x86_time": null, "merged": "M10-P0", "decided_by": "Ir floor", "dl": "M10-P0-BASE"},
+      {"lever": "PREALLOC + BESTFIT", "ir_pct": [-0.40, -0.40], "ir_pct_parts": {"prealloc": [-0.217, -0.219], "bestfit": [-0.178, -0.179]}, "x86_time": null, "merged": "M10-P0", "decided_by": "Ir floor", "dl": "M10-P0-BASE; OL M6-ORCH-1032"},
       {"lever": "PGO-PROBE", "instr_pct": 2.6, "x86_time": "jit 1.4% slower, jitless 1.2% faster", "merged": false, "decided_by": "the +3% line failed", "dl": "M10-P0-WPRE-2"},
       {"lever": "DEAD-LDAR", "ir_pct": [-0.67, -0.68], "x86_time": null, "merged": false, "decided_by": "kill line -1.0%; G8 +1", "dl": "M10-P0-DEADLDAR"},
       {"lever": "LEVER-12 Q1 NAMED-MISS", "ir_pct": [-2.10, -2.17], "x86_time": "jit 1.000 [0.982-1.014], jitless 0.995 [0.969-1.029]", "merged": "M10-P1", "decided_by": "Ir line", "dl": "M10-P1-B1"},
@@ -120,7 +120,7 @@
   "gate_cells_m10p5": {
     "source": "D §1; VL D1, D6; PBe:27-30, :83-86",
     "eng_cells": 3, "proc_cells": 14,
-    "eng": ["item 3 linux-x64 jit", "item 3 linux-x64 jitless", "items 10 and D11 follow item 3"],
+    "eng": ["item 3 linux-x64 (jit and jitless)", "item 10 linux-x64", "item D11 linux-x64"],
     "item8": {"counted_batch_cpu_h": 512, "box_h": 131, "wall_h_2_boxes": 66, "counted_so_far": 0, "counted_false_since_m7_cpu_h": 96, "monthly_batch_cpu_h": 32, "monthly_batch_box_h": 8.2, "source": "P15:470-471, :502, :574; VL D7"},
     "mac_windows": {"tries_since_11_06": 9, "valid": 1, "voided_by_other_work": 7, "voided_by_own_agents": 1, "source": "VL D3"}
   },

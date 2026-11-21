@@ -11,7 +11,7 @@
 | x86 readings | (1) The month-end Path B on `m10-p5`: 2 Cloudflare boxes, AMD EPYC 9684X (Zen 4), 4 vCPU on 2 physical cores (SMT on), 31 paired rounds per build. (2) The mid Path B on 2856a698 (DL M10-P2-CLOSE-3) and the month-9 Path B on 86e39c65 (DL M9-END-D5), same box type. (3) X86-TOPDOWN-READ: 1 box, `m9-p5` code 86e39c65, perf stat + top-down level 1 + perf record (DL M10-P0-WPRE-1). (4) The GitHub exit-input legs on `m10-p5`: Linux l1 (EPYC 9V74), l2 (9V45), Windows w1 (7763), w2 and w3 (9V74), w4 (9V45) |
 | Mac reading | The critic's own short runs on Mac aarch64 (`m10-p5` binaries and the pinned node 24.22 darwin-arm64 copy), < 60 s each, load 13 (provisional) |
 | Experiments | X1: 6 cross builds for `x86_64-unknown-linux-gnu` (cargo-zigbuild 0.21.1, zig 0.17.1, rustc 1.99.1), static reads only (llvm-nm, llvm-objdump, llvm-readelf from LLVM 23.1.6); 0 x86 binary runs. X2: a temporary opcode counter build on Mac aarch64 (a patch that was never committed); 2 jitless runs and 1 jit run of the TS workload. Both: 0 boxes, scratch worktrees removed after the run |
-| Upstream | `v8/v8@932ddd7ca` (`932ddd7ca4c885883ee964168004437f78858380`, local clone, commit of 2026-11-19); node v24.22.0 with V8 13.6.233.17-node.57 on every box (TD) |
+| Upstream | `v8/v8@932ddd7ca` (`932ddd7ca4c885883ee964168004437f78858380`, local clone, commit of 2026-11-19); node v24.22.0 with V8 13.6.233.17-node.57 on every box (TD). The cited V8 lines are at this HEAD clone; the text was not checked on 13.6 |
 | Method | Read only for the research; the experiments as above. Derived numbers show their inputs. "est." marks an estimate |
 
 Short forms:
@@ -44,7 +44,7 @@ Short forms:
  after the engine passes                         C6 the procedure tail: est. 3.5-4.5 days (Mac windows, a 66 h fuzz batch)
 
  where ep9 is behind node on x86 (m9-p5, cycles)  named load +0.89 G | dead statement Ldar +0.73 G | Wide step +0.59 G
- what blocks the fix                              G8 freeze: H24 R4 / rule O9, the H15 core, the handler ABI
+ what blocks the fix                              G8 freeze: H24 R4 / rule O9, the H15 core, the handler ABI (I)
 ```
 
 1. **C1, engine, about 60% of the need.** On x86, ep9 T0 ran 9.4% (jit) and 10.6% (jitless) more cycles than node --jitless at equal instructions (57.24 G and 56.67 G against 57.26 G; IPC 2.462 and 2.407 against 2.688; TD, `m9-p5`, 1 box). At `m10-p5` no counters exist. The cycle gap is now about 6% (jitless 0.942) at about 3.6% fewer instructions (x64 TS Ir 56.75 G to 54.69 G), so the CPI gap is still about 10% (I). The need depends on the host: the Cloudflare 9684X box is the most friendly x86 host for jitless (0.942); the GitHub x86 hosts read jitless 0.858-0.917 (§2.5).
@@ -53,7 +53,7 @@ Short forms:
 4. **C4, process: the time meter is too coarse and rationed.** One-box intervals are 1.9-6.3% wide; levers are 0.2-2%. At most 3 lever A/B boxes per month. 1 of 5 merged month-10 levers had a time read. LEVER-13 merged with no read. REG-SLOT (-7.9% x64 TS Ir) waits (§3.2).
 5. **C5, process: template overhead.** Records and plans took 45-50% of the month-10 tokens. M10-P4 and M10-P5 merged 0 code. Tokens per 1% of box-neutral time rose 3.8 M (month 8) to 17 M (month 9) to 24 M (month 10) (§5).
 6. **C6, the procedure tail.** 14 of 17 open gate cells are open by procedure, not by engine. Only 1 of 9 Mac windows was VALID. The counted Fuzzilli batch needs about 66 h wall on 2 boxes. The tail after the engine passes is est. 3.5-4.5 days (§4).
-7. **Not causes:** a missing JIT (no JIT code runs in M2, by plan, 09:36), the workload and harness, and the build flags (ep9 has fat LTO; the pinned node has no LTO and no PGO) (§2.2, §2.5).
+7. **Not causes:** a missing JIT (no JIT code runs in M2, by plan, 09:36), the workload and harness, and the build flags (ep9 has fat LTO; the darwin-arm64 copy of the pinned node has no LTO and no PGO; the linux-x64 copy is not read, I) (§2.2, §2.5).
 8. **The cycle map against node points at frozen parts.** At `m9-p5`, ep9 is behind node in the named load (+0.89 G), the dead statement-position Ldar (+0.73 G, kept by H24 R4 and rule O9) and the generic Wide step (+0.59 G, an H15 core part). ep9 is already cheaper in ToBoolean (-0.07 G) and calls (-0.83 G). G8 ("no contract rewrite after M1") gave month 10 a budget of +2; 0 were used (§2.4).
 9. **X2 sized the two bytecode levers.** Dead statement-position Ldar: 151,968,271 runs on TS (kill line 100 M: KEEP; est. 2.2% of x64 TS Ir, about 0.57 G cycles). A front-end feedback-slot order: 24,468,058 prefixed ops left at best (kill line 10 M: DROP); 51.1% of the prefixed ops are jump offsets (§9.2).
 10. **The rate.** At the month-10 rate the jitless cell passes in about 1.45 plan months; the jit cell never passes (x0.973 per month). Item 3 needs both builds, so the jit cell sets the date (§3.3). Exit needs one of two owner-level changes: open the frozen parts (each with its own x86 time read), or change the x86 TS gate (options W or M, §7.1). The orchestrator decided to keep the gate as written for now (§8, D1).
@@ -284,7 +284,7 @@ Gap left at the median: jit 0.667 / 0.597 = x1.117; jitless 0.630 / 0.597 = x1.0
 
 | Lever | Ir jit / jitless | x86 time read | Merged | What decided | DL |
 |---|---|---|---|---|---|
-| PREALLOC + BESTFIT (owner order) | -0.22% / -0.18% | none | yes, M10-P0 | Ir floor | M10-P0-BASE |
+| PREALLOC + BESTFIT (owner order) | -0.40% / -0.40% (PREALLOC -0.217% / -0.219%, BESTFIT -0.178% / -0.179%) | none | yes, M10-P0 | Ir floor | M10-P0-BASE; OL M6-ORCH-1032 |
 | PGO-PROBE | instructions +2.6% | jit 1.4% slower, jitless 1.2% faster | no | the +3% line failed | M10-P0-WPRE-2 |
 | DEAD-LDAR | -0.67% / -0.68% | none | no | kill line -1.0%; G8 +1 | M10-P0-DEADLDAR |
 | LEVER-12 Q1 NAMED-MISS | -2.10% / -2.17% | jit 1.000 [0.982-1.014], jitless 0.995 [0.969-1.029] | yes, M10-P1 | Ir line | M10-P1-B1 |
@@ -445,7 +445,7 @@ Ranked by the expected effect on the exit date. The engine rows come first: ever
 
 | # | What | Kind | Expected effect | Cost | Risk | Kill line |
 |---|---|---|---|---|---|---|
-| 1 | **The layout-pin row on the first month-11 x86 box (not a lever).** One CF box, 31 rounds, TS and richards, wall + cycles + L1i, same rounds: end-jit, end-jitless, and both again with `-C llvm-args=-align-all-functions=6`; plus `nm -S` of the hot handlers of every box binary (checks the +32 B offset of X1) | measurement | decides whether C2 (about 5.8% of jit time) comes back by a layout rule; makes later one-box reads honest | about 1 box-h | none (read only) | Confirm: in the aligned pair t(jitless)/t(jit) ≥ 1.00 and the aligned jit gains ≥ 3%: a handler-alignment rule goes into every A/B and the gate build. Kill: every jit variant within ±1% of end-jit: then the LEVER-13 A/B f09c2daa vs 049ed54d (both builds, plus one GitHub 9V74 Linux leg) is next |
+| 1 | **The layout-pin row on the first month-11 x86 box (not a lever).** One CF box, 31 rounds, TS and richards, wall + cycles + L1i, same rounds: end-jit, end-jitless, and both again with `-C llvm-args=-align-all-functions=6`; plus `nm -S` of the hot handlers of every box binary (checks the +32 B offset of X1) | measurement (the XV order; D3 put the LEVER-13 A/B first; plan v16 decides) | decides whether C2 (about 5.8% of jit time) comes back by a layout rule; makes later one-box reads honest | about 1 box-h | none (read only) | Confirm: in the aligned pair t(jitless)/t(jit) ≥ 1.00 and the aligned jit gains ≥ 3%: a handler-alignment rule goes into every A/B and the gate build. Kill: every jit variant within ±1% of end-jit: then the LEVER-13 A/B f09c2daa vs 049ed54d (both builds, plus one GitHub 9V74 Linux leg) is next |
 | 2 | **If layout is confirmed: fix the hot-handler placement in both builds** (a fixed order + 64 B alignment, the kept X86-ALIGN branch, or BOLT / a symbol order file) and judge it by spread, not by mean | engine (a build rule; G8 +1 at H15:39) | removes the per-commit draw (up to 5.8% on jit, est.) | 2-4 agent-days (B §4) | may fix one host and not another (the sign depends on the host) | a 4-way link spread after the change not below the spread before |
 | 3 | **REG-SLOT-ENCODE: the K2 read, then the merge if it holds** | engine (G8 +2: a product call on the G8 budget) | -7.9% x64 TS Ir; time 0..+8% (factor 0-1) | 0.5 box-h + the merge role | ABI 6 to 7, 121 goldens, the aarch64 frames row open (C §4) | TS wall median > 0.990 or the interval not wholly below 1.000, in either build (the pre-registered K2, DL M10-P4-WPRE-2) |
 | 4 | **Elide the dead statement-position Ldar** and move the statement position to the next bytecode (the V8 form, `bytecode-array-builder.cc:753-764`) | engine (G8: opens H24 R4 and rule O9) | 152.0 M runs removed: est. 2.2% of x64 TS Ir, about 0.57 G cycles, 78% of the Ldar bucket gap (X2) | 1 G8 row + a role + a time A/B on the pinned layout | a debugger step position moves; Ir-to-time factor 0..1 | no kill line yet: it is pre-registered with its G8 row (the D2 meter: a 2-box pooled time A/B) |
@@ -483,10 +483,10 @@ These are **decisions**, not findings. The orchestrator took them under the owne
 | D3 | **Settle C2 before any new lever.** The bytes-vs-placement compare of 2856a698 and 591064fc (0 box; it ran as X1, §9.1) and a LEVER-13 A/B on the first month-11 box with REG-SLOT K2 |
 | D4 | **G8: plan v16 opens the frozen parts that the buckets point at**, each with a time read: REG-SLOT (ABI 6 to 7) first, then H24 R4 statement Ldar and the Wide path |
 | D5 | **The template:** a phase = one lever set; no docs-only phase tag; W-pre 1 check round + (a)/(b) only |
-| D6 | **The month-end counted-false Fuzzilli batch** (8.2 box-h, 61% of the month-10 boxes, counts 0 for item 8) shrinks in month 11 to a short health run; its box-h go to time A/Bs; the owner rule "fuzz only at month end" holds |
+| D6 | **The month-end counted-false Fuzzilli batch** (8.2 box-h planned, P15:470-471; 9.63 box-h with the lost attempt = 61% of the month-10 box-h, §5.2; counts 0 for item 8) shrinks in month 11 to a short health run; its box-h go to time A/Bs; the owner rule "fuzz only at month end" holds |
 | D7 | **A generated-interpreter design study** (read only) runs in month 11 as an option paper, with no build |
 
-After X1, the experiment verifier proposed an order for the first month-11 box (XV §4): the layout-pin row of §7 row 1 before the LEVER-13 A/B, because X1 shows that a revert of LEVER-13 does not change the handler bytes. This is a plan v16 input, not a decision yet.
+After X1, the experiment verifier proposed an order for the first month-11 box (XV §4): the layout-pin row of §7 row 1 before the LEVER-13 A/B, because X1 shows that LEVER-13 changed the handler bytes in the same way in both builds, so a revert acts on C2 only through placement, which the layout-pin row tests directly. This is a plan v16 input, not a decision yet.
 
 ---
 
@@ -504,7 +504,7 @@ After X1, the experiment verifier proposed an order for the first month-11 box (
 
 **Method.** 6 cross builds (mid 2856a698, end 591064fc and the `m9-p5` check build 86e39c65; jit = default features, jitless = `--no-default-features`), in the project cross form: `cargo zigbuild --release --locked -p ep9_cli --target x86_64-unknown-linux-gnu`. 599 symbols compared per build: every `ep9h__*` handler, the match loop, the prefixed steps and the slow call path. Each symbol is cut at its nm size and normalized (calls by symbol name, crate hashes removed, rip-relative data by name). XV re-ran the compare with a second normalizer that keeps the local branch-target index (the X1 normalizer drops branch targets, although its comment says it keeps their ordinals). The result is the same.
 
-**Does the cross build match the box build (XV §1.1)?** For codegen, yes: rustc 1.99.1 (58cf8f9c3 2026-10-13) on the box (its toolchain log) and in the `.comment` of the cross build; the same `[profile.release]` (fat LTO, codegen-units 1, line-tables-only, panic abort; `Cargo.toml:87-91`); `.cargo/config.toml` has only `[alias]`; no RUSTFLAGS in the orchestrator env or the build pool; baseline target-cpu. The linker differs (Homebrew LLD 22.1.8 via zig, against the box default), which changes placement only.
+**Does the cross build match the box build (XV §1.1)?** For codegen, yes: rustc 1.99.1 (58cf8f9c3 2026-10-13) on the box (its toolchain log) and in the `.comment` of the cross build; the same `[profile.release]` (fat LTO, codegen-units 1, line-tables-only, panic abort; `Cargo.toml:87-97`); `.cargo/config.toml` has only `[alias]`; no RUSTFLAGS in the orchestrator env or the build pool; baseline target-cpu. The linker differs (Homebrew LLD 22.1.8 via zig, against the box default), which changes placement only.
 
 | Compare | Symbols | Differ |
 |---|---:|---:|
@@ -517,7 +517,7 @@ After X1, the experiment verifier proposed an order for the first month-11 box (
 - **No extra push, pop, spill, call or lost tail call (M).** In all 21 changed symbols, in both builds, the counts of push, pop, `%rsp` memory operands, calls, returns, indirect jumps, tail jumps and local branches are equal at mid and end. XV re-did 10 per-symbol diffs from the listings; each one has the fill change and the same push and `%rsp`-memory counts. The sib call copies have 2-6 more `pop` than the ics copies (an extra exit to `record_call_next`), the same `push`, and no spill. GetNamedProperty and SetNamedProperty are equal in sib and ics.
 - **One jit-only codegen delta, small and cold (M):** the sib `CallUndefinedReceiver` got another register choice (+1 `movq %rdx,%rax` at entry, +2 B). It is not in the TS cycle list of either build.
 - **Placement moved, and differently in the two builds (M).** Growth in front of GetNamedProperty: jit +237 B (start +224 B), jitless +295 B (start +288 B). Every hot handler of both builds has a new start address mod 64 (jit 21 of 23 hot rows, jitless 22 of 23). The dispatch tables moved too (start mod 64: jit 48 to 16, jitless 32 to 0); est. no effect, because the entries are 8 B and 8-aligned.
-- **The box offset (est.).** At `m9-p5` the box TD run saved handler alignment counts. Only an offset of +32 B (mod 64) from the cross link gives the box counts for both builds (jit 119 / 235 / 469 on 64 / 32 / 16 B; jitless 126 / 234 / 469). The 16 B and 32 B counts do not change with the offset, so the fit uses 2 numbers (the 64 B count of each build) to pick 1 of 4 offsets. Both pick +32. This is good evidence for "the same handler sizes and order", and moderate evidence for the offset.
+- **The box offset (est.).** At `m9-p5` the box TD run saved handler alignment counts. Only an offset of +32 B (mod 64) from the cross link gives the box counts for both builds (jit 119 / 235 / 469 on 64 / 32 / 16 B; jitless 126 / 234 / 469). The 16 B count is the same at every 16 B offset, and the 32 B count is the same at +0 and +32, so the fit uses 2 numbers (the 64 B count of each build) to pick 1 of 4 offsets. Both pick +32. This is good evidence for "the same handler sizes and order", and moderate evidence for the offset.
 - **The sign match is 1 bit of evidence.** Both GetNamedProperty copies move by 32 mod 64 (224 and 288 B) and start 32 B apart, so at a base of 0 or 32 the two builds always move in opposite ways, and the base offset alone decides which build loses:
 
 ```
@@ -537,7 +537,7 @@ After X1, the experiment verifier proposed an order for the first month-11 box (
 
 | Lever | Kill line | Measured | Verdict |
 |---|---|---|---|
-| (a) elide the dead statement-position `S> Ldar` (kept by H24 R4 / rule O9) | fewer than 100 M dead: drop | **151,968,271** dead `S> Ldar` runs; 127,752,522 of them are `S> Ldar <this>` | **KEEP** (1.52 times the line) |
+| (a) elide the dead statement-position `S> Ldar` (kept by H24 R4 / rule O9) | fewer than 100 M dead: drop (the critic's kill test, 100 M line) | **151,968,271** dead `S> Ldar` runs; 127,752,522 of them are `S> Ldar <this>` | **KEEP** (1.52 times the line) |
 | (b) a front-end feedback-slot order (hot slots get the low indices) | fewer than 10 M prefixed ops left | 41,058,840 now; with the best possible order (an oracle from these exact counts) **24,468,058 left** | **DROP** as a stand-alone lever; a slot order cannot remove jump offsets |
 
 **Totals (M).** 1,657,514,120 dynamic bytecodes. Star 373,415,409 (22.53%), GetNamedProperty 347,721,884 (20.98%), Ldar 261,755,534 (15.79%): 59.3% of all dispatches.
@@ -585,7 +585,6 @@ After X1, the experiment verifier proposed an order for the first month-11 box (
 | "PGO got +1.2-1.4% on TS" | A §9 | a sign error: jit TS 1.4% slower with PGO (DL M10-P0-WPRE-2) |
 | "rank levers by x64 Ir; cut Ir and x86 time follows" | A F1, §8 | LEVER-12 -2.1% Ir gave 0 time; the per-lever factor is 0 to 1 (VE F1) |
 | "LEVER-13 changed per-table codegen: extra pushes or spills in the sib call copies" | B3 (as a hypothesis) | X1: the handler code is equal in both builds; no push, pop or spill change (XV CONFIRMED) |
-| "the statement Ldar class is small (< 100 M dead)" | a kill test of the critic | X2: 151,968,271 dead `S> Ldar` runs |
 | "85.9% of the prefixed ops are slot overflows" (read as dynamic) | WIDE-READ, the report draft | X2: dynamic 45.0% slot, 51.1% jump offset |
 | "a front-end slot order removes most Wide ops" | the critic (hypothesis) | X2: 24,468,058 left at best (> 10 M) |
 | "11.5 box-h were still free" | C §3.3, §4 | the 15.9 already held the month-end lines; slack about 1.2-1.5 (VL §3) |
@@ -593,7 +592,7 @@ After X1, the experiment verifier proposed an order for the first month-11 box (
 | "jit is 1.6% better than at the month-8 end"; "month-10 jit +1.0%" | C §0 | -0.7% and +1.7% (VL C1) |
 | "half of the jit fall is a box move" | D I-2 | node/QuickJS is flat; the box move cancels in the paired ratio (VL D4) |
 | "the tag-CI wait is 30% idle" | E §0 | it overlaps the next W-pre (VL E3) |
-| "LEVER-13 is the whole jit fall; a revert gives back about 4%" | C §1.3, E §0 | the shift flips sign on GitHub 9V74 (VL C2, E5); X1: a revert does not change the bytes the two builds share |
+| "LEVER-13 is the whole jit fall; a revert gives back about 4%" | C §1.3, E §0 | the shift flips sign on GitHub 9V74 (VL C2, E5); X1: LEVER-13 changed the same 21 symbols in the same way in both builds, so a revert acts on the jit-vs-jitless gap only through placement |
 | "the interpreter runs > 99% of TS" | C §5 | the handlers are 74.1%; the rest is runtime code (VL C10) |
 | "8 + 1 failed Mac tries" | D §0 | 7 + 1 of 8 failures (VL D3) |
 | "X86-ALIGN was stopped by G8" | E §1.4 | by the X86T time rule (VL E7) |
