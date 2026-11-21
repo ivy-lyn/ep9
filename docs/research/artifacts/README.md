@@ -1,6 +1,6 @@
 # Research artifacts
 
-These are the research harnesses that the plan uses again, the decision inputs that later steps need, and the raw evidence of two rounds (`vm-lessons/`, `x86-ts-time/`). All other harnesses stayed in a session scratchpad and were not kept. The reports in `../` describe their results.
+These are the research harnesses that the plan uses again, the decision inputs that later steps need, and the raw evidence of three rounds (`vm-lessons/`, `x86-ts-time/`, `m2-stuck/`). All other harnesses stayed in a session scratchpad and were not kept. The reports in `../` describe their results.
 
 | Directory | What it does | Used by |
 |---|---|---|
@@ -10,6 +10,7 @@ These are the research harnesses that the plan uses again, the decision inputs t
 | `decide/` | Inputs of the 2026-10-20 decision round that later steps reuse: CI scope script, `deny.toml` and `clippy.toml` drafts, the upstream README draft, the H11 barrier models and the H36 math tables. See [decide/README.md](decide/README.md) | CI scope job, licence check, fp-check, H11 model test port, H36 ([../../decisions-log.md §5](../../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)) |
 | `vm-lessons/` | Raw findings, per-system lessons and verify verdicts of the 2026-11-18 VM-lessons round (.NET, Kotlin, Dart; `findings.json`). See [vm-lessons/README.md](vm-lessons/README.md) | [../19-vm-aot-jit-lessons.md](../19-vm-aot-jit-lessons.md) Appendix A; the LRN-* follow-ups of R19 |
 | `x86-ts-time/` | The measured numbers of the 2026-11-19 x86 TS time round: the need per x86 TS cell, the Ir-to-time factor, real counters, the alignment A/B, the dead `Ldar` count, upstream cites and the lever sums (`findings.json`), and the month-10 reads (`month10.json`, 2026-11-21). See [x86-ts-time/README.md](x86-ts-time/README.md) | [../21-m2-x86-ts-time.md](../21-m2-x86-ts-time.md); plan v15 (DL M10-PLAN-D52) |
+| `m2-stuck/` | The numbers of the 2026-11-21 "why M2 is stuck" round: the ranked causes and verdicts, the cycle buckets against node, the box-neutral TS series, the month-10 lever ledger, the per-host TS cells, the gate and process costs, the orchestrator decisions D1-D7 and the X1 and X2 experiment numbers (`findings.json`). See [m2-stuck/README.md](m2-stuck/README.md) | [../22-m2-stuck-causes.md](../22-m2-stuck-causes.md); plan v16 |
 
 ## Build
 

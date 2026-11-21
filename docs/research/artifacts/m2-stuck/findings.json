@@ -1,0 +1,204 @@
+{
+  "schema": "ep9-research/m2-stuck/v1",
+  "date": "2026-11-21",
+  "report": "docs/research/22-m2-stuck-causes.md",
+  "tree": {"tag": "m10-p5", "sha": "591064fc07b4a50e5002baa062a461b6bece3f99", "mid": "2856a698", "m9_p5": "86e39c65"},
+  "short_forms": {
+    "S": "the orchestrator scratchpad (files not in the repo)",
+    "PBe": "S/m2/pathb-m10-end/compare.txt (the month-end Path B compare)",
+    "TD": "S/m2/m10/x86-topdown/out-1/summary.txt (X86-TOPDOWN-READ, m9-p5 code, 1 box; DL M10-P0-WPRE-1)",
+    "VE": "S/m2/research-stuck/verify-engine.md",
+    "VL": "S/m2/research-stuck/verify-ledger-gate-process.md",
+    "XV": "S/m2/research-stuck/X-verify.md",
+    "X1": "S/m2/research-stuck/X1-bytes-vs-placement.md",
+    "X2": "S/m2/research-stuck/X2-dynamic-counts.md",
+    "OL": "the orchestrator log S/m1m6/decisions.md, by row id",
+    "ratio": "node --jitless time / ep9 time, paired per round (above 1.0 = ep9 faster)",
+    "box_neutral": "ep9 time / QuickJS time in the same rounds (lower = faster)",
+    "marks": "M measured, I inferred, G guess, est. estimate"
+  },
+  "need": {
+    "item3_low_end_jit": 0.875, "item3_low_end_jitless": 0.922,
+    "need_jit_x": 1.143, "need_jitless_x": 1.085,
+    "jitless_share_of_jit_need_log": 0.61,
+    "source": "PBe:29, :85; arithmetic ln 1.085 / ln 1.143"
+  },
+  "ranked_causes": [
+    {"id": "C1", "rank": 1, "kind": "engine", "share_of_need": "about 60% (the whole jitless need on the CF box)",
+     "claim": "on x86 ep9 T0 runs more cycles than node --jitless at equal instructions",
+     "evidence": {"instr_G": {"ep9_jit": 57.24, "ep9_jitless": 56.67, "node_jitless": 57.26},
+                  "cycles_G": {"ep9_jit": 23.30, "ep9_jitless": 23.56, "node_jitless": 21.30},
+                  "ipc": {"ep9_jit": 2.462, "ep9_jitless": 2.407, "node_jitless": 2.688},
+                  "wall_ms": {"ep9_jit": 6234, "ep9_jitless": 6331, "node_jitless": 5640},
+                  "cycle_gap_pct": {"jit": 9.4, "jitless": 10.6},
+                  "slot_gap_jitless_vs_node_G": {"backend": 6.45, "frontend": 5.11, "smt": 0.85, "retiring": -0.8, "bad_speculation": -0.4},
+                  "split": "about 49% backend, about 39% frontend",
+                  "l1i_mpki": {"ep9": "0.284-0.318", "node": 0.092},
+                  "branch_mpki": {"ep9": "1.52-1.59", "node": 1.25},
+                  "m10_p5_est": "cycle gap about 6% (jitless 0.942) at about 3.6% fewer instructions; CPI gap still about 10% (I)"},
+     "verdict": "CONFIRMED (m9-p5, 1 box, n=1 top-down)", "source": "TD; VE F5, B5; critic"},
+    {"id": "C2", "rank": 2, "kind": "engine + build", "share_of_need": "about 40%, jit cell only",
+     "claim": "at the LEVER-13 merge the jit binary became slower than the jitless binary in the same rounds",
+     "evidence": {"ts_tjl_over_tjit": {"m9": [1.017, 1.019], "mid": [1.006, 1.004], "end": [0.951, 0.943]},
+                  "shift_pct": {"box1": 5.5, "box2": 6.1, "mean": 5.8},
+                  "github_9v74_linux": "jit faster 4.6% (opposite sign)"},
+     "verdict": "cause UNPROVEN; codegen arm KILLED by X1; layout is the lead hypothesis", "source": "VE B2; VL §1, §2; X1; XV"},
+    {"id": "C3", "rank": 3, "kind": "process", "claim": "the levers kept the Ir meter after the instruction gap closed",
+     "evidence": {"ir_gap_m7_p5_G": 10.8, "ir_gap_m9_p5_G": 0, "m8_end_to_m10_end": {"x64_ts_ir_pct": -9.6, "box_neutral_jit_pct": -0.7, "box_neutral_jitless_pct": -8.3}},
+     "verdict": "CONFIRMED", "source": "OL M6-ORCH-469; TD; VL C1, C3"},
+    {"id": "C4", "rank": 4, "kind": "process", "claim": "the time meter is too coarse and rationed",
+     "evidence": {"one_box_interval_width_pct": "1.9-6.3", "lever_size_pct": "0.2-2", "lever_ab_cap_per_month": 3, "merged_levers_with_time_read": "1 of 5", "cycles_width_over_wall_width": "0.59-0.79"},
+     "verdict": "CONFIRMED", "source": "VL §5; C §2.3, §2.4"},
+    {"id": "C5", "rank": 5, "kind": "process", "claim": "phase template overhead",
+     "evidence": {"records_plus_plan_token_share_pct": "45-50", "m10_p4_p5_code_merged": 0, "tokens_per_1pct_time_M": {"m8": 3.8, "m9": 17, "m10": 24}},
+     "verdict": "CONFIRMED (shares depend on the classifier)", "source": "VL E1, §4; E §1.3"},
+    {"id": "C6", "rank": 6, "kind": "procedure tail", "claim": "most open cells are open by procedure",
+     "evidence": {"open_cells_by_procedure": "14 of 17", "mac_windows_valid": "1 of 9", "counted_fuzz_batch_wall_h": 66, "tail_after_item3_days_est": "3.5-4.5"},
+     "verdict": "CONFIRMED", "source": "D §1; VL D1, D3, D7"}
+  ],
+  "not_causes": [
+    {"claim": "a missing JIT", "why": "no JIT code runs in M2 by plan (09:36); the jit build = T0 + profile records + the sib table", "source": "VE B1"},
+    {"claim": "workload or harness", "why": "same file sha256, one process per run, paired rounds, no engine flag beyond --jitless; GC at most about 0.3 G of 2.26 G", "source": "critic 9.2 (a)"},
+    {"claim": "build flags", "why": "ep9 fat LTO, 1 CGU; pinned node 24.22 (darwin-arm64 copy): no LTO, no PGO, pointer compression 0, sandbox 0, external code space 0", "source": "critic 9.2 (b); Cargo.toml:87-91"}
+  ],
+  "cycle_buckets_jitless_vs_node_m9p5_G": {
+    "source": "TD perf record (rec/*.sym.tsv), 1 box; a map, not a ranking (VE F3)",
+    "rows": [
+      {"bucket": "Ldar handler", "ep9": 0.985, "node": 0.253, "gap": 0.73},
+      {"bucket": "named load (no Wide)", "ep9": 7.60, "node": 6.71, "gap": 0.89},
+      {"bucket": "Wide / prefixed path", "ep9": 1.26, "node": 0.68, "gap": 0.59},
+      {"bucket": "Star + Mov", "ep9": 0.99, "node": 0.39, "gap": 0.59, "note": "biased by the V8 Star lookahead"},
+      {"bucket": "ToBoolean jumps + to_boolean", "ep9": 0.53, "node": 0.59, "gap": -0.07},
+      {"bucket": "calls (handlers, slow, Return)", "ep9": 3.25, "node": 4.07, "gap": -0.83},
+      {"bucket": "GC-like (rough)", "ep9": 1.6, "node": 1.3, "gap": 0.3, "approx": true},
+      {"bucket": "total", "ep9": 23.56, "node": 21.30, "gap": 2.26}
+    ]
+  },
+  "box_neutral_series": {
+    "source": "VL §1 (V-work/series.py on the Path B run JSON, per-round medians, octane-typescript)",
+    "rows": [
+      {"reading": "m7 end", "jit_qjs": [0.773, 0.785], "jitless_qjs": [0.769, 0.774], "jit_qjs_mean": 0.779, "jitless_qjs_mean": 0.772, "node_qjs": [0.596, 0.598], "x64_ts_ir_jit_G": 67.96, "kernel": "6.18.56"},
+      {"reading": "m8 end", "jit_qjs": [0.673, 0.671], "jitless_qjs": [0.684, 0.690], "jit_qjs_mean": 0.672, "jitless_qjs_mean": 0.687, "node_qjs": [0.595, 0.596], "x64_ts_ir_jit_G": 60.53, "kernel": "6.18.56"},
+      {"reading": "m9 end", "jit_qjs": [0.656, 0.656], "jitless_qjs": [0.667, 0.665], "jit_qjs_mean": 0.656, "jitless_qjs_mean": 0.666, "node_qjs": [0.596, 0.600], "tjl_over_tjit": [1.017, 1.019], "x64_ts_ir_jit_G": 56.75, "kernel": "6.18.56"},
+      {"reading": "m10 mid", "jit_qjs": [0.642, 0.636], "jitless_qjs": [0.645, 0.638], "jit_qjs_mean": 0.639, "jitless_qjs_mean": 0.641, "node_qjs": [0.595, 0.593], "tjl_over_tjit": [1.006, 1.004], "x64_ts_ir_jit_G": 55.03, "kernel": "6.18.64"},
+      {"reading": "m10 end", "jit_qjs": [0.665, 0.669], "jitless_qjs": [0.633, 0.628], "jit_qjs_mean": 0.667, "jitless_qjs_mean": 0.630, "node_qjs": [0.597, 0.598], "tjl_over_tjit": [0.951, 0.943], "x64_ts_ir_jit_G": 54.69, "kernel": "6.18.64"}
+    ],
+    "target_node_qjs": 0.597,
+    "m8_end_to_m10_end_pct": {"jit": -0.7, "jitless": -8.3, "x64_ir": -9.6},
+    "month_moves_pct": {"m8": {"ir": -10.9, "jit": -13.7, "jitless": -11.0}, "m9": {"ir": -6.2, "jit": -2.4, "jitless": -3.1}, "m10": {"ir": -3.6, "jit": 1.7, "jitless": -5.4}},
+    "time_per_1pct_ir": {"m8": {"jit": 1.26}, "m9": {"jit": 0.39, "jitless": 0.49}, "m10": {"jit": -0.46, "jitless": 1.46}},
+    "gap_left_at_median": {"jit": 1.117, "jitless": 1.055}
+  },
+  "lever_ledger_m10": {
+    "source": "C §2.3, §2.4; VL C4, D5, E7; VE F9",
+    "rows": [
+      {"lever": "PREALLOC + BESTFIT", "ir_pct": [-0.22, -0.18], "x86_time": null, "merged": "M10-P0", "decided_by": "Ir floor", "dl": "M10-P0-BASE"},
+      {"lever": "PGO-PROBE", "instr_pct": 2.6, "x86_time": "jit 1.4% slower, jitless 1.2% faster", "merged": false, "decided_by": "the +3% line failed", "dl": "M10-P0-WPRE-2"},
+      {"lever": "DEAD-LDAR", "ir_pct": [-0.67, -0.68], "x86_time": null, "merged": false, "decided_by": "kill line -1.0%; G8 +1", "dl": "M10-P0-DEADLDAR"},
+      {"lever": "LEVER-12 Q1 NAMED-MISS", "ir_pct": [-2.10, -2.17], "x86_time": "jit 1.000 [0.982-1.014], jitless 0.995 [0.969-1.029]", "merged": "M10-P1", "decided_by": "Ir line", "dl": "M10-P1-B1"},
+      {"lever": "X86-ALIGN", "ir_pct": [0, 0], "x86_time": "0.988 [0.977-0.997] (TD box); 0.995 / 0.987 [0.943-1.006] (P1 box)", "merged": false, "decided_by": "the X86T time rule", "dl": "M10-P1-X86ALIGN"},
+      {"lever": "STAR-LA2", "ir_pct": [0, 0], "x86_time": "jit 0.994 [0.983-1.007], jitless 0.968 [0.958-0.977], t0-branchy +5.4% / +6.5%", "merged": false, "decided_by": "X86T", "dl": "M10-P3-STARLA2"},
+      {"lever": "Q1b NAMED-STORE-MEGA", "ir_pct": [-0.55, -0.57], "x86_time": null, "merged": "M10-P2", "decided_by": "Ir only", "dl": "M10-P2-CLOSE-2"},
+      {"lever": "LEVER-13 CALL-FILL (x86 only)", "ir_pct": [-0.61, -0.61], "x86_time": null, "merged": "M10-P3", "decided_by": "Ir only; no lever box left", "dl": "M10-P3-CLOSE-2"},
+      {"lever": "LEVER-14 REG-SLOT probe", "ir_pct": [-7.92, -8.01], "a64_ir_pct": -5.2, "x86_time": null, "merged": false, "decided_by": "count cap 3 of 3, G8 +2, product call", "dl": "M10-P4-LEVER14"}
+    ],
+    "rate": {"jitless_x_per_month": 1.058, "jitless_plan_months_to_pass": 1.45, "jit_x_per_month": 0.973, "jit_plan_months_to_pass": "never at this rate; 4.7 at the month-9 rate x1.029", "source": "PBe:29, :85; C §3.5; VL C9"}
+  },
+  "hosts_m10p5_ts": {
+    "source": "PBe:29, :85; S/m2/gw12/out/591064fc07b4/winpathb.log:38-63",
+    "rows": [
+      {"host": "CF box 1, 2", "cpu": "9684X (Zen 4)", "os": "Linux", "jit": [0.882, 0.885], "jitless": [0.942, 0.942], "jitless_need_median": 1.06},
+      {"host": "GH l1", "cpu": "9V74 (Zen 4)", "os": "Linux", "jit": 0.914, "jitless": 0.899, "jitless_need_median": 1.11},
+      {"host": "GH l2", "cpu": "9V45 (Zen 5)", "os": "Linux", "jit": 0.865, "jitless": 0.876, "jitless_need_median": 1.14},
+      {"host": "GH w1", "cpu": "7763 (Zen 3)", "os": "Windows", "jit": 0.887, "jitless": 0.917, "jitless_need_median": 1.09},
+      {"host": "GH w2, w3", "cpu": "9V74 (Zen 4)", "os": "Windows", "jit": [0.894, 0.893], "jitless": [0.907, 0.905], "jitless_need_median": 1.10},
+      {"host": "GH w4", "cpu": "9V45 (Zen 5)", "os": "Windows", "jit": 0.823, "jitless": 0.858, "jitless_need_median": 1.17}
+    ],
+    "cpu_generation": "inferred from the model names",
+    "lever13_shift_mid_to_end_ts": {"cf_9684x_linux": "jit slower 5.5% (box 1), 6.1% (box 2)", "gh_9v45_windows": "jit slower 3.3%", "gh_7763_windows": "jit slower 3%", "gh_9v74_linux": "jit faster 4.6%", "source": "VL §2"}
+  },
+  "gate_cells_m10p5": {
+    "source": "D §1; VL D1, D6; PBe:27-30, :83-86",
+    "eng_cells": 3, "proc_cells": 14,
+    "eng": ["item 3 linux-x64 jit", "item 3 linux-x64 jitless", "items 10 and D11 follow item 3"],
+    "item8": {"counted_batch_cpu_h": 512, "box_h": 131, "wall_h_2_boxes": 66, "counted_so_far": 0, "counted_false_since_m7_cpu_h": 96, "monthly_batch_cpu_h": 32, "monthly_batch_box_h": 8.2, "source": "P15:470-471, :502, :574; VL D7"},
+    "mac_windows": {"tries_since_11_06": 9, "valid": 1, "voided_by_other_work": 7, "voided_by_own_agents": 1, "source": "VL D3"}
+  },
+  "process_costs_m10": {
+    "source": "E §1.1-§1.7; VL §3, §4, E1-E10",
+    "months": [
+      {"month": 7, "wall_h": 124.8, "tags": 6},
+      {"month": 8, "wall_h": 112.8, "tags": 6, "workflows": 110, "agent_runs": 275, "agent_runs_column_sum": 268, "tokens_M": 46.83, "tokens_per_1pct_time_M": 3.8},
+      {"month": 9, "wall_h": 56.2, "tags": 6, "workflows": 86, "agent_runs": 236, "tokens_M": 46.27, "tokens_per_1pct_time_M": 17},
+      {"month": 10, "wall_h": 53.5, "tags": 6, "workflows": 103, "agent_runs": 296, "tokens_M": 43.24, "tokens_per_1pct_time_M": 24}
+    ],
+    "m10_tokens_by_kind_M": {"records": 10.22, "plan_wpre_briefs": 9.48, "engine_code": 8.98, "reviews_fix_rounds": 8.69, "infra_orders_research_measurement": 5.89, "item3_speed_work_all_kinds": 11.9},
+    "m10_wall_h": {"any_item3_agent": 22.6, "item3_code_review": 16.9, "no_agent": 11.3},
+    "m10_box_h": {"fuzz_counted_false": 9.63, "path_b": 3.76, "lever_ab": 1.40, "td_pgo": 1.05, "budget": 15.9, "real_slack": "1.2-1.5"},
+    "p4_p5_zero_code": {"runs": 38, "tokens_M": 6.9, "share_pct": 16},
+    "tag_ci": {"per_phase_min": 101, "runner_min_each": 1950},
+    "modes_check": {"checks": 6, "days": 2.2, "times_the_weekly_rate": 19},
+    "modes_text_loop": {"fix_workflows": 6, "runs": 12, "tokens_M": 1.22}
+  },
+  "x1_bytes_vs_placement": {
+    "verdict": "NOT CODEGEN (killed); layout = lead hypothesis, UNPROVEN in time",
+    "verifier": "XV: CORRECTED (small)",
+    "builds": {"tool": "cargo zigbuild 0.21.1, zig 0.17.1, --target x86_64-unknown-linux-gnu", "rustc": "1.99.1 (58cf8f9c3 2026-10-13)", "linker": "Homebrew LLD 22.1.8 (box: rustc default)", "commits": ["2856a698", "591064fc", "86e39c65"], "x86_runs": 0},
+    "symbols_compared": 599,
+    "differ": {"mid_jit_vs_jitless": 0, "end_jit_vs_jitless": 0, "mid_vs_end_jit": 21, "mid_vs_end_jitless": 21},
+    "all_symbol_size_changes": {"mid_to_end_each_build": 23, "jit_vs_jitless_one_commit": 4, "jit_vs_jitless_note": "all cold"},
+    "lever13_change": "each call handler +1 insn, +8 B (fill loop: 2 stores per pass); match loop and 2 prefixed steps +9 copies each (+72 B)",
+    "push_pop_spill_change": 0,
+    "sib_vs_ics_call_copies": "2-6 more pop (extra exit to record_call_next), same push, 0 %rsp memory, no spill",
+    "jit_only_delta": "sib CallUndefinedReceiver +1 movq, +2 B (cold)",
+    "growth_in_front_of_gnp_B": {"jit": 237, "jitless": 295},
+    "gnp_start_shift_B": {"jit": 224, "jitless": 288},
+    "hot_rows_new_start_mod64": {"jit": "21 of 23", "jitless": "22 of 23"},
+    "dispatch_table_start_mod64": {"jit": [48, 16], "jitless": [32, 0], "effect": "est. none (8 B entries)"},
+    "box_offset_fit": {"offset_B_mod64": 32, "m9_box_counts_64_32_16": {"jit": [119, 235, 469], "jitless": [126, 234, 469]}, "numbers_used": 2, "status": "est. (fitted, not read from box addresses)"},
+    "weighted_64B_lines_20_hot_box_est": {"jit": {"m9": 8.422, "mid": 8.668, "end": 9.111, "change_pct": 5.1}, "jitless": {"m9": 8.288, "mid": 9.107, "end": 8.814, "change_pct": -3.2}},
+    "sign_match_evidence": "1 bit: at a base of 0 or 32 the two builds always move in opposite ways; the offset decides which build loses",
+    "text_after_rodata_MB": 15.8,
+    "github_9v74_sign_flip": "possible via another base offset; not checked (no ep9 binary sha in that leg's JSON)",
+    "corrections_by_xv": ["verdict: layout is not confirmed", "jitless growth +295 B, not +303 B (ICF alias counted twice); total +359 B, not +375 B", "the X1 normalizer drops branch targets; a re-run that keeps them gives the same result", "the dispatch tables moved too"],
+    "source": "X1; XV §1"
+  },
+  "x2_dynamic_counts": {
+    "verdict": "CONFIRMED (XV re-derived every total with its own code)",
+    "code": "591064fc", "host": "Mac aarch64 counter build (patch never committed)",
+    "total_dispatches": 1657514120,
+    "top3": {"Star": 373415409, "GetNamedProperty": 347721884, "Ldar": 261755534, "share_pct": 59.3},
+    "ldar": {"all": 261755534, "dead": 198699325, "dead_s_mark": 151968271, "dead_s_this": 127752522, "dead_s_param": 17092301, "dead_s_local": 7123448, "dead_no_mark": 46731054, "live": 63056209, "dead_s_this_then_gnp_this": 108263751},
+    "ldar_static": {"all": 16001, "s_mark": 9624, "dead": 11424, "dead_s_mark": 8032},
+    "lever_a_dead_s_ldar": {"kill_line": 100000000, "measured": 151968271, "verdict": "KEEP", "x64_insns_G": 1.216, "share_of_54_69G_pct": 2.22, "share_of_jitless_54_08G_pct": 2.25, "cycles_G_est": 0.57, "of_ldar_bucket_gap_pct": 78, "of_total_gap_pct": 25},
+    "dead_ldar_probe_crosscheck": {"no_mark_x8_pct": 0.684, "probe_measured_pct": [-0.671, -0.676], "dl": "M10-P0-DEADLDAR"},
+    "prefixed": {"all": 41058840, "wide": 41015484, "extrawide": 43356, "share_of_dispatches_pct": 2.48, "by_cause": {"jump_offset": 20969150, "feedback_slot": 17857974, "slot_and_jump": 603385, "immediate": 1628190, "constant": 141, "register": 0}, "slot_involved_pct": 44.96, "jump_offset_pct": 51.07, "static_slot_share_pct": 85.9},
+    "lever_b_slot_order": {"kill_line": 10000000, "oracle_left": 24468058, "removed": 16590782, "verdict": "DROP", "x64_insns_G_est": "0.33-0.50", "share_pct_est": "0.61-0.91", "cycles_G_est": "0.13-0.20", "with_branch_islands_left_I": 13400000},
+    "x86_ldar_insns": 8,
+    "cycles_per_ldar_m9p5": 3.76,
+    "target_independent": "one target_arch use in a test helper (crates/ep9_frontend/src/worker.rs:385-388); dump sha256 288c4ded... identical across builds; a64 counts = x86 cachegrind dispatch counts of m8-p5",
+    "star_after_scale1_gnp": 221865564,
+    "star_after_v8_lookahead_set_min": 330993484,
+    "source": "X2; XV §2"
+  },
+  "decisions_orchestrator": {
+    "kind": "decisions, not findings; DL rows land with plan v16",
+    "source": "OL M6-ORCH-1261",
+    "rows": [
+      {"id": "D1", "text": "the gate stays as written (option K); option R only when jitless passes, as a pre-registered row; the options go to the owner as information"},
+      {"id": "D2", "text": "month 11 changes the meter: an x86 time A/B before merge for every hot-handler lever (2 boxes pooled); the count cap is dropped, the box-h cap stays; levers from the x86 cycle profile"},
+      {"id": "D3", "text": "settle C2 before any new lever: the bytes-vs-placement compare (ran as X1) and a LEVER-13 A/B on the first month-11 box with REG-SLOT K2"},
+      {"id": "D4", "text": "G8: plan v16 opens the frozen parts, each with a time read: REG-SLOT (ABI 6 to 7) first, then H24 R4 statement Ldar and the Wide path"},
+      {"id": "D5", "text": "a phase = one lever set; no docs-only phase tag; W-pre 1 check round + (a)/(b) only"},
+      {"id": "D6", "text": "the month-end counted-false Fuzzilli batch shrinks to a short health run; its box-h go to time A/Bs; fuzz only at month end holds"},
+      {"id": "D7", "text": "a generated-interpreter design study (read only) in month 11 as an option paper, no build"}
+    ]
+  },
+  "plan_v16_input_from_xv": {
+    "first_box_row": "layout-pin row: 1 CF box, 31 rounds, TS and richards, wall + cycles + L1i; end-jit, end-jitless, both with -C llvm-args=-align-all-functions=6; nm -S of the hot handlers of every box binary",
+    "confirm": "aligned pair t(jl)/t(jit) >= 1.00 and aligned jit gains >= 3%: a handler-alignment rule for every A/B and the gate build",
+    "kill": "all jit variants within +-1%: then the LEVER-13 A/B f09c2daa vs 049ed54d",
+    "then": "the dead statement-position Ldar elision (needs the G8 decision for H24 R4 / O9 and its own time A/B); slot order dropped; the Wide jump-offset half needs a design study",
+    "source": "XV §4"
+  }
+}
