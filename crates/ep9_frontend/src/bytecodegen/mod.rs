@@ -201,12 +201,21 @@ pub(crate) fn compile_both(
             .iter()
             .map(|f| f.register_count)
             .collect();
-        Ok(
-            generate_with(fe, &analysis, CompileOptions::default(), false).and_then(|plain| {
-                generate_with(fe, &analysis, CompileOptions::default(), true)
-                    .map(|opt| (plain, opt, named))
-            }),
+        Ok(generate_with(
+            fe,
+            &analysis,
+            CompileOptions::default(),
+            regopt::Mode::Plain,
         )
+        .and_then(|plain| {
+            generate_with(
+                fe,
+                &analysis,
+                CompileOptions::default(),
+                regopt::Mode::from_env(),
+            )
+            .map(|opt| (plain, opt, named))
+        }))
     })?
 }
 
@@ -288,9 +297,9 @@ pub(crate) struct UnitCtx<'s> {
     pub(crate) lines: std::cell::OnceCell<LineMap>,
     /// The `[[SourceText]]` ranges that are not the function node (G12).
     pub(crate) source_texts: SourceTexts,
-    /// The register optimizer is on (`regopt.rs`; always, except in the tests that compare
-    /// with the plain output).
-    pub(crate) regopt: bool,
+    /// The register optimizer mode (`regopt.rs`; on, except in the tests that compare with the
+    /// plain output).
+    pub(crate) regopt: regopt::Mode,
 }
 
 impl UnitCtx<'_> {
@@ -351,7 +360,7 @@ pub(crate) fn generate(
     sa: &ScopeAnalysis,
     options: CompileOptions,
 ) -> Result<VerifiedUnit, CodegenError> {
-    generate_with(fe, sa, options, true)
+    generate_with(fe, sa, options, regopt::Mode::from_env())
 }
 
 /// [`generate`], with the register optimizer on or off.
@@ -359,7 +368,7 @@ pub(crate) fn generate_with(
     fe: &FrontEnd<'_>,
     sa: &ScopeAnalysis,
     options: CompileOptions,
-    regopt: bool,
+    regopt: regopt::Mode,
 ) -> Result<VerifiedUnit, CodegenError> {
     let module = fe.opts.goal() == Goal::Module;
     let code = if module {
@@ -921,13 +930,13 @@ fn unit_scope_id(s: ScopeId, shifted: bool) -> ep9_bytecode::ScopeId {
 mod regopt;
 
 /// A fresh function builder with the named locals reserved, through the register optimizer
-/// when `optimize` is on (`regopt.rs`).
+/// unless `mode` is [`regopt::Mode::Plain`] (`regopt.rs`).
 pub(crate) fn new_builder(
     info: &FunctionInfo,
     meta: FunctionMeta,
-    optimize: bool,
+    mode: regopt::Mode,
 ) -> regopt::Emitter {
-    regopt::Emitter::new(meta, info.register_count, optimize)
+    regopt::Emitter::new(meta, info.register_count, mode)
 }
 
 // ---------------------------------------------------------------------------------------------
