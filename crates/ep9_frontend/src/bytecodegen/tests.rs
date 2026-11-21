@@ -1576,18 +1576,27 @@ struct T1Insn {
     /// The opcode and every operand other than a jump operand.
     text: String,
     target: Option<u32>,
+    /// The targets of a jump table (a `SWITCH` opcode), in table order.
+    table: Vec<u32>,
     ldar: Option<ep9_bytecode::Register>,
 }
 
 fn t1_decode(f: &ep9_bytecode::Function) -> Vec<T1Insn> {
-    use ep9_bytecode::OperandKind as K;
+    use ep9_bytecode::{Constant, OperandKind as K};
     let mut out = Vec::new();
     for insn in ep9_bytecode::Instructions::new(&f.bytecode) {
         let insn = insn.expect("verified code decodes");
         let mut text = format!("{:?}", insn.opcode);
+        let mut table = Vec::new();
         for k in 0..insn.operand_count() {
             if !matches!(insn.operand_kind(k), K::JumpFwd | K::JumpBack) {
                 write!(text, " {}", insn.operand(k)).unwrap();
+            }
+            if insn.opcode.info().flags.contains(OpcodeFlags::SWITCH)
+                && insn.operand_kind(k) == K::Const
+                && let Some(Constant::JumpTable(t)) = f.constants.get(insn.operand(k) as usize)
+            {
+                table.extend(t.iter().map(|e| insn.offset + e));
             }
         }
         out.push(T1Insn {
@@ -1595,6 +1604,7 @@ fn t1_decode(f: &ep9_bytecode::Function) -> Vec<T1Insn> {
             op: insn.opcode,
             text,
             target: insn.jump_target(),
+            table,
             ldar: (insn.opcode == Opcode::Ldar).then(|| insn.register(0)),
         });
     }
@@ -1819,6 +1829,14 @@ pub(crate) fn ldar_elision_differences(src: &str, opts: SourceOpts, arm: Arm) ->
             {
                 diff(format!("@{}: jump target differs", x.off));
             }
+            if !x
+                .table
+                .iter()
+                .map(|&t| map_off(t))
+                .eq(y.table.iter().copied())
+            {
+                diff(format!("@{}: jump table differs", x.off));
+            }
             // INV-1.
             if t1_covering(f0, x.off) != t1_covering(fnn, y.off) {
                 diff(format!(
@@ -2027,8 +2045,17 @@ fn ldar_elision_mutants_fail() {
         sloppy,
         "INV-1"
     ));
+    // (h) a jump table names its targets in the wrong order: `SwitchOnSmi` and
+    // `SwitchOnGeneratorState` resume at the wrong path.
+    assert!(t1_fails(
+        8,
+        "function* g(a) { var x = yield a; return x; }",
+        sloppy,
+        "jump table differs"
+    ));
     // The correct arm passes on the same sources.
     for src in [
+        "function* g(a) { var x = yield a; return x; }",
         "function f(p) { var x; x = p; return x; } function g() { return this; }",
         "function f(p) { p; this.a; }",
         "function f() { this.a; }",

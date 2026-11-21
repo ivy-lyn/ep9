@@ -123,7 +123,8 @@ pub(crate) enum Mode {
     /// Arm 1, and each dead `Ldar` from a binding is not emitted (A1, arm 2).
     Arm2,
     /// Test only (T3): arm 1 with one rule broken on purpose (`1..=6`: the mutants a-f of the
-    /// design, section 3.3; `7`: the A3 throw default is not used).
+    /// design, section 3.3; `7`: the A3 throw default is not used; `8`: a 2-entry jump table
+    /// gets its labels in the wrong order).
     #[cfg(test)]
     Mutant(u8),
 }
@@ -269,6 +270,12 @@ impl Emitter {
     pub(crate) fn jump_table(&mut self, len: u32) -> (ConstIndex, Vec<Label>) {
         let (k, labels) = self.b.jump_table(len);
         self.table_labels.extend(labels.iter().copied());
+        #[cfg(test)]
+        let labels = if self.mode == Mode::Mutant(8) && len == 2 {
+            vec![labels[1], labels[0]]
+        } else {
+            labels
+        };
         (k, labels)
     }
 
