@@ -2017,3 +2017,80 @@ fn ldar_elision_on_files() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// T5, the statement-table cases (the stand-in for a debugger step; no debugger exists yet):
+/// each case keeps its statement entries in count and order in every arm (T1), and the literal
+/// offsets pin both statement-offset forms (the statement start, and the own offset of the
+/// instruction that took the entry).
+#[test]
+fn ldar_elision_statement_cases() {
+    let sloppy = SourceOpts::script(Strictness::Sloppy);
+    let src = "function s1(p, q) { p; this; q; }\n\
+               function s2(p, q) { p, this; q; }\n\
+               function s3(x) { this; while (x) { x = 0; } }\n\
+               function s4() { this; try { s4(); } catch (e) {} }\n\
+               function s5() { this; }\n\
+               class B {} class D extends B { constructor() { super(); this; this.a; } }\n\
+               function s7() { return () => { this.a; }; }\n\
+               function s8(p) { switch (p) { case 1: p = 2; break; case 2: return p; } }\n";
+    for arm in [Arm::Arm1, Arm::Arm2] {
+        let r = ldar_elision_differences(src, sloppy, arm);
+        assert!(r.differences.is_empty(), "{arm:?}: {:?}", r.differences);
+    }
+    let units = arm_units(src, sloppy, &[Arm::Plain, Arm::Arm0, Arm::Arm1, Arm::Arm2]);
+    let statements = |u: &VerifiedUnit| -> Vec<Vec<u32>> {
+        u.unit().functions.iter().map(statement_positions).collect()
+    };
+    for u in &units[1..] {
+        assert_eq!(
+            statements(u),
+            statements(&units[0]),
+            "statement offsets in a mode"
+        );
+    }
+    let has = |u: &VerifiedUnit, name: &str, needle: &str| arm_listing(u, name).contains(needle);
+    for (arm, u) in ["arm 1", "arm 2"].iter().zip(&units[2..]) {
+        // `p; this; q;`: 3 entries; the last one moves to the implicit return.
+        assert!(
+            has(u, "s1", "0 S> Ldar a0\n2 S> Ldar <this>\n4 S> LdaUndefined"),
+            "{arm}"
+        );
+        // `p, this; q;`: the anchor keeps the entry of `p, this;`.
+        assert!(has(u, "s2", "0 S> Ldar a0\n2 S> LdaUndefined"), "{arm}");
+        // Before a loop label, before a `try`: the load stays.
+        assert!(has(u, "s3", "0 S> Ldar <this>\n2 S> Ldar a0"), "{arm}");
+        assert!(
+            has(u, "s4", "0 S> Ldar <this>\n2 S> LdaCurrentContext"),
+            "{arm}"
+        );
+        // The last statement: the entry is on the implicit return.
+        assert!(
+            has(u, "s5", "0 S> LdaUndefined\n1 Return\n| 0 S 181 (5:17)"),
+            "{arm}"
+        );
+        // A derived constructor reads `this` with a hole check (the load is live); an arrow
+        // reads it from a context slot (no `Ldar`).
+        assert_eq!(arm_listing(u, "D"), arm_listing(&units[1], "D"), "{arm}");
+        assert!(has(
+            u,
+            "s8",
+            "0 S> LdaSmi [1]\n2 TestEqualStrict a0, s0\n5 Mov a0, r0"
+        ));
+    }
+    // The arrow function (no name): the same text in every arm.
+    let text = |u: &VerifiedUnit| ep9_bytecode::disassemble(u.unit());
+    let arrow = |t: String| {
+        t.split("\nfunction ")
+            .find(|f| f.contains(" arrow "))
+            .map(str::to_owned)
+    };
+    assert_eq!(arrow(text(&units[2])), arrow(text(&units[1])));
+    // Both statement-offset forms, with literal offsets: `p.x;` keeps the statement start
+    // (25:3, no `Ldar` today); `p.m();` and `this.a;` have the property offset (28:5, 4:8).
+    let strict = SourceOpts::script(Strictness::Strict);
+    for u in &arm_units(LDAR_T3, strict, &[Arm::Arm1, Arm::Arm2]) {
+        assert!(has(u, "c7", "| 0 S 435 (25:3)"));
+        assert!(has(u, "c8", "| 0 S 463 (28:5)"));
+        assert!(has(u, "c1", "| 0 S 201 (4:8)"));
+    }
+}
